@@ -1,0 +1,10 @@
+{
+  "as_app_anon": {
+    "allowedOrigins": ["*"],
+    "label": "Anonymous (public)"
+  },
+  "as_app_pixel_art": {
+    "allowedOrigins": ["*"],
+    "label": "Pixel art demo (v0 — wide open)"
+  }
+}

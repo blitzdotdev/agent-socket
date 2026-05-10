@@ -1,0 +1,17 @@
+{
+  "name": "agent-socket-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A relay that lets any web app expose itself to AI chats via a paste-able URL.",
+  "workspaces": [
+    "relay",
+    "sdk",
+    "cli",
+    "harness"
+  ],
+  "scripts": {
+    "harness": "node --experimental-vm-modules harness/run.mjs",
+    "dev": "npm run dev -w relay"
+  }
+}

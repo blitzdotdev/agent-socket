@@ -1,0 +1,19 @@
+name = "agent-socket-relay"
+main = "src/worker.ts"
+compatibility_date = "2025-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayServer"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RelayServer"]
+
+[vars]
+TOKEN_PREFIX = "as"
+MAX_SYNC_TOOL_MS = "30000"
+HEARTBEAT_INTERVAL_MS = "25000"
+HEARTBEAT_TIMEOUT_MS = "50000"
+DEBUG = "1"
