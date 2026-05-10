@@ -65,24 +65,43 @@ export default async function () {
       a.ok(tokenMatch, "URL contains a parseable token")
       const token = tokenMatch[1]
 
-      // Drive set_pixel from the harness side (curl-style). Pixels at
-      // (0,0) red, (5,5) green, (31,31) blue.
-      const pixels = [
-        { x: 0,  y: 0,  color: "#ff0000" },
-        { x: 5,  y: 5,  color: "#00ff00" },
-        { x: 31, y: 31, color: "#0000ff" },
-      ]
-      for (const p of pixels) {
-        const r = await httpPost(`/v1/t/${token}/set_pixel`, p)
-        a.equal(r.status, 200, `set_pixel(${p.x},${p.y},${p.color}) → 200`)
-        a.equal(r.json?.ok, true, `set_pixel ok`)
-      }
+      // Clear before painting so we start from known state.
+      await httpPost(`/v1/t/${token}/clear`, {})
 
-      // Read the canvas state back from the page; verify the cells got painted.
+      // 1. Single set_pixel — backcompat.
+      const r1 = await httpPost(`/v1/t/${token}/set_pixel`, { x: 0, y: 0, color: "#ff0000" })
+      a.equal(r1.status, 200, "set_pixel → 200")
+      a.equal(r1.json?.ok, true, "set_pixel ok")
+
+      // 2. Batch set_pixels — green diagonal in one call.
+      const batch = []
+      for (let i = 1; i <= 5; i++) batch.push({ x: i, y: i, color: "#00ff00" })
+      const r2 = await httpPost(`/v1/t/${token}/set_pixels`, { pixels: batch })
+      a.equal(r2.status, 200, "set_pixels → 200")
+      a.equal(r2.json?.painted, 5, "set_pixels painted all 5")
+
+      // 3. fill_rect — solid blue 8×8 in the corner.
+      const r3 = await httpPost(`/v1/t/${token}/fill_rect`, { x: 24, y: 24, w: 8, h: 8, color: "#0000ff" })
+      a.equal(r3.status, 200, "fill_rect → 200")
+      a.equal(r3.json?.painted, 64, "fill_rect painted 64 cells")
+
+      // 4. Out-of-range entries silently skipped.
+      const r4 = await httpPost(`/v1/t/${token}/set_pixels`, { pixels: [
+        { x: 10, y: 10, color: "#ffffff" },
+        { x: 99, y: 99, color: "#ffffff" },
+        { x: -1, y: 0,  color: "#ffffff" },
+      ]})
+      a.equal(r4.status, 200, "set_pixels with OOR entries → 200")
+      a.equal(r4.json?.painted, 1, "1 painted")
+      a.equal(r4.json?.skipped, 2, "2 skipped")
+
+      // Read the canvas state back from the page.
       const grid = await page.evaluate(() => (window).__harness.canvasState())
-      a.equal(grid[0][0],   "#ff0000", "(0,0) is red")
-      a.equal(grid[5][5],   "#00ff00", "(5,5) is green")
-      a.equal(grid[31][31], "#0000ff", "(31,31) is blue")
+      a.equal(grid[0][0],   "#ff0000", "(0,0) red (set_pixel)")
+      a.equal(grid[3][3],   "#00ff00", "(3,3) green (set_pixels diagonal)")
+      a.equal(grid[31][31], "#0000ff", "(31,31) blue (fill_rect)")
+      a.equal(grid[10][10], "#ffffff", "(10,10) white (set_pixels mixed)")
+      a.equal(grid[20][20], "#0f0f12", "(20,20) bg (untouched)")
 
       // Save a screenshot for manual inspection.
       const outdir = path.join(os.tmpdir(), "agent-socket-visual")
