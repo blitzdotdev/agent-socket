@@ -51,8 +51,16 @@ export default {
       if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
         return errorResponse("protocol_error", "expected ws upgrade", 400)
       }
-      // Generate a session-id at the edge (same Crockford format the DO uses).
-      const sessionId = generateSessionId()
+      // Generate a session-id at the edge — or, when DEBUG=1, honor a
+      // ?force_session= query param so the harness can drive the
+      // "second WS rejected" path. Never honored in prod.
+      let sessionId: string
+      const forceParam = url.searchParams.get("force_session")
+      if (env.DEBUG === "1" && forceParam && /^[0-9A-HJKMNP-TV-Z]{8}$/.test(forceParam)) {
+        sessionId = forceParam
+      } else {
+        sessionId = generateSessionId()
+      }
       const id = env.RELAY.idFromName(sessionId)
       // Forward the request to the DO. We rewrite the URL so the DO knows
       // its session-id (DOs can't ask "what's my idFromName"). Use a

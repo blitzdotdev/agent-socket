@@ -34,10 +34,15 @@ export async function httpPost(path, body) {
  *                            matching the predicate, rejects on timeout
  *   close()                — close the WS
  *   ws                     — the underlying ws instance
+ *
+ * opts.headers — extra headers on the upgrade request (e.g. { origin: "..." })
+ * opts.origin  — shorthand for setting the Origin header
  */
 export function openRawWs(opts = {}) {
-  const url = `${RELAY_WS}/v1/_ws`
-  const headers = opts.headers ?? {}
+  const qs = opts.forceSession ? `?force_session=${encodeURIComponent(opts.forceSession)}` : ""
+  const url = `${RELAY_WS}/v1/_ws${qs}`
+  const headers = { ...(opts.headers ?? {}) }
+  if (opts.origin) headers.origin = opts.origin
   const ws = new WebSocket(url, { headers })
 
   const inbox = []

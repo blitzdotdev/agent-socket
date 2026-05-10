@@ -6,5 +6,9 @@
   "as_app_pixel_art": {
     "allowedOrigins": ["*"],
     "label": "Pixel art demo (v0 — wide open)"
+  },
+  "as_app_test_strict": {
+    "allowedOrigins": ["https://allowed.example"],
+    "label": "Harness fixture: strict allowed-origins (test only)"
   }
 }

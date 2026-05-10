@@ -1,20 +1,41 @@
-// 26-second-ws-rejected — second WebSocket connection on the same session
-// is rejected with WS code 4409. (We need a deterministic way to force
-// both connections to the same DO — that means picking the session-id
-// at handshake. The Worker generates session-id from the WS URL, so by
-// default each new WS gets a different session-id. So this test verifies
-// the generic "second connection to same DO" behavior by having the
-// SECOND client open via the same DO routing key… which the Worker
-// doesn't expose directly. Skipping in v0; revisit when there's a way
-// to opt into deterministic session-id at the edge.)
+// 26-second-ws-rejected — second WS to the SAME session-id is rejected
+// with WS close code 4409. Uses the DEBUG-only ?force_session= URL param
+// so both clients land in the same DO.
 
 import { Assert } from "../lib/assert.mjs"
+import { openRawWs } from "../lib/relay.mjs"
 
 export default async function () {
   const a = new Assert("26-second-ws-rejected")
-  // Skipped in v0: see comment above. The relay-do enforces 4409 (see §4.1
-  // and the onConnect guard in relay-do.ts), but we have no way at the edge
-  // to direct two WS handshakes to the same DO instance without a deterministic
-  // session-id. Verified manually in the spike where session-id was URL-supplied.
-  a.pass("skipped — see scenario comment")
+  const SESSION = "Q7R5X2KM"
+
+  const c1 = openRawWs({ forceSession: SESSION })
+  await c1.waitOpen()
+  c1.send({ type: "register", appId: "as_app_anon", agentsMd: "first", tools: [] })
+  const r1 = await c1.waitFor((m) => m.type === "register_reply", 3000)
+  a.equal(r1.ok, true, "first WS registers ok")
+  a.equal(r1.sessionId, SESSION, "first WS got the forced session-id")
+
+  // Open a second WS forced to the same session-id. Should be closed by
+  // the DO with code 4409.
+  const c2 = openRawWs({ forceSession: SESSION })
+
+  // Listen for close on c2.
+  let closeCode = null
+  let closeReason = null
+  c2.ws.on("close", (code, reasonBuf) => {
+    closeCode = code
+    closeReason = reasonBuf?.toString() ?? ""
+  })
+
+  await c2.waitOpen()  // upgrade succeeds; the close happens inside onConnect.
+  // Wait for the close event.
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (closeCode !== null) break
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  a.equal(closeCode, 4409, "second WS closed with code 4409", { closeCode, closeReason })
+  a.ok(/already connected/i.test(closeReason ?? ""), "close reason mentions 'already connected'", { closeReason })
+
+  c1.close()
 }
