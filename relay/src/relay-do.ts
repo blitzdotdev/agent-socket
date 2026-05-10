@@ -55,6 +55,7 @@ export class RelayServer extends Server<Env> {
   appWs: Connection | null = null
   sessionId: string | null = null
   appId: string | null = null
+  appDescription: string = ""
   agentsMd: string = ""
   tools: ToolDef[] = []
   // Map "<METHOD> <path>" → ToolDef for fast routing
@@ -113,7 +114,29 @@ export class RelayServer extends Server<Env> {
   onMessage(_c: Connection, raw: string | ArrayBuffer): void {
     const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw)
     let msg: Frame
-    try { msg = JSON.parse(text) as Frame } catch { return }
+    try { msg = JSON.parse(text) as Frame } catch {
+      if (this.env.DEBUG === "1") console.log("[DO] dropped non-JSON frame")
+      return
+    }
+
+    // Pre-register gate: only `register`, `ping`, `pong` allowed before app
+    // is fully registered. Everything else returns a protocol_error reply
+    // (or is dropped silently for tool_reply / task_complete since those
+    // don't have a request id we can echo).
+    const registered = this.appId !== null
+    if (!registered && msg.type !== "register" && msg.type !== "ping" && msg.type !== "pong") {
+      if ("id" in msg && typeof msg.id === "string") {
+        // Best-effort error reply on the matching reply type
+        const replyType = msg.type === "mint_agent_token" ? "mint_agent_token_reply"
+          : msg.type === "revoke_agent_token" ? "revoke_agent_token_reply"
+          : msg.type === "list_agent_tokens" ? "list_agent_tokens_reply"
+          : null
+        if (replyType) {
+          this.send({ type: replyType, id: msg.id, ok: false, error: { code: "protocol_error", message: "register first" } } as unknown as Frame)
+        }
+      }
+      return
+    }
 
     switch (msg.type) {
       case "register":
@@ -149,6 +172,13 @@ export class RelayServer extends Server<Env> {
   // ── Register ──────────────────────────────────────────────────────
 
   private handleRegister(msg: RegisterFrame): void {
+    // 0. Already-registered guard. A second register can't change app-id /
+    //    origin allowlist / tools mid-session.
+    if (this.appId !== null) {
+      this.send({ type: "register_reply", ok: false, error: { code: "protocol_error", message: "already registered" } })
+      return
+    }
+
     // 1. Look up app-id.
     const app = lookupApp(msg.appId)
     if (!app) {
@@ -213,6 +243,7 @@ export class RelayServer extends Server<Env> {
       return
     }
     this.appId = msg.appId
+    this.appDescription = typeof msg.appDescription === "string" ? msg.appDescription.slice(0, 1024) : ""
     this.agentsMd = msg.agentsMd
     this.tools = validatedTools
     this.toolByRoute.clear()
@@ -238,10 +269,11 @@ export class RelayServer extends Server<Env> {
     const verifier = generateVerifier()
     const token = makeAgentToken(this.env.TOKEN_PREFIX, this.sessionId, verifier)
     const url = `__BASE__/v1/t/${token}/agents.md`  // SDK rewrites __BASE__ to actual host
+    const label = typeof msg.label === "string" ? msg.label.slice(0, 256) : ""
     const minted: MintedToken = {
       token,
       url,
-      label: typeof msg.label === "string" ? msg.label : "",
+      label,
       mintedAt: Date.now(),
     }
     this.validTokens.set(verifier, minted)
@@ -251,7 +283,7 @@ export class RelayServer extends Server<Env> {
       ok: true,
       token,
       url,
-      label: minted.label,
+      label,
       expiresAt: null,
     }
     this.send(reply)
@@ -321,10 +353,28 @@ export class RelayServer extends Server<Env> {
     const url = new URL(req.url)
     const pathname = url.pathname
 
+    // Drain the request body up front. workerd throws an uncaught
+    // "Can't read from request stream after response has been sent" error
+    // (which destabilizes the DO) if we return a Response without consuming
+    // the body. Reading once and reusing avoids that whole class of bugs.
+    let body = ""
+    try {
+      body = await req.text()
+    } catch {
+      // Body unreadable for some reason (already-consumed, etc) — treat as empty
+    }
+
     // Strip the routing prefix `/v1/t/<token>` to get the user-facing path.
     // Worker entry already validated the token format and routed here.
     const m = pathname.match(/^\/v1\/t\/[^/]+(\/.*)?$/)
     const userPath = m?.[1] ?? "/"
+
+    // App-offline check FIRST — when no app is connected, every request
+    // returns the same code regardless of token validity. Avoids leaking
+    // session-lifecycle info ("does this token exist anywhere?").
+    if (!this.appWs || !this.appId) {
+      return errorResponse("app_offline", "no live WS for this session", 503)
+    }
 
     // Token verifier check — re-parse and check against our validTokens set.
     const tokenMatch = pathname.match(/^\/v1\/t\/([^/]+)\//)
@@ -351,7 +401,7 @@ export class RelayServer extends Server<Env> {
         app: {
           id: this.appId,
           name: lookupApp(this.appId ?? "")?.label ?? this.appId,
-          description: "",  // TODO: we don't carry app description through register; future work
+          description: this.appDescription,
         },
         tools: this.tools.map((t) => ({
           method: t.method,
@@ -385,9 +435,6 @@ export class RelayServer extends Server<Env> {
     }
 
     // User tool call
-    if (!this.appWs) {
-      return errorResponse("app_offline", "no live WS", 503)
-    }
     if (this.pending.size >= MAX_INFLIGHT) {
       return errorResponse("too_many_inflight", `max ${MAX_INFLIGHT} concurrent calls`, 429)
     }
@@ -399,7 +446,6 @@ export class RelayServer extends Server<Env> {
     }
 
     const id = crypto.randomUUID()
-    const body = await req.text()
     const headers: Record<string, string> = {}
     // Forward only safe-to-share headers — content-type and any X-* headers.
     for (const [k, v] of req.headers.entries()) {
@@ -416,7 +462,9 @@ export class RelayServer extends Server<Env> {
       this.pending.set(id, { resolve, timer })
     })
 
-    this.send({
+    // Send the tool_call; if send() fails (WS closed mid-flight), reject the
+    // pending entry immediately rather than waiting for the timeout.
+    const sent = this.send({
       type: "tool_call",
       id,
       method,
@@ -424,18 +472,28 @@ export class RelayServer extends Server<Env> {
       body,
       headers,
     })
+    if (!sent) {
+      const p = this.pending.get(id)
+      if (p) {
+        clearTimeout(p.timer)
+        this.pending.delete(id)
+        p.resolve(errorResponse("app_offline", "WS unavailable mid-call", 503))
+      }
+    }
 
     return await promise
   }
 
   // ── Helpers ───────────────────────────────────────────────────────
 
-  private send(frame: Frame): void {
-    if (!this.appWs) return
+  private send(frame: Frame): boolean {
+    if (!this.appWs) return false
     try {
       this.appWs.send(JSON.stringify(frame))
+      return true
     } catch (e) {
       if (this.env.DEBUG === "1") console.log("[DO] send failed:", e)
+      return false
     }
   }
 }

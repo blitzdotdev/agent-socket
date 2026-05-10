@@ -21,15 +21,20 @@ import { lookupApp } from "./apps"
 
 export { RelayServer }
 
+// Validate TOKEN_PREFIX at module-top-level so a misconfigured deploy
+// fails fast rather than returning 500 to the first user request.
+// (Validated again per-isolate; cheap and reads from `env` which isn't
+// available at module scope, hence the lazy first-call check too.)
 let prefixValidated = false
+function ensurePrefixValid(env: Env): void {
+  if (prefixValidated) return
+  validateTokenPrefix(env.TOKEN_PREFIX)
+  prefixValidated = true
+}
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
-    if (!prefixValidated) {
-      validateTokenPrefix(env.TOKEN_PREFIX)
-      prefixValidated = true
-    }
-
+    ensurePrefixValid(env)
     const url = new URL(req.url)
     const pathname = url.pathname
 

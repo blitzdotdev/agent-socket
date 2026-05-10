@@ -47,6 +47,7 @@ export interface RegisterFrame {
   type: "register"
   appId: string
   agentsMd: string
+  appDescription?: string  // surfaced in tools.json's app.description
   tools: ToolDef[]
 }
 
@@ -103,6 +104,8 @@ export interface ToolCallFrame {
   id: string
   method: string
   path: string
+  // body is the agent's raw HTTP body forwarded verbatim as a string.
+  // Apps typically `JSON.parse(body)` if their tool expects JSON.
   body: string
   headers: Record<string, string>
 }
