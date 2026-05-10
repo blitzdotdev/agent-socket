@@ -1,0 +1,10 @@
+{
+  "name": "@agent-socket/harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runtime end-to-end harness for the agent-socket relay + SDK.",
+  "dependencies": {
+    "ws": "^8.20.0"
+  }
+}
