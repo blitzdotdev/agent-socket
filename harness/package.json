@@ -6,6 +6,7 @@
   "description": "Runtime end-to-end harness for the agent-socket relay + SDK.",
   "dependencies": {
     "@agent-socket/sdk": "*",
+    "puppeteer-core": "^23.0.0",
     "ws": "^8.20.0"
   }
 }
