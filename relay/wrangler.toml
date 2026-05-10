@@ -16,4 +16,6 @@ TOKEN_PREFIX = "as"
 MAX_SYNC_TOOL_MS = "30000"
 HEARTBEAT_INTERVAL_MS = "25000"
 HEARTBEAT_TIMEOUT_MS = "50000"
-DEBUG = "1"
+# DEBUG is intentionally not set in default vars — production must NOT have it.
+# For local dev, set it in `.dev.vars` (gitignored) which wrangler picks up
+# only when running `wrangler dev`, never on `wrangler deploy`.
