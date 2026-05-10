@@ -200,7 +200,15 @@
 
     // ── Connect button ───────────────────────────────────────────
     let session = null
-    const baseUrlInput = new URLSearchParams(location.search).get("relay") ?? "http://localhost:8787"
+    // Default base = whatever path prefix lands on /examples/pixel-art-canvas/.
+    // Locally this is just location.origin; behind a path-prefixed tunnel
+    // (anontun: https://x.com/t/ABC/examples/pixel-art-canvas/) it's
+    // location.origin + /t/ABC. Override with ?relay=… .
+    function defaultBase() {
+      const stripped = location.pathname.replace(/\/examples\/[^/]+\/?$/, "")
+      return location.origin + stripped
+    }
+    const baseUrlInput = new URLSearchParams(location.search).get("relay") ?? defaultBase()
 
     async function ensureConnected() {
       if (session && session.connected) return session
