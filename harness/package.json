@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Runtime end-to-end harness for the agent-socket relay + SDK.",
   "dependencies": {
+    "@agent-socket/sdk": "*",
     "ws": "^8.20.0"
   }
 }

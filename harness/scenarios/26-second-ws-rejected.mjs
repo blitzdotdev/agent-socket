@@ -5,9 +5,18 @@
 import { Assert } from "../lib/assert.mjs"
 import { openRawWs } from "../lib/relay.mjs"
 
+// Generate an 8-char Crockford base32 session-id unique to this run so we
+// don't collide with a still-alive DO from a previous harness invocation.
+function freshSession() {
+  const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+  let s = ""
+  for (let i = 0; i < 8; i++) s += ALPHABET[Math.floor(Math.random() * 32)]
+  return s
+}
+
 export default async function () {
   const a = new Assert("26-second-ws-rejected")
-  const SESSION = "Q7R5X2KM"
+  const SESSION = freshSession()
 
   const c1 = openRawWs({ forceSession: SESSION })
   await c1.waitOpen()
