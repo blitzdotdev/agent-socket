@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pixel Art Canvas — agent-socket demo</title>
+  <style>
+    :root {
+      --bg: #0f0f12;
+      --fg: #e8e8ec;
+      --muted: #888;
+      --accent: #f06;
+      --grid-bg: #1a1a1f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 24px;
+      font: 14px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      background: var(--bg);
+      color: var(--fg);
+      min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center; gap: 20px;
+    }
+    h1 { font-size: 18px; margin: 0; letter-spacing: 0.5px; }
+    .status { color: var(--muted); font-size: 12px; min-height: 1.2em; }
+    .status.connected { color: #6f6; }
+    canvas {
+      background: var(--grid-bg);
+      image-rendering: pixelated;
+      box-shadow: 0 0 0 1px #2a2a30, 0 8px 32px rgba(0, 0, 0, 0.4);
+      cursor: crosshair;
+    }
+    .controls { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 8px 16px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+    button:hover { filter: brightness(1.1); }
+    button.ghost {
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid #3a3a40;
+    }
+    dialog {
+      background: var(--grid-bg);
+      color: var(--fg);
+      border: 1px solid #3a3a40;
+      border-radius: 6px;
+      padding: 24px;
+      max-width: 520px;
+    }
+    dialog::backdrop { background: rgba(0,0,0,0.6); }
+    dialog h2 { margin: 0 0 12px; font-size: 16px; }
+    dialog p { color: var(--muted); margin: 0 0 16px; }
+    dialog .url-box {
+      display: flex; gap: 8px;
+      background: #0a0a0d;
+      padding: 8px;
+      border-radius: 4px;
+      margin-bottom: 16px;
+    }
+    dialog input {
+      flex: 1;
+      background: transparent;
+      color: var(--fg);
+      border: none;
+      font: inherit;
+      padding: 4px;
+      outline: none;
+    }
+    dialog .actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .footer { color: var(--muted); font-size: 11px; max-width: 380px; text-align: center; }
+    .footer a { color: var(--fg); }
+  </style>
+</head>
+<body>
+  <h1>Pixel Art Canvas</h1>
+  <div class="status" id="status">Click "Connect with AI" to start.</div>
+  <canvas id="grid" width="512" height="512"></canvas>
+  <div class="controls">
+    <button id="connect">Connect with AI</button>
+    <button class="ghost" id="clear">Clear</button>
+  </div>
+  <p class="footer">
+    Tell an AI chat (Claude, ChatGPT, Gemini) to paint something.
+    The AI will call <code>set_pixel</code> repeatedly and you'll see the image appear here.
+  </p>
+
+  <dialog id="link-modal">
+    <h2>Connect your AI chat</h2>
+    <p>Copy this link and paste it into Claude, ChatGPT, or any AI chat. Then ask the AI to paint something.</p>
+    <div class="url-box">
+      <input id="link-input" readonly />
+      <button id="copy">Copy</button>
+    </div>
+    <p style="font-size:12px; color:var(--muted);">Try: <em>"paste-the-link, then paint a sunset"</em></p>
+    <div class="actions">
+      <button class="ghost" id="close-modal">Close</button>
+    </div>
+  </dialog>
+
+  <script type="module">
+    import { connect, defaultAgentsMd } from "../../sdk/dist/index.js"
+
+    // ── Pixel-grid state (persisted to localStorage) ─────────────
+    const SIZE = 32
+    const CELL = 16  // displayed cell size (canvas is SIZE * CELL = 512px)
+    const STORAGE_KEY = "pixel-art-canvas:grid:v1"
+
+    const canvas = document.getElementById("grid")
+    const ctx = canvas.getContext("2d")
+    const statusEl = document.getElementById("status")
+
+    function newBlankGrid() {
+      return Array.from({ length: SIZE }, () => Array(SIZE).fill("#0f0f12"))
+    }
+    function loadGrid() {
+      try {
+        const s = localStorage.getItem(STORAGE_KEY)
+        if (s) {
+          const g = JSON.parse(s)
+          if (Array.isArray(g) && g.length === SIZE) return g
+        }
+      } catch {}
+      return newBlankGrid()
+    }
+    function saveGrid() { localStorage.setItem(STORAGE_KEY, JSON.stringify(grid)) }
+
+    let grid = loadGrid()
+    function redraw() {
+      for (let y = 0; y < SIZE; y++) {
+        for (let x = 0; x < SIZE; x++) {
+          ctx.fillStyle = grid[y][x]
+          ctx.fillRect(x * CELL, y * CELL, CELL, CELL)
+        }
+      }
+    }
+    redraw()
+
+    function clearGrid() {
+      grid = newBlankGrid()
+      saveGrid()
+      redraw()
+    }
+
+    document.getElementById("clear").addEventListener("click", clearGrid)
+
+    // ── Tool handlers ────────────────────────────────────────────
+    const tools = [
+      {
+        path: "/set_pixel",
+        description: "Paint one pixel at (x, y) with the given CSS color.",
+        input_schema: {
+          type: "object",
+          required: ["x", "y", "color"],
+          properties: {
+            x: { type: "integer", minimum: 0, maximum: SIZE - 1 },
+            y: { type: "integer", minimum: 0, maximum: SIZE - 1 },
+            color: { type: "string", description: "CSS color: #rgb, #rrggbb, or named." },
+          },
+        },
+        handler: async ({ body }) => {
+          let parsed
+          try { parsed = JSON.parse(body || "{}") } catch { parsed = {} }
+          const { x, y, color } = parsed
+          if (typeof x !== "number" || typeof y !== "number" || typeof color !== "string") {
+            return { status: 400, body: { error: { code: "bad_input", message: "expected { x: int, y: int, color: string }" } } }
+          }
+          if (x < 0 || x >= SIZE || y < 0 || y >= SIZE) {
+            return { status: 400, body: { error: { code: "out_of_range", message: `x and y must be 0..${SIZE - 1}` } } }
+          }
+          grid[y][x] = color
+          saveGrid()
+          // Draw just the one cell for efficiency
+          ctx.fillStyle = color
+          ctx.fillRect(x * CELL, y * CELL, CELL, CELL)
+          return { ok: true }
+        },
+      },
+      {
+        path: "/clear",
+        description: "Wipe the entire canvas to dark background.",
+        handler: async () => {
+          clearGrid()
+          return { ok: true }
+        },
+      },
+      {
+        path: "/get_grid",
+        description: "Read the current grid state. Returns { size, pixels } where pixels is a SIZE x SIZE 2D array of CSS color strings.",
+        handler: async () => ({ size: SIZE, pixels: grid }),
+      },
+    ]
+
+    // ── Connect button ───────────────────────────────────────────
+    let session = null
+    const baseUrlInput = new URLSearchParams(location.search).get("relay") ?? "http://localhost:8787"
+
+    async function ensureConnected() {
+      if (session && session.connected) return session
+      statusEl.textContent = "Connecting…"
+      session = await connect({
+        appId: "as_app_anon",
+        appDescription: "A 32x32 pixel canvas the AI can paint by calling set_pixel, clear, and get_grid.",
+        agentsMd: defaultAgentsMd({
+          appName: "Pixel Art Canvas",
+          appDescription: "A 32x32 grid where each cell is one pixel. Paint by calling /set_pixel with x/y/color. Read state with /get_grid before iterating.",
+          agentsMdUrl: "__BASE__/v1/t/<token>/agents.md",  // SDK can't fill this in for a fresh mint; use a placeholder phrase
+          capabilities: [
+            "Paint individual pixels with /set_pixel { x, y, color }",
+            "Wipe everything with /clear",
+            "Read the current grid with /get_grid",
+          ],
+          limitations: [
+            "Cannot resize the grid (always 32x32)",
+            "Cannot save/load images server-side",
+          ],
+          conventions: "Plan a small image first (sketch in your head), then emit set_pixel calls in batches. CSS colors like '#f06' or 'red' work. Aim for recognizable shapes — 32x32 is small.",
+        }),
+        tools,
+        baseUrl: baseUrlInput,
+        autoReconnect: true,
+        onSessionChanged: ({ tokensRemapped }) => {
+          // Update any displayed paste link if open
+          if (linkModal.open && linkInput.value && tokensRemapped.has(linkInput.value)) {
+            linkInput.value = tokensRemapped.get(linkInput.value)
+            statusEl.textContent = "Reconnected — link updated. Re-paste in your AI chat."
+          }
+        },
+      })
+      statusEl.classList.add("connected")
+      statusEl.textContent = `Connected. Session ${session.sessionId}.`
+      return session
+    }
+
+    const linkModal = document.getElementById("link-modal")
+    const linkInput = document.getElementById("link-input")
+    const copyBtn = document.getElementById("copy")
+    const closeModal = document.getElementById("close-modal")
+
+    document.getElementById("connect").addEventListener("click", async () => {
+      try {
+        const s = await ensureConnected()
+        const link = await s.mintAgentToken({ label: `user-${new Date().toISOString().slice(11, 19)}` })
+        linkInput.value = link.url
+        linkModal.showModal()
+        linkInput.select()
+      } catch (e) {
+        statusEl.textContent = `Error: ${e.message}`
+        console.error(e)
+      }
+    })
+    copyBtn.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(linkInput.value); copyBtn.textContent = "Copied!" }
+      catch { linkInput.select(); document.execCommand("copy") }
+      setTimeout(() => copyBtn.textContent = "Copy", 1500)
+    })
+    closeModal.addEventListener("click", () => linkModal.close())
+
+    // ── Test hook for harness ────────────────────────────────────
+    // Exposed when ?harness=1 to avoid leaking in normal use.
+    const params = new URLSearchParams(location.search)
+    if (params.get("harness") === "1") {
+      window.__harness = {
+        ready: false,
+        get sessionId() { return session?.sessionId ?? null },
+        get url() { return linkInput.value || null },
+        async connect() {
+          await ensureConnected()
+          return session.sessionId
+        },
+        async mintToken(label = "harness") {
+          await ensureConnected()
+          const link = await session.mintAgentToken({ label })
+          linkInput.value = link.url
+          return link.url
+        },
+        canvasState() { return grid },
+        getPixel(x, y) { return grid[y]?.[x] ?? null },
+        clearGrid,
+      }
+      window.__harness.ready = true
+    }
+
+    // ── Auto-connect mode (for screenshot-based testing) ─────────
+    // When ?autoconnect=1, the demo connects and mints a token on load,
+    // and writes the URL into a visible element so a screenshot tool can
+    // scrape it from page.html.
+    if (params.get("autoconnect") === "1") {
+      ensureConnected().then(async (s) => {
+        const link = await s.mintAgentToken({ label: "autoconnect" })
+        linkInput.value = link.url
+        // Also expose to scraper:
+        const el = document.createElement("code")
+        el.id = "auto-url"
+        el.textContent = link.url
+        el.style.cssText = "display:block; margin-top:12px; padding:6px; background:#222; color:#6f6; word-break:break-all; max-width:520px; font-size:11px;"
+        statusEl.after(el)
+        statusEl.textContent = "Auto-connected. URL ready to scrape."
+      }).catch((e) => {
+        statusEl.textContent = `Auto-connect failed: ${e.message}`
+      })
+    }
+  </script>
+</body>
+</html>

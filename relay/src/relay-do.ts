@@ -353,6 +353,13 @@ export class RelayServer extends Server<Env> {
     const url = new URL(req.url)
     const pathname = url.pathname
 
+    // Debug-only inner path from worker.ts → force-close the WS. Token
+    // validation does not apply (the path doesn't follow /v1/t/<token>/...).
+    if (this.env.DEBUG === "1" && pathname === "/_as_kill-ws") {
+      try { this.appWs?.close(1011, "killed by debug endpoint") } catch {}
+      return new Response("ok", { status: 200 })
+    }
+
     // Drain the request body up front. workerd throws an uncaught
     // "Can't read from request stream after response has been sent" error
     // (which destabilizes the DO) if we return a Response without consuming
@@ -433,6 +440,8 @@ export class RelayServer extends Server<Env> {
     if (userPath.startsWith("/_as_")) {
       return errorResponse("not_found", "unknown internal path", 404)
     }
+    // Note: the debug-only kill-ws path is matched at the start of onRequest
+    // before token validation, see the early-return below.
 
     // User tool call
     if (this.pending.size >= MAX_INFLIGHT) {
