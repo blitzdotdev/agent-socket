@@ -94,16 +94,23 @@ async function handleDebug(req: Request, env: Env, pathname: string): Promise<Re
     return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } })
   }
   if (pathname === "/_debug/apps") {
-    // Echo the loaded apps registry (helpful when debugging registration).
     const sample = lookupApp("as_app_anon")
     return new Response(JSON.stringify({ as_app_anon: sample }), {
       status: 200,
       headers: { "content-type": "application/json" },
     })
   }
-  // Future: /_debug/sessions and /_debug/sessions/<id>/kill-ws would
-  // require a registry DO since CF doesn't expose "list live DOs" as a
-  // primitive. v0 punts on this — those scenarios in the harness can
-  // skip until we wire up a registry. For now they're just 404.
+  // POST /_debug/kill-ws/<sessionId> — force-closes that session's WS.
+  // Drives the harness's reconnect scenarios. Never enabled in prod.
+  const km = pathname.match(/^\/_debug\/kill-ws\/([0-9A-HJKMNP-TV-Z]{8})$/)
+  if (km && req.method === "POST") {
+    const sessionId = km[1]!
+    const id = env.RELAY.idFromName(sessionId)
+    // Forward to the DO via an internal-only path. Reuses /_as_kill-ws inside
+    // the DO so the public agent surface doesn't accidentally hit it.
+    const innerUrl = new URL(req.url)
+    innerUrl.pathname = "/_as_kill-ws"
+    return env.RELAY.get(id).fetch(new Request(innerUrl.toString(), { method: "POST" }))
+  }
   return errorResponse("not_found", "unknown debug path", 404)
 }
