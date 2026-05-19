@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>AS Extension E2E Test Page</title>
+  <style>
+    body { font: 14px ui-monospace, monospace; background: #111; color: #eee; max-width: 720px; margin: 24px auto; padding: 0 16px; }
+    h1 { font-size: 18px; }
+    .card { background: #222; border: 1px solid #333; padding: 12px; margin: 10px 0; border-radius: 4px; }
+    button { background: #f06; color: #fff; border: 0; padding: 6px 12px; font: inherit; cursor: pointer; border-radius: 3px; }
+    button.secondary { background: #444; }
+    input, textarea { background: #111; color: #eee; border: 1px solid #444; padding: 6px; font: inherit; width: 100%; box-sizing: border-box; }
+    .item { padding: 4px 0; border-bottom: 1px dashed #333; }
+    #counter { font-size: 24px; font-weight: bold; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1 id="page-title">AS Extension E2E Test Page</h1>
+
+  <div class="card">
+    <h2>Counter</h2>
+    <div>Count: <span id="counter">0</span></div>
+    <button id="inc-btn">Increment</button>
+    <button id="dec-btn" class="secondary">Decrement</button>
+    <button id="reset-btn" class="secondary">Reset</button>
+  </div>
+
+  <div class="card">
+    <h2>Form</h2>
+    <label>Name: <input id="name-input" type="text" placeholder="Enter your name"></label>
+    <label>Email: <input id="email-input" type="email" placeholder="you@example.com"></label>
+    <label>Bio: <textarea id="bio-input" rows="3" placeholder="Tell us..."></textarea></label>
+    <button id="submit-btn">Submit</button>
+    <div id="submitted" class="hidden">Submitted: <span id="submitted-data"></span></div>
+  </div>
+
+  <div class="card">
+    <h2>Items (dynamic list)</h2>
+    <ul id="item-list">
+      <li class="item" data-id="1">Apple <button class="delete-btn" data-id="1">x</button></li>
+      <li class="item" data-id="2">Banana <button class="delete-btn" data-id="2">x</button></li>
+      <li class="item" data-id="3">Cherry <button class="delete-btn" data-id="3">x</button></li>
+    </ul>
+    <button id="add-item-btn">Add Item</button>
+  </div>
+
+  <div class="card">
+    <h2>Delayed reveal</h2>
+    <button id="reveal-btn">Reveal after 800ms</button>
+    <div id="revealed" class="hidden">The secret is: <code>swordfish</code></div>
+  </div>
+
+  <script>
+    let count = 0
+    const counter = document.getElementById("counter")
+    document.getElementById("inc-btn").onclick = () => { count++; counter.textContent = count }
+    document.getElementById("dec-btn").onclick = () => { count--; counter.textContent = count }
+    document.getElementById("reset-btn").onclick = () => { count = 0; counter.textContent = "0" }
+
+    document.getElementById("submit-btn").onclick = () => {
+      const data = {
+        name: document.getElementById("name-input").value,
+        email: document.getElementById("email-input").value,
+        bio: document.getElementById("bio-input").value,
+      }
+      document.getElementById("submitted-data").textContent = JSON.stringify(data)
+      document.getElementById("submitted").classList.remove("hidden")
+    }
+
+    let nextId = 4
+    document.getElementById("item-list").addEventListener("click", (e) => {
+      if (e.target.classList.contains("delete-btn")) {
+        const id = e.target.dataset.id
+        document.querySelector(`li[data-id="${id}"]`).remove()
+      }
+    })
+    document.getElementById("add-item-btn").onclick = () => {
+      const id = nextId++
+      const li = document.createElement("li")
+      li.className = "item"
+      li.dataset.id = id
+      li.innerHTML = `Item-${id} <button class="delete-btn" data-id="${id}">x</button>`
+      document.getElementById("item-list").appendChild(li)
+    }
+
+    document.getElementById("reveal-btn").onclick = () => {
+      setTimeout(() => document.getElementById("revealed").classList.remove("hidden"), 800)
+    }
+
+    console.log("test page loaded:", document.title)
+    window.__testpage = { version: 1, getCount: () => count }
+  </script>
+</body>
+</html>

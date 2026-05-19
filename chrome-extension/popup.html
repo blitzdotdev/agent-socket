@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Agent Socket</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <h1>Agent Socket</h1>
+    <div class="dot" id="status-dot" data-status="idle"></div>
+  </header>
+
+  <section id="status-card">
+    <div class="row">
+      <span class="muted">Status:</span>
+      <span id="status-text">idle</span>
+    </div>
+    <div class="row">
+      <span class="muted">Tab:</span>
+      <span id="tab-host" class="ellipsis">—</span>
+    </div>
+    <div class="row">
+      <span class="muted">Profile:</span>
+      <span id="profile-name">—</span>
+    </div>
+  </section>
+
+  <div class="actions">
+    <button id="connect-btn" class="primary">Connect this tab</button>
+    <button id="disconnect-btn" class="ghost" hidden>Disconnect</button>
+  </div>
+
+  <section id="link-card" hidden>
+    <div class="muted small">Paste this URL into your AI chat:</div>
+    <div class="url-row">
+      <input id="link-input" readonly />
+      <button id="copy-btn">Copy</button>
+    </div>
+    <div class="muted small" id="copy-hint">Then ask the AI to do something on this page.</div>
+  </section>
+
+  <details id="advanced">
+    <summary>Settings</summary>
+    <div class="row">
+      <label for="relay-input" class="muted small">Relay base URL</label>
+    </div>
+    <div class="url-row">
+      <input id="relay-input" placeholder="https://agentsocket.dev" />
+      <button id="save-relay">Save</button>
+    </div>
+    <div class="row">
+      <span class="muted small">Saved profiles:</span>
+    </div>
+    <ul id="profiles-list"></ul>
+  </details>
+
+  <footer>
+    <div class="muted small" id="error-msg"></div>
+  </footer>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

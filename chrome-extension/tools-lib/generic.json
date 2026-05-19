@@ -1,0 +1,5 @@
+{
+  "host": "*",
+  "notes": "No site-specific profile is loaded. Use the universal tools — start with /page_info, then /eval or /dom_query to figure out the page structure, then /click, /fill, /wait_for to drive it. If you discover stable interactions worth reusing, call /save_site_profile to persist them.",
+  "tools": []
+}
