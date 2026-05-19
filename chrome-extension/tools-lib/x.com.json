@@ -1,0 +1,109 @@
+{
+  "host": "x.com",
+  "notes": "X / Twitter web UI. The user is logged in; tools act as them. Read tools (/x_me, /x_timeline, /x_get_tweet) are safe; /x_compose_draft and /x_like_tweet have side effects but are reversible; /x_post_now is irreversible — it publishes a tweet. Many pages share selectors; if a tool returns count: 0, you're probably on the wrong route — navigate first with /x_open_home, /x_open_profile, or /x_open_tweet.",
+  "tools": [
+    {
+      "path": "/x_me",
+      "description": "Return info about the logged-in user: handle, display name, profile URL. Works on any X page.",
+      "input_schema": { "type": "object", "properties": {} },
+      "code": "const profileLink = document.querySelector('[data-testid=AppTabBar_Profile_Link]');\nconst href = profileLink?.getAttribute('href') ?? null;\nconst handle = href ? href.replace(/^\\//, '') : null;\nconst displayName = document.querySelector('[data-testid=SideNav_AccountSwitcher_Button] [dir]')?.innerText?.split('\\n')[0] ?? null;\nreturn { handle, display_name: displayName, profile_url: handle ? `https://x.com/${handle}` : null };"
+    },
+    {
+      "path": "/x_timeline",
+      "description": "Read visible tweets from the current page (home feed, profile, search results, etc). Returns text, author handle, timestamp, permalink, and reply/retweet/like counts. Set limit to cap the number returned (default 10).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "integer", "minimum": 1, "maximum": 50, "default": 10 }
+        }
+      },
+      "code": "const limit = args.limit ?? 10;\nconst articles = Array.from(document.querySelectorAll('article[data-testid=tweet]')).slice(0, limit);\nfunction count(article, testid) {\n  const btn = article.querySelector(`[data-testid=${testid}]`);\n  if (!btn) return null;\n  const t = btn.innerText.trim();\n  return t || '0';\n}\nfunction parsePermalink(article) {\n  const a = article.querySelector('a[href*=\"/status/\"]');\n  if (!a) return { handle: null, status_id: null, url: null };\n  const href = a.getAttribute('href');\n  const m = href.match(/^\\/([^/]+)\\/status\\/(\\d+)/);\n  return { handle: m?.[1] ?? null, status_id: m?.[2] ?? null, url: m ? `https://x.com${href}` : null };\n}\nconst out = articles.map((a, i) => {\n  const text = a.querySelector('[data-testid=tweetText]')?.innerText ?? '';\n  const time = a.querySelector('time')?.getAttribute('datetime') ?? null;\n  const link = parsePermalink(a);\n  return {\n    index: i,\n    text: text.slice(0, 500),\n    author_handle: link.handle,\n    posted_at: time,\n    url: link.url,\n    status_id: link.status_id,\n    counts: { reply: count(a, 'reply'), retweet: count(a, 'retweet'), like: count(a, 'unlike') ?? count(a, 'like') },\n    liked: !!a.querySelector('[data-testid=unlike]')\n  };\n});\nreturn { page: location.pathname, count: out.length, tweets: out };"
+    },
+    {
+      "path": "/x_get_tweet_thread",
+      "description": "On a /[handle]/status/[id] page, return the focal tweet + its visible replies. Navigate to the tweet first if needed (e.g. via /x_open_tweet).",
+      "input_schema": { "type": "object", "properties": { "limit": { "type": "integer", "default": 20, "maximum": 100 } } },
+      "code": "if (!/\\/status\\/\\d+/.test(location.pathname)) {\n  return { error: 'not on a tweet status page', current: location.pathname, hint: 'call /x_open_tweet { handle, id } first' };\n}\nconst limit = args.limit ?? 20;\nconst arts = Array.from(document.querySelectorAll('article[data-testid=tweet]')).slice(0, limit);\nconst parsed = arts.map((a, i) => {\n  const link = a.querySelector('a[href*=\"/status/\"]')?.getAttribute('href') ?? '';\n  const m = link.match(/^\\/([^/]+)\\/status\\/(\\d+)/);\n  return {\n    index: i,\n    text: a.querySelector('[data-testid=tweetText]')?.innerText?.slice(0, 500) ?? '',\n    author: m?.[1] ?? null,\n    status_id: m?.[2] ?? null,\n    posted_at: a.querySelector('time')?.getAttribute('datetime') ?? null,\n    liked: !!a.querySelector('[data-testid=unlike]')\n  };\n});\nreturn { url: location.href, count: parsed.length, tweets: parsed };"
+    },
+    {
+      "path": "/x_open_home",
+      "description": "Navigate to the home timeline (/home). The handler does not wait for full load — pair with /wait_for if you need to be sure.",
+      "input_schema": { "type": "object", "properties": {} },
+      "code": "if (location.pathname !== '/home') location.assign('/home');\nreturn { navigating_to: '/home' };"
+    },
+    {
+      "path": "/x_open_profile",
+      "description": "Navigate to a user's profile page by handle (without leading @).",
+      "input_schema": { "type": "object", "required": ["handle"], "properties": { "handle": { "type": "string", "description": "Username without @, e.g. 'karpathy'" } } },
+      "code": "const h = String(args.handle ?? '').replace(/^@/, '').trim();\nif (!h) return { error: 'handle required' };\nlocation.assign('/' + encodeURIComponent(h));\nreturn { navigating_to: '/' + h };"
+    },
+    {
+      "path": "/x_open_tweet",
+      "description": "Navigate to a specific tweet. Provide either { handle, id } or { url }.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "handle": { "type": "string" },
+          "id": { "type": "string", "description": "Tweet status id (digits)" },
+          "url": { "type": "string", "description": "Full x.com URL (overrides handle+id)" }
+        }
+      },
+      "code": "let target = args.url;\nif (!target && args.handle && args.id) {\n  target = `/${String(args.handle).replace(/^@/, '')}/status/${args.id}`;\n}\nif (!target) return { error: 'need { url } or { handle, id }' };\nlocation.assign(target);\nreturn { navigating_to: target };"
+    },
+    {
+      "path": "/x_search",
+      "description": "Run a search query on x.com. Navigates to /search?q=...&src=typed_query.",
+      "input_schema": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string" },
+          "tab": { "type": "string", "enum": ["top", "latest", "people", "photos", "videos"], "default": "top" }
+        }
+      },
+      "code": "const q = String(args.query ?? '').trim();\nif (!q) return { error: 'query required' };\nconst tab = args.tab ?? 'top';\nconst f = tab === 'latest' ? '&f=live' : tab === 'people' ? '&f=user' : tab === 'photos' ? '&f=image' : tab === 'videos' ? '&f=video' : '';\nconst url = `/search?q=${encodeURIComponent(q)}&src=typed_query${f}`;\nlocation.assign(url);\nreturn { navigating_to: url };"
+    },
+    {
+      "path": "/x_compose_draft",
+      "description": "Open the compose dialog (if not already open) and fill the tweet textarea WITHOUT posting. Returns once the text is in the box. Call /x_post_now afterwards to publish. The compose modal uses DraftJS so this tool uses execCommand('insertText') — more reliable than direct value assignment.",
+      "input_schema": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string", "description": "Tweet body. Max ~280 chars for non-premium accounts." }
+        }
+      },
+      "code": "async function waitFor(selectorFn, timeoutMs) {\n  const start = Date.now();\n  while (Date.now() - start < timeoutMs) {\n    const el = selectorFn();\n    if (el) return el;\n    await new Promise(r => setTimeout(r, 80));\n  }\n  return null;\n}\nconst text = String(args.text ?? '');\nif (!text) return { error: 'text required' };\nlet textarea = document.querySelector('[data-testid=tweetTextarea_0]');\nif (!textarea) {\n  const btn = document.querySelector('[data-testid=SideNav_NewTweet_Button]');\n  if (!btn) return { error: 'no compose button and no inline textarea — try /x_open_home first' };\n  btn.click();\n  textarea = await waitFor(() => document.querySelector('[data-testid=tweetTextarea_0]'), 3000);\n  if (!textarea) return { error: 'compose modal did not open within 3s' };\n}\ntextarea.focus();\n// DraftJS contenteditable — execCommand is still the most reliable insertion path.\ndocument.execCommand('insertText', false, text);\nreturn { ok: true, char_count: text.length, post_button_visible: !!document.querySelector('[data-testid=tweetButton], [data-testid=tweetButtonInline]') };"
+    },
+    {
+      "path": "/x_post_now",
+      "description": "Publish the currently-drafted tweet by clicking the active Post button. Irreversible. Call /x_compose_draft first to fill the textarea. Returns immediately after clicking — pair with a short /wait_for if you need to confirm submission.",
+      "input_schema": { "type": "object", "properties": {} },
+      "code": "const btn = document.querySelector('[data-testid=tweetButton]:not([aria-disabled=true])') || document.querySelector('[data-testid=tweetButtonInline]:not([aria-disabled=true])');\nif (!btn) {\n  const anyBtn = document.querySelector('[data-testid=tweetButton], [data-testid=tweetButtonInline]');\n  return { error: 'no enabled post button found', any_button_visible: !!anyBtn, hint: 'maybe the draft is empty or the button is disabled (rate limit, login wall)' };\n}\nbtn.click();\nreturn { clicked: true, button_testid: btn.getAttribute('data-testid') };"
+    },
+    {
+      "path": "/x_like_tweet",
+      "description": "Like (or unlike) a visible tweet by its index on the current page. Use /x_timeline to enumerate first and pick the index. Default action 'toggle' — like if not liked, unlike if already liked.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "index": { "type": "integer", "minimum": 0, "default": 0 },
+          "action": { "type": "string", "enum": ["like", "unlike", "toggle"], "default": "toggle" }
+        }
+      },
+      "code": "const idx = args.index ?? 0;\nconst action = args.action ?? 'toggle';\nconst articles = document.querySelectorAll('article[data-testid=tweet]');\nconst article = articles[idx];\nif (!article) return { error: `no tweet at index ${idx}`, available_count: articles.length };\nconst likeBtn = article.querySelector('[data-testid=like]');\nconst unlikeBtn = article.querySelector('[data-testid=unlike]');\nconst isLiked = !!unlikeBtn;\nlet btn;\nif (action === 'like') btn = isLiked ? null : likeBtn;\nelse if (action === 'unlike') btn = isLiked ? unlikeBtn : null;\nelse btn = unlikeBtn || likeBtn;\nif (!btn) return { ok: true, no_op: true, already: isLiked ? 'liked' : 'unliked', action };\nbtn.click();\nreturn { ok: true, clicked: btn.getAttribute('data-testid'), was_liked: isLiked, now_liked: !isLiked };"
+    },
+    {
+      "path": "/x_open_notifications",
+      "description": "Navigate to /notifications. Pair with /x_timeline to read the notifications list as 'tweets' (they share article markup for mentions/replies).",
+      "input_schema": { "type": "object", "properties": {} },
+      "code": "location.assign('/notifications');\nreturn { navigating_to: '/notifications' };"
+    },
+    {
+      "path": "/x_open_bookmarks",
+      "description": "Navigate to /i/bookmarks. Use /x_timeline afterwards to read the bookmarked tweets.",
+      "input_schema": { "type": "object", "properties": {} },
+      "code": "location.assign('/i/bookmarks');\nreturn { navigating_to: '/i/bookmarks' };"
+    }
+  ]
+}

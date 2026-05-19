@@ -15,6 +15,9 @@ const relayInput = $("#relay-input")
 const saveRelay = $("#save-relay")
 const profilesList = $("#profiles-list")
 const errorMsg = $("#error-msg")
+const userScriptsWarn = $("#user-scripts-warn")
+const openExtDetailsBtn = $("#open-ext-details")
+const recheckUserScriptsBtn = $("#recheck-user-scripts")
 
 function setStatus(s) {
   const code = s?.status ?? "idle"
@@ -68,7 +71,26 @@ async function refresh() {
   // Relay
   const stored = await chrome.storage.local.get("relay_base")
   relayInput.value = stored.relay_base ?? ""
+
+  // userScripts toggle status — banner appears if disabled.
+  const us = await chrome.runtime.sendMessage({ type: "check_user_scripts" })
+  if (us?.ok && !us.available) {
+    userScriptsWarn.hidden = false
+  } else {
+    userScriptsWarn.hidden = true
+  }
 }
+
+openExtDetailsBtn?.addEventListener("click", async () => {
+  // chrome:// URLs can't be opened from a popup directly; create a tab.
+  const id = chrome.runtime.id
+  await chrome.tabs.create({ url: `chrome://extensions/?id=${id}` })
+})
+
+recheckUserScriptsBtn?.addEventListener("click", async () => {
+  recheckUserScriptsBtn.disabled = true
+  try { await refresh() } finally { recheckUserScriptsBtn.disabled = false }
+})
 
 connectBtn.addEventListener("click", async () => {
   setError("")
