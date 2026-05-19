@@ -109,4 +109,4 @@ Scenarios are layered: 01–09 smoke, 10–19 raw WS protocol, 20–29 SDK + con
 
 ## License
 
-TBD.
+Apache 2
