@@ -1,0 +1,18 @@
+{
+  "host": "news.ycombinator.com",
+  "notes": "Hacker News (news.ycombinator.com). The front page is a list of stories in a table; each story has a title, link, score, author, comment-count.",
+  "tools": [
+    {
+      "path": "/hn_top_stories",
+      "description": "Return up to N top stories from the current HN page with rank, title, url, score, author, comments.",
+      "input_schema": { "type": "object", "properties": { "limit": { "type": "integer", "default": 30, "maximum": 100 } } },
+      "code": "const rows = document.querySelectorAll('tr.athing');\nconst out = [];\nfor (const r of Array.from(rows).slice(0, args.limit ?? 30)) {\n  const titleA = r.querySelector('.titleline > a');\n  const rank = r.querySelector('.rank')?.textContent?.replace('.', '').trim();\n  const subtext = r.nextElementSibling?.querySelector('.subtext');\n  const score = subtext?.querySelector('.score')?.textContent;\n  const author = subtext?.querySelector('.hnuser')?.textContent;\n  const commentsA = subtext?.querySelector('a:last-child');\n  out.push({\n    rank: rank ? Number(rank) : null,\n    title: titleA?.textContent?.trim(),\n    url: titleA?.getAttribute('href'),\n    score,\n    author,\n    comments_text: commentsA?.textContent?.trim(),\n    item_id: r.id,\n  });\n}\nreturn { stories: out };"
+    },
+    {
+      "path": "/hn_open_story",
+      "description": "Open the comments page for a story by its item_id (from /hn_top_stories). Sets active tab URL.",
+      "input_schema": { "type": "object", "required": ["item_id"], "properties": { "item_id": { "type": "string" } } },
+      "code": "location.href = 'https://news.ycombinator.com/item?id=' + encodeURIComponent(args.item_id);\nreturn { navigating_to: location.href };"
+    }
+  ]
+}

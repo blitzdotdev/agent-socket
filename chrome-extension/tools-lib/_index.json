@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "host_match": "github.com",
+      "file": "github.com.json",
+      "description": "GitHub repo browsing, PR navigation, issue helpers."
+    },
+    {
+      "host_match": "news.ycombinator.com",
+      "file": "news.ycombinator.com.json",
+      "description": "Hacker News story list, comments, voting."
+    },
+    {
+      "host_match": "*",
+      "file": "generic.json",
+      "description": "Fallback hints for any site."
+    }
+  ]
+}
