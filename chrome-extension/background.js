@@ -162,6 +162,26 @@ async function snapshot() {
   }
 }
 
+// ── userScripts availability check ──────────────────────────────────
+// chrome.userScripts is the privileged API used by /eval to bypass page CSP.
+// It exists only when the user has toggled "Allow User Scripts" on this
+// extension in chrome://extensions. Calling getScripts() is the cheapest way
+// to distinguish (a) API not present (b) present but user-gated off (c) ready.
+async function checkUserScripts() {
+  if (!chrome.userScripts || typeof chrome.userScripts.execute !== "function") {
+    return { available: false, reason: "api_unavailable",
+      hint: "Your Chrome version doesn't expose chrome.userScripts.execute (need Chrome 135+)." }
+  }
+  try {
+    await chrome.userScripts.getScripts()
+    return { available: true }
+  } catch (e) {
+    return { available: false, reason: "user_toggle_off",
+      hint: "Open chrome://extensions, find Agent Socket → Details → enable 'Allow User Scripts'.",
+      error: e?.message ?? String(e) }
+  }
+}
+
 // ── popup messaging ─────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -181,6 +201,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       } else if (msg?.type === "set_relay_base") {
         await chrome.storage.local.set({ relay_base: msg.base })
         sendResponse({ ok: true })
+      } else if (msg?.type === "check_user_scripts") {
+        sendResponse({ ok: true, ...(await checkUserScripts()) })
       } else {
         sendResponse({ ok: false, error: `unknown message: ${msg?.type}` })
       }

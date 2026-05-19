@@ -11,6 +11,18 @@
     <div class="dot" id="status-dot" data-status="idle"></div>
   </header>
 
+  <div id="user-scripts-warn" class="warn-banner" hidden>
+    <div class="warn-title">/eval is disabled on CSP-strict sites</div>
+    <div class="warn-body">
+      To let the AI run JS on x.com, Google, GitHub, etc., enable
+      <b>Allow User Scripts</b> on this extension.
+    </div>
+    <div class="warn-actions">
+      <button id="open-ext-details" class="ghost small">Open extension details</button>
+      <button id="recheck-user-scripts" class="ghost small">Re-check</button>
+    </div>
+  </div>
+
   <section id="status-card">
     <div class="row">
       <span class="muted">Status:</span>

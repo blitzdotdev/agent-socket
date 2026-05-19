@@ -20,6 +20,58 @@ function runtimeError(e) {
   return { status: 500, body: { error: { code: "runtime_error", message: e?.message ?? String(e) } } }
 }
 
+/**
+ * Build a JS source string for chrome.userScripts.execute.
+ * Inlines safeSerialize so the script is self-contained, wraps the user's
+ * code in an async IIFE so `return` works, and races against a timeout.
+ * The returned promise resolves to { ok, value } or { __err, __stack }.
+ */
+function buildEvalScript(userCode, timeoutMs) {
+  // Note: userCode is inlined directly into the script source (no new Function()),
+  // which is the whole point — that's why this path bypasses page CSP.
+  return `(async () => {
+  function safeSerialize(v, depth) {
+    if (depth == null) depth = 0;
+    if (depth > 6) return "[max depth]";
+    if (v === null || v === undefined) return v;
+    const t = typeof v;
+    if (t === "string" || t === "number" || t === "boolean") return v;
+    if (t === "function") return "[Function " + (v.name || "anonymous") + "]";
+    if (t === "bigint") return v.toString() + "n";
+    if (typeof Element !== "undefined" && v instanceof Element) {
+      return { __type: "Element", tag: v.tagName.toLowerCase(),
+        id: v.id || undefined,
+        classes: (typeof v.className === "string") ? v.className : undefined,
+        text: (v.textContent || "").slice(0, 200) };
+    }
+    if ((typeof NodeList !== "undefined" && v instanceof NodeList) ||
+        (typeof HTMLCollection !== "undefined" && v instanceof HTMLCollection)) {
+      return Array.from(v).slice(0, 50).map(x => safeSerialize(x, depth + 1));
+    }
+    if (Array.isArray(v)) return v.slice(0, 200).map(x => safeSerialize(x, depth + 1));
+    if (t === "object") {
+      const out = {}; let i = 0;
+      for (const k of Object.keys(v)) {
+        if (i++ > 100) { out.__truncated = true; break; }
+        try { out[k] = safeSerialize(v[k], depth + 1); } catch (_) { out[k] = "[unserializable]"; }
+      }
+      return out;
+    }
+    return String(v);
+  }
+  const __timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("eval timeout")), ${timeoutMs}));
+  const __work = (async () => {
+${userCode}
+  })();
+  try {
+    const value = await Promise.race([__work, __timeout]);
+    return { ok: true, value: safeSerialize(value) };
+  } catch (e) {
+    return { __err: (e && e.message) ? e.message : String(e), __stack: e && e.stack };
+  }
+})()`
+}
+
 /** Execute a function in the page's main world on the active tab. */
 async function execInPage(getActiveTabId, fn, args, opts) {
   const tabId = await getActiveTabId()
@@ -60,6 +112,49 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
         const args = parseBody(body)
         if (typeof args.code !== "string") return bad("expected { code: string }")
         const timeoutMs = Math.min(Math.max(args.timeout_ms ?? 5000, 100), 30000)
+        const tabId = await getActiveTabId()
+        if (!tabId) return runtimeError(new Error("no active tab"))
+
+        // Primary path: chrome.userScripts.execute injects raw source via the
+        // user-scripts world, which bypasses the page's CSP entirely (no
+        // 'unsafe-eval' needed). Requires the user to have toggled "Allow User
+        // Scripts" on this extension in chrome://extensions.
+        if (chrome.userScripts && typeof chrome.userScripts.execute === "function") {
+          try {
+            const wrapped = buildEvalScript(args.code, timeoutMs)
+            const results = await chrome.userScripts.execute({
+              target: { tabId },
+              world: "MAIN",
+              js: [{ code: wrapped }],
+            })
+            const r = Array.isArray(results) ? results[0] : null
+            if (r?.error) return runtimeError(new Error(typeof r.error === "string" ? r.error : (r.error.message ?? "user script error")))
+            const v = r?.result
+            if (v && typeof v === "object" && v.__err) {
+              return { status: 500, body: { error: { code: "runtime_error", message: v.__err, stack: v.__stack } } }
+            }
+            return v
+          } catch (e) {
+            const msg = e?.message ?? String(e)
+            if (/user scripts? api is not allowed|user scripts? not allowed|developer mode|allow user scripts/i.test(msg)) {
+              return {
+                status: 400,
+                body: { error: {
+                  code: "user_scripts_not_enabled",
+                  message: "chrome.userScripts is disabled on this extension. /eval is blocked by site CSP without it. Enable: open chrome://extensions, find 'Agent Socket', click Details, toggle 'Allow User Scripts' on, then reconnect this tab from the extension popup.",
+                } },
+              }
+            }
+            // Other failure (e.g. cross-origin frame) — fall through to the
+            // scripting.executeScript path which still works for sites without
+            // strict CSP and surfaces a more useful error for those that do.
+          }
+        }
+
+        // Fallback: scripting.executeScript with new Function(). Works on any
+        // site that doesn't ban 'unsafe-eval'. Sites like x.com, github.com,
+        // accounts.google.com will fail here — the error surfaces back to the
+        // agent so it can tell the user to enable user scripts.
         try {
           const result = await execInPage(getActiveTabId, async (code, timeoutMs) => {
             try {
@@ -106,6 +201,18 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
           }, [args.code, timeoutMs])
           return result
         } catch (e) {
+          const msg = e?.message ?? String(e)
+          // The classic CSP-strict-site error — point the agent at the fix.
+          if (/unsafe-eval|Content Security Policy/i.test(msg)) {
+            return {
+              status: 400,
+              body: { error: {
+                code: "csp_blocked_enable_user_scripts",
+                message: "This site's Content Security Policy blocks the fallback /eval path, and chrome.userScripts is not enabled. To run /eval here: open chrome://extensions, find 'Agent Socket', click Details, toggle 'Allow User Scripts' on, then reconnect this tab.",
+                page_error: msg,
+              } },
+            }
+          }
           return runtimeError(e)
         }
       },

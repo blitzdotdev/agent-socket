@@ -7,6 +7,16 @@
       "description": "GitHub repo browsing, PR navigation, issue helpers."
     },
     {
+      "host_match": "x.com",
+      "file": "x.com.json",
+      "description": "X/Twitter read + post tools: timeline, compose, like, search."
+    },
+    {
+      "host_match": "twitter.com",
+      "file": "x.com.json",
+      "description": "Legacy alias for x.com — same tools."
+    },
+    {
       "host_match": "news.ycombinator.com",
       "file": "news.ycombinator.com.json",
       "description": "Hacker News story list, comments, voting."
