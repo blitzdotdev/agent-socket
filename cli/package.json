@@ -1,0 +1,17 @@
+{
+  "name": "@agent-socket/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CLI for agent-socket — channel host, channel send/recv, and other tool packs.",
+  "bin": {
+    "agent-socket": "bin/agent-socket.mjs"
+  },
+  "scripts": {
+    "host": "node bin/agent-socket.mjs channel host"
+  },
+  "dependencies": {
+    "@agent-socket/sdk": "file:../sdk",
+    "ws": "^8.18.0"
+  }
+}
