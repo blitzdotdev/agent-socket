@@ -177,3 +177,32 @@ A dedicated harness scenario (e.g. `60-chrome-ext-survives-sw-idle`) would close
 ### Merge implications
 
 Now safe to advertise the chrome extension in the landing page (which is the next item on the work plan). Web-store publication still needs the Playwright E2E verification above, but load-unpacked dev use should work end-to-end.
+
+---
+
+**E2E VERIFIED 2026-05-23** — chromium integration test `chrome-extension/test/reconnect.e2e.mjs` now exists and passes 8/8 steps.
+
+Test pipeline:
+1. Start wrangler dev with DEBUG=1 so `/_debug/kill-ws` is available
+2. Launch chromium headless=new (Alpine GL args via `/etc/alpine-release` check) with the extension loaded
+3. Find the extension's SW target, open the popup
+4. Configure relay base + connect → grab initial paste URL + sessionId
+5. Make a `/page_info` call → 200
+6. POST `/_debug/kill-ws/<sessionId>` → relay tears down the session
+7. Verify old URL now returns 503 `app_offline` (proves the WS actually died)
+8. Wait 4s for the extension's exp-backoff reconnect + remint
+9. Read `linkInput.value` from the popup — should reflect the new URL
+10. POST `/page_info` against the NEW URL → 200
+
+Also: `chrome-extension/test/reconnect.unit.mjs` — 21 unit-level assertions covering the as-client.js reconnect path with a mocked WebSocket (no chromium needed). Runs in ~3s. Validates: onClose schedules reconnect, sessionId changes, tokensRemapped Map populated correctly, pingNow() emits a real WS ping, close() suppresses reconnect.
+
+Run:
+```bash
+# Unit (fast, no chromium):
+node chrome-extension/test/reconnect.unit.mjs
+
+# E2E (real chromium + relay; ~10s):
+node chrome-extension/test/reconnect.e2e.mjs
+```
+
+Confidence: high. The fix is verified at both the JS-logic level and the full browser-integration level.
