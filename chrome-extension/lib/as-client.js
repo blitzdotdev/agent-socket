@@ -39,12 +39,23 @@ export class ASClient {
     this.registered = false
     this.pendingFrameReplies = new Map()
     this.onStatusChange = opts.onStatusChange ?? (() => {})
+    this.onSessionChanged = opts.onSessionChanged ?? (() => {})
     this.heartbeatIntervalMs = opts.heartbeatIntervalMs ?? 25_000
     this.heartbeatTimeoutMs = opts.heartbeatTimeoutMs ?? 50_000
     this._heartbeatTimer = null
     this._heartbeatDeadlineTimer = null
     this._pendingPingId = null
     this._closed = false
+
+    // Reconnect bookkeeping. Mirrors @agent-socket/sdk's autoReconnect behavior:
+    // when the WS drops (e.g. chrome MV3 SW idle-kills it), we reconnect with
+    // exponential backoff AND re-mint any previously-issued tokens under the
+    // new session-id, reporting the URL remapping via onSessionChanged.
+    this.autoReconnect = opts.autoReconnect ?? true
+    this._reconnectAttempt = 0
+    this._reconnectTimer = null
+    this._giveUpReconnect = false
+    this.myTokens = new Map()   // token → { token, url, label, mintedAt }
   }
 
   get connected() {
@@ -94,7 +105,15 @@ export class ASClient {
     const reply = await this._awaitReply(id, 10_000)
     if (!reply.ok) throw new Error(`mint failed: ${reply.error?.code ?? "unknown"}`)
     const url = String(reply.url).replace(/^__BASE__/, this.baseUrl)
-    return { token: reply.token, url, label: reply.label ?? label ?? "" }
+    const info = {
+      token: reply.token,
+      url,
+      label: reply.label ?? label ?? "",
+      mintedAt: reply.mintedAt ?? Date.now(),
+    }
+    // Track for remint-on-reconnect.
+    this.myTokens.set(reply.token, info)
+    return { token: info.token, url: info.url, label: info.label }
   }
 
   async listTokens() {
@@ -113,7 +132,21 @@ export class ASClient {
     const id = uid()
     this._send({ type: "revoke_agent_token", id, token })
     const reply = await this._awaitReply(id, 10_000)
+    this.myTokens.delete(token)
     return !!reply.ok
+  }
+
+  /**
+   * Public no-arg keepalive ping. Called by background.js's chrome.alarms
+   * handler ~every 20s to exercise the WS path and keep the MV3 service
+   * worker alive. No-op if not connected.
+   */
+  pingNow() {
+    if (!this.ws || this.ws.readyState !== 1) return
+    // Send a fresh ping if we don't have one in flight already. The relay
+    // pongs and clears the deadline; bookkeeping reuses the existing path.
+    if (this._pendingPingId !== null) return
+    this._sendPing()
   }
 
   /** Replace the registered toolset. Requires a fresh connection. */
@@ -133,6 +166,7 @@ export class ASClient {
 
   close() {
     this._closed = true
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null }
     this._teardownHeartbeat()
     try { this.ws?.close(1000, "client closed") } catch {}
     this.ws = null
@@ -204,6 +238,64 @@ export class ASClient {
     this.pendingFrameReplies.clear()
     this.ws = null
     this._emitStatus("disconnected", { code, reason })
+
+    if (!this.autoReconnect || this._giveUpReconnect) return
+    this._scheduleReconnect()
+  }
+
+  _scheduleReconnect() {
+    if (this._reconnectTimer) return  // already scheduled
+    this._reconnectAttempt += 1
+    // Exponential backoff with ±25% jitter, base 1s, capped at 30s.
+    const baseMs = 1000
+    const maxMs = 30_000
+    const jitter = 0.25
+    const exp = Math.min(maxMs, baseMs * Math.pow(2, Math.max(0, this._reconnectAttempt - 1)))
+    const delay = Math.max(0, exp + (Math.random() * 2 - 1) * exp * jitter)
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null
+      void this._reconnectAndRemint()
+    }, delay)
+  }
+
+  async _reconnectAndRemint() {
+    if (this._closed) return
+    const priorSessionId = this.sessionId
+    const priorTokens = Array.from(this.myTokens.values())
+    this.myTokens.clear()
+
+    try {
+      await this.connect()
+      this._reconnectAttempt = 0  // success — reset
+    } catch (e) {
+      // Connect failed; schedule the next attempt.
+      this._emitStatus("reconnect-failed", { message: e?.message ?? String(e) })
+      this._scheduleReconnect()
+      return
+    }
+
+    // Re-mint each previously-issued token under the new session-id.
+    // Old URLs are dead; remapping table tells callers (popup, etc.) what
+    // to swap. Skip individual failures — the rest still get remapped.
+    const tokensRemapped = new Map()  // oldUrl → newUrl
+    for (const old of priorTokens) {
+      try {
+        const fresh = await this.mintToken(old.label)
+        tokensRemapped.set(old.url, fresh.url)
+      } catch {
+        // Stay dead. Caller can re-mint manually.
+      }
+    }
+
+    if (priorSessionId !== this.sessionId) {
+      try {
+        this.onSessionChanged({
+          priorSessionId,
+          sessionId: this.sessionId,
+          tokensRemapped,
+        })
+      } catch {}
+    }
   }
 
   _waitForFrame(predicate, timeoutMs) {
