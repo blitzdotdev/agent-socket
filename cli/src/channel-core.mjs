@@ -36,6 +36,12 @@ export function createChannelTools(opts = {}) {
     store.append = (rec) => { const msg = inner(rec); onAppend(msg); return msg }
   }
 
+  // Allowed fields per endpoint. Unknown fields are rejected with bad_input
+  // so typos (since_seq vs since, text vs message, etc.) surface as 400
+  // rather than as silently-accepted 200s with mysterious behavior.
+  const SEND_KEYS = new Set(["name", "text"])
+  const RECV_KEYS = new Set(["name", "since", "wait", "message"])
+
   const tools = [
     {
       path: "/send",
@@ -43,6 +49,8 @@ export function createChannelTools(opts = {}) {
       handler: async ({ body }) => {
         let p = {}
         try { p = JSON.parse(body || "{}") } catch {}
+        const unknown = rejectUnknownKeys(p, SEND_KEYS, "/send")
+        if (unknown) return unknown
         if (typeof p.name !== "string" || !p.name.trim()) return err400("bad_input", "name is required")
         if (typeof p.text !== "string") return err400("bad_input", "text is required")
         if (Buffer.byteLength(p.text, "utf8") > MAX_TEXT_BYTES) return err400("message_too_large", `text > ${MAX_TEXT_BYTES} bytes`)
@@ -57,6 +65,8 @@ export function createChannelTools(opts = {}) {
       handler: async ({ body }) => {
         let p = {}
         try { p = JSON.parse(body || "{}") } catch {}
+        const unknown = rejectUnknownKeys(p, RECV_KEYS, "/recv")
+        if (unknown) return unknown
         const name = typeof p.name === "string" && p.name.trim() ? p.name : null
         const since = Number.isFinite(p.since) ? p.since : null
         const wait = clampWait(p.wait, currentCapMs())
@@ -100,6 +110,16 @@ export function createChannelTools(opts = {}) {
 
 function err400(code, message) {
   return { status: 400, body: { error: { code, message } } }
+}
+
+function rejectUnknownKeys(obj, allowed, route) {
+  if (!obj || typeof obj !== "object") return null
+  for (const k of Object.keys(obj)) {
+    if (!allowed.has(k)) {
+      return err400("bad_input", `${route}: unknown field '${k}'. Allowed: ${[...allowed].join(", ")}.`)
+    }
+  }
+  return null
 }
 
 function clampWait(w, capMs) {
