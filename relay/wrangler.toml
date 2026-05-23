@@ -1,7 +1,18 @@
 name = "agent-socket-relay"
 main = "src/worker.ts"
+account_id = "d25a778b256fb6ef6eea554d77c40f27"
 compatibility_date = "2025-05-01"
 compatibility_flags = ["nodejs_compat"]
+
+# Production routes. agentsocket.dev is the canonical brand domain.
+# aisocket.dev is kept as an alias (was the temporary URL during early v0).
+# Both point at this same Worker.
+routes = [
+  { pattern = "agentsocket.dev",     custom_domain = true },
+  { pattern = "www.agentsocket.dev", custom_domain = true },
+  { pattern = "aisocket.dev",        custom_domain = true },
+  { pattern = "www.aisocket.dev",    custom_domain = true },
+]
 
 [[durable_objects.bindings]]
 name = "RELAY"

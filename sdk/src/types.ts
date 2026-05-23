@@ -41,7 +41,8 @@ export interface ConnectOptions {
   tools: Tool[]
   /**
    * Base URL of the relay. Default: "https://agentsocket.dev".
-   * Override for self-hosted deployments or local dev.
+   * Override for self-hosted or local dev.
+   * Note: "https://aisocket.dev" is also served by the same Worker.
    */
   baseUrl?: string
   /**
