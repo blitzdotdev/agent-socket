@@ -1,0 +1,24 @@
+{
+  "host": "github.com",
+  "notes": "GitHub web UI. Tools assume you're on a repo / PR / issue page. Use /page_info first to confirm.",
+  "tools": [
+    {
+      "path": "/gh_list_issues",
+      "description": "On a repo's issues page (or any page), return the list of visible issues with title, number, author, labels, comment count. Caller should navigate to /<owner>/<repo>/issues first if needed.",
+      "input_schema": { "type": "object", "properties": { "limit": { "type": "integer", "default": 30 } } },
+      "code": "const rows = document.querySelectorAll('div[aria-label=\"Issues\"] [data-listview-component=\"row\"], .js-issue-row');\nconst out = [];\nfor (const r of Array.from(rows).slice(0, args.limit ?? 30)) {\n  const titleA = r.querySelector('a[id^=\"issue_\"], a.markdown-title, h3 a');\n  const title = titleA?.textContent?.trim();\n  const href = titleA?.getAttribute('href');\n  const numberM = href?.match(/\\/(?:issues|pull)\\/(\\d+)/);\n  const labels = Array.from(r.querySelectorAll('a.IssueLabel, [data-testid=\"issue-label\"]')).map(l => l.textContent.trim());\n  out.push({ title, number: numberM ? Number(numberM[1]) : null, href, labels });\n}\nreturn { count: out.length, issues: out };"
+    },
+    {
+      "path": "/gh_pr_summary",
+      "description": "Summarize the current PR page: title, state, author, files changed, additions, deletions, comments. Must be on a /pull/N URL.",
+      "input_schema": { "type": "object", "properties": {} },
+      "code": "if (!location.pathname.match(/\\/pull\\/\\d+/)) return { error: 'not on a PR page', url: location.href };\nreturn {\n  title: document.querySelector('.gh-header-title bdi, .js-issue-title')?.textContent?.trim(),\n  number: location.pathname.match(/\\/pull\\/(\\d+)/)?.[1],\n  state: document.querySelector('.State')?.textContent?.trim(),\n  author: document.querySelector('.gh-header-meta a.author')?.textContent?.trim(),\n  files_changed: document.querySelector('#files_tab_counter')?.textContent?.trim(),\n  additions: document.querySelector('.diffstat .text-success')?.textContent?.trim(),\n  deletions: document.querySelector('.diffstat .text-danger')?.textContent?.trim(),\n  url: location.href,\n};"
+    },
+    {
+      "path": "/gh_file_tree",
+      "description": "On a repo root page, return the visible file/folder list.",
+      "input_schema": { "type": "object", "properties": {} },
+      "code": "const rows = document.querySelectorAll('table[aria-labelledby=\"folders-and-files\"] tr.react-directory-row, .Box-row.js-navigation-item');\nconst out = [];\nfor (const r of rows) {\n  const link = r.querySelector('a[href]');\n  if (!link) continue;\n  out.push({ name: link.textContent.trim(), href: link.getAttribute('href'), kind: r.querySelector('[aria-label*=\"Directory\"]') ? 'dir' : 'file' });\n}\nreturn { entries: out };"
+    }
+  ]
+}
