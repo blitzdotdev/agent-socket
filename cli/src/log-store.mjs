@@ -141,6 +141,18 @@ export class LogStore {
     }
   }
 
+  /** True iff any named or lurker waiter is currently open. */
+  hasAnyWaiter() {
+    for (const list of this.waiters.values()) if (list.length > 0) return true
+    return false
+  }
+
+  /** Timestamp (ms) of the most recent message, or 0 if log is empty. */
+  latestMessageTs() {
+    if (this.log.length === 0) return 0
+    return this.log[this.log.length - 1].ts
+  }
+
   /** Snapshot of who's around — for /peers. */
   peers() {
     const now = Date.now()

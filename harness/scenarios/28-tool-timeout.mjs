@@ -1,14 +1,31 @@
 // 28-tool-timeout — tool handler that never replies hits MAX_SYNC_TOOL_MS,
 // agent gets 504 tool_timeout. Pending entry is cleared so subsequent calls work.
 //
-// Requires .dev.vars (or env override) to set MAX_SYNC_TOOL_MS to a low value
-// so the test runs in seconds, not 30s.
+// Reads MAX_SYNC_TOOL_MS from relay/.dev.vars to compute the expected window
+// so the test works regardless of whether dev is configured for fast tests
+// (e.g. 3000) or production-like (e.g. 30000).
 
 import { Assert } from "../lib/assert.mjs"
 import { openRawWs, httpPost } from "../lib/relay.mjs"
+import fs from "node:fs"
+import path from "node:path"
+import url from "node:url"
+
+const __dirname = path.dirname(url.fileURLToPath(import.meta.url))
+const DEV_VARS = path.join(__dirname, "..", "..", "relay", ".dev.vars")
+
+function expectedTimeoutMs() {
+  try {
+    const text = fs.readFileSync(DEV_VARS, "utf8")
+    const m = text.match(/^MAX_SYNC_TOOL_MS\s*=\s*(\d+)/m)
+    if (m) return parseInt(m[1], 10)
+  } catch {}
+  return 30_000  // production default in wrangler.toml
+}
 
 export default async function () {
   const a = new Assert("28-tool-timeout")
+  const expectedMs = expectedTimeoutMs()
   const c = openRawWs()
   await c.waitOpen()
 
@@ -34,10 +51,11 @@ export default async function () {
 
   a.equal(r.status, 504, "stalled call → 504")
   a.equal(r.json?.error?.code, "tool_timeout", "code is tool_timeout")
-  // .dev.vars sets MAX_SYNC_TOOL_MS=3000; allow some slack.
-  a.ok(elapsed >= 2500 && elapsed < 6000,
-    `timeout fired in ~3s window (elapsed: ${elapsed}ms)`,
-    { elapsed })
+  const lo = Math.floor(expectedMs * 0.8)
+  const hi = Math.ceil(expectedMs * 2)
+  a.ok(elapsed >= lo && elapsed < hi,
+    `timeout fired around MAX_SYNC_TOOL_MS=${expectedMs} (elapsed: ${elapsed}ms, expected ${lo}..${hi})`,
+    { elapsed, expectedMs })
 
   // Pending should be drained — a fresh call works.
   const echoPromise = (async () => {

@@ -5,6 +5,7 @@ const HELP = `agent-socket — CLI for agent-socket apps and channels.
 
 Usage:
   agent-socket channel host [--name N] [--relay URL]   # start a chat host
+  agent-socket channel join <url> [--name N]           # join someone else's channel as a human
   agent-socket channel send <text> [--name N]          # post to the running host
   agent-socket channel recv [--wait N]                 # poll the running host's log
   agent-socket channel watch                           # continuous tail (for bg use)
@@ -36,7 +37,7 @@ if (!sub) {
   process.exit(2)
 }
 
-const KNOWN = new Set(["host", "send", "recv", "watch", "peers", "stop"])
+const KNOWN = new Set(["host", "send", "recv", "watch", "peers", "stop", "join"])
 if (!KNOWN.has(sub)) {
   console.error(`agent-socket channel: unknown subcommand "${sub}"`)
   console.error(HELP)
