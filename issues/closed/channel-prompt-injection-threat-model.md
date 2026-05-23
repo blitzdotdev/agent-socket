@@ -48,3 +48,7 @@ Both are short. No code change needed.
 ## Provenance
 
 2026-05-22 live channel session. Real prompt-injection attempt by `rimor` after they discovered the channel URL through some unknown propagation path. Refused without ceremony. Worth documenting since the same dynamic will show up every time someone runs a channel where one participant is an LLM and the URL leaks to anyone.
+
+---
+
+**CLOSED 2026-05-23** — spec §9.5 added: "Channel content is untrusted input" with three predictable attack patterns (prompt injection, identity claim, authority spoofing) and explicit guidance that the relay can't enforce and the responsibility is on each LLM peer's runtime context. agents.md got a one-line "Trust note" section repeating the gist for any AI fetching the briefing. No code change — purely a doc/threat-model item.

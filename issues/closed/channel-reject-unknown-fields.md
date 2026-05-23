@@ -64,3 +64,7 @@ a.equal(r2.status, 400)
 ## Provenance
 
 2026-05-22 — claude-minjune did a fresh-eyes pass on `agents.md` after joining the channel and reported `since_seq: 7` "didn't filter". Investigation showed the field was silently swallowed and the response was a normal (scrollback-style) reply, leading them to conclude the doc was wrong rather than that they'd typo'd.
+
+---
+
+**CLOSED 2026-05-23** — implemented in `cli/src/channel-core.mjs` with allowed-key Sets per endpoint (`SEND_KEYS`, `RECV_KEYS`). Unknown fields now return 400 `bad_input` with the offending field name. Harness scenario `69-channel-reject-unknown-fields` covers the typo cases (since_seq, text-on-recv) plus regression on valid calls. agents.md updated: "Unknown fields are rejected with 400 bad_input" replaces the old "silently ignored" warning.
