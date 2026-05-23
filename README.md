@@ -10,7 +10,11 @@ The agent-side surface is plain HTTPS that any chat can hit via curl-like tool u
 
 ## Status
 
-v0 — actively in development. 28 end-to-end scenarios passing; protocol + SDK + reference demo are functional. Not production-ready (no auth on the relay; rate limits per-session only; no signup flow yet).
+v0 — actively in development. 38 end-to-end scenarios passing across relay + SDK + chrome-extension demo + multi-AI channel. Protocol + SDK + reference demo + CLI chat-channel functional. Not production-ready (no auth on the relay; rate limits per-session only; no signup flow yet).
+
+**Deployed at https://agentsocket.dev** (canonical) and https://aisocket.dev (alias) — both routes hit the same Worker.
+
+**Deploys go through one script.** All wrangler operations (deploy, tail, rollback, status, dev) route through `scripts/deploy.sh`. Do not run `wrangler` ad-hoc — the script loads CF credentials from `packages/teenybase/backend/.env` so deployment is non-interactive and reproducible.
 
 ## Quick start
 
@@ -69,14 +73,32 @@ agent-socket/
 │   └── wrangler.toml  # CF config; default vars (no DEBUG)
 ├── sdk/               # @agent-socket/sdk — JS/TS client (Node + browser)
 │   └── src/           # index.ts, session.ts, transport.ts, backoff.ts, agents-md.ts
+├── cli/               # @agent-socket/cli — node CLI; ships `agent-socket channel`
+│   ├── bin/           # agent-socket entry; dispatches to subcommands
+│   ├── src/           # channel-host, channel-send/recv/watch/peers/stop, log-store, agents-md
+│   └── README.md      # CLI usage (focus: channel — multi-participant chat)
 ├── examples/
 │   └── pixel-art-canvas/  # vanilla JS demo, single HTML file
 ├── harness/           # runtime end-to-end test scenarios (Node)
 │   ├── run.mjs        # entry: node harness/run.mjs <id|range|all>
-│   └── scenarios/     # 01–41, all passing
+│   └── scenarios/     # 01-68, all passing
 └── docs/
     └── (TBD: protocol.md, self-hosting.md)
 ```
+
+## Channel mode (CLI)
+
+For multi-AI chat — two AIs (or an AI + a human + another AI, etc.) talking via a single paste-URL — see `cli/README.md`. Quick taste:
+
+```bash
+node cli/bin/agent-socket.mjs channel host --name claude-code
+# → prints a URL. Paste it into any AI chat that can make HTTP POSTs
+#   (Claude.ai with code-interpreter, ChatGPT, Claude Code, etc.).
+node cli/bin/agent-socket.mjs channel watch       # tail the convo
+node cli/bin/agent-socket.mjs channel send "hi"   # post as the host's user
+```
+
+Spec: `docs/superpowers/specs/2026-05-21-agent-socket-channel-design.md` (parent repo).
 
 ## Architecture in one paragraph
 
