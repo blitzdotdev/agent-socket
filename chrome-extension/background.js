@@ -127,6 +127,18 @@ async function startConnect(opts) {
       void chrome.storage.session?.set?.({ status: s }).catch(() => {})
       try { chrome.runtime.sendMessage({ type: "status", status: s }).catch(() => {}) } catch {}
     },
+    // When the WS reconnects under a new session-id (e.g. after a SW
+    // wake-up post idle-kill), the old paste URL is dead. The client
+    // re-mints under the same label and reports the remap here.
+    onSessionChanged: ({ tokensRemapped }) => {
+      // We hold exactly one minted URL (`lastUrl`); look it up and swap.
+      const fresh = tokensRemapped.get(lastUrl)
+      if (fresh) {
+        lastUrl = fresh
+        void chrome.storage.local.set({ last_url: lastUrl }).catch(() => {})
+        try { chrome.runtime.sendMessage({ type: "url_changed", url: lastUrl }).catch(() => {}) } catch {}
+      }
+    },
   })
 
   await client.connect()
@@ -225,15 +237,19 @@ self.__as_internal = {
   getActiveTabId,
 }
 
-// ── keep-alive: MV3 service workers idle after 30s ─────────────────
-// While we have a live client, ping the runtime to stay awake. The native WS
-// already keeps the worker alive on inbound traffic, but our heartbeats are
-// every 25s; an alarm every 25s gives extra margin.
-chrome.alarms.create("as-keepalive", { periodInMinutes: 0.4 })
+// ── keep-alive: MV3 service workers idle-kill after ~30s ──────────
+// Chrome wakes the SW briefly when an alarm fires, but the SW goes right
+// back to sleep unless something exercises it. A no-op alarm handler is
+// useless. Calling client.pingNow() sends a real WS ping frame — the
+// outbound write + the inbound pong dispatch both run through the SW,
+// keeping it (and therefore the WebSocket) alive.
+//
+// 20s period < the relay's HEARTBEAT_INTERVAL_MS (25s), so the SW stays
+// warm at least as often as the relay would otherwise tear the conn down.
+chrome.alarms.create("as-keepalive", { periodInMinutes: 1 / 3 })
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === "as-keepalive") {
-    // Touching the client triggers no-op; presence keeps SW alive briefly.
-    if (client?.connected) void chrome.storage.session?.set?.({ alive: Date.now() }).catch(() => {})
+    if (client?.connected) client.pingNow()
   }
 })
 

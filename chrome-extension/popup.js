@@ -134,6 +134,14 @@ saveRelay.addEventListener("click", async () => {
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "status") setStatus(msg.status)
+  // After a reconnect under a new session-id, the previous paste URL is
+  // dead. The background SW remints under the same label and pushes the
+  // new URL here so a user with the popup open sees it update live.
+  if (msg?.type === "url_changed" && msg.url) {
+    linkCard.hidden = false
+    linkInput.value = msg.url
+    copyHint.textContent = "Link refreshed after a reconnect — re-paste in your AI."
+  }
 })
 
 refresh()

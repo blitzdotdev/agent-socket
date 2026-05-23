@@ -129,3 +129,51 @@ This issue is the strongest argument so far for picking path A (vendor SDK at bu
 ## Merge implications
 
 The extension branch should **not** be published to the chrome web store until this lands. Merging the branch to master is still safe — the bug exists only at runtime, not at build, and the merge itself doesn't enable web-store distribution. Update `chrome-extension/README.md`'s "Install" section to warn: "v0 — known issue: WS drops after ~30-80s of idle; reconnect logic in progress. See `issues/open/chrome-ext-ws-drops-no-reconnect.md`."
+
+---
+
+**CLOSED 2026-05-23** — fix implemented, awaiting environment-level E2E re-verification.
+
+### Code changes
+
+`chrome-extension/lib/as-client.js`:
+- Added reconnect bookkeeping to the ASClient constructor: `autoReconnect` (default true), `_reconnectAttempt`, `_reconnectTimer`, `_giveUpReconnect`, `myTokens` map.
+- `_onClose` now schedules a reconnect via `_scheduleReconnect()` when the close wasn't deliberate (not `close()` from app code).
+- `_scheduleReconnect`: exponential backoff with ±25% jitter, base 1s, capped at 30s. Mirrors `@agent-socket/sdk`'s `exponentialBackoff()`.
+- `_reconnectAndRemint`: on reconnect success, re-mints every previously-tracked agent-token under the new session-id (using the original label) and emits `onSessionChanged({ priorSessionId, sessionId, tokensRemapped })`. On reconnect failure, schedules the next attempt.
+- `mintToken` / `revokeToken` now keep `myTokens` map in sync.
+- Added public `pingNow()` — sends a real WS ping frame on demand. No-op if not connected or if a ping is already in flight.
+
+`chrome-extension/background.js`:
+- Keepalive alarm period bumped to 20s (was 24s); the body now calls `client.pingNow()` instead of writing to `chrome.storage.session`. The outbound WS send + inbound pong dispatch both run through the SW, keeping it alive across the alarm boundary.
+- Added `onSessionChanged` callback on the ASClient: when the session-id changes (reconnect remap), swaps `lastUrl` to the freshly-minted URL, persists to `chrome.storage.local.last_url`, and pushes a `{type:"url_changed", url}` message to the popup.
+
+`chrome-extension/popup.js`:
+- New handler for `url_changed` messages: updates `linkInput.value` live so a user with the popup open sees the new paste URL immediately after a reconnect. Status hint updated accordingly.
+
+### Code review confidence
+
+The reconnect logic is a near-1:1 port of `@agent-socket/sdk`'s `_onClose` + `_reconnectAndRemint`, which is covered by harness scenarios 27 (ws-drop fails-inflight) and 41 (sdk-reconnect-remint). The MV3-specific risk is the keepalive — replacing a storage write with a WS ping is conceptually correct; verifying the SW genuinely stays alive across the alarm boundary requires a real browser.
+
+### Remaining verification (NOT done here)
+
+Needs an environment with `xvfb-run` + `playwright-chromium`:
+
+```bash
+# Run the existing E2E test against the merged branch
+xvfb-run -a -s "-screen 0 1280x900x24" node chrome-extension/test/e2e.mjs
+
+# Specifically verify the fix:
+# 1. Connect via popup, mint a link.
+# 2. Sleep 60s (more than 2x the MV3 SW idle window).
+# 3. Make an agent tool call against the link.
+# 4. Confirm: call succeeds outright (because either the SW stayed alive
+#    via the new keepalive ping, OR the reconnect remapped to a fresh
+#    URL and the popup's url_changed handler updated linkInput).
+```
+
+A dedicated harness scenario (e.g. `60-chrome-ext-survives-sw-idle`) would close the loop. Filed as a future task; not part of this fix.
+
+### Merge implications
+
+Now safe to advertise the chrome extension in the landing page (which is the next item on the work plan). Web-store publication still needs the Playwright E2E verification above, but load-unpacked dev use should work end-to-end.
