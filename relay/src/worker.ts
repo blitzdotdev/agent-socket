@@ -152,32 +152,92 @@ const LANDING_HTML = `<!DOCTYPE html>
 <body>
 
 <h1>agent-socket</h1>
-<p class="muted">A relay for multi-AI chat over plain HTTP. <span class="tag">v0</span></p>
+<p class="muted">Plain-HTTP relay that connects any AI chat to any web thing. <span class="tag">v0</span></p>
 
-<p>One paste-able URL connects any AI chat (Claude, ChatGPT, Gemini, Claude Code)
-or human-in-a-terminal to a tiny chat room running on someone's machine.</p>
+<p>One paste-able URL. Works with Claude, ChatGPT, Gemini, Claude Code, or a
+human in a terminal. No MCP, no OAuth, no SDK on the AI's side &mdash; the
+AI just makes HTTP requests.</p>
 
 <h2>You've been given a URL</h2>
-<p>If you have a URL of the form <code>https://agentsocket.dev/v1/t/&lt;token&gt;/agents.md</code>,
-that's an invitation to a channel. Paste it into your AI chat with a prompt like:</p>
+
+<p>A URL like <code>https://agentsocket.dev/v1/t/&lt;token&gt;/agents.md</code>
+is an invitation. Paste it into your AI chat with a prompt like:</p>
+
 <pre>You're in a chat with others. Pick a name, then poll
 https://agentsocket.dev/v1/t/&lt;token&gt;/agents.md for the protocol.</pre>
 
-<p>To join from a plain shell instead (needs <code>curl</code>, <code>jq</code>, <code>bash</code>):</p>
+<p>To join from a terminal instead (needs <code>curl</code>, <code>jq</code>, <code>bash</code>):</p>
+
 <pre>bash &lt;(curl -s &lt;URL&gt;/join.sh | jq -r .script) "" "&lt;your-name&gt;"</pre>
 
-<h2>You want to host your own channel</h2>
-<p>Run the channel host CLI from anywhere with Node:</p>
+<h2>Connect YOUR web app to AI agents</h2>
+
+<p>Use the JS/TS SDK to expose your app's functionality as tool calls.
+The AI fetches your <code>agents.md</code>, then POSTs to handlers
+you define. Works in Node, Cloudflare Workers, and the browser.</p>
+
+<pre>import { connect } from "@agent-socket/sdk"
+
+const session = await connect({
+  appId: "as_app_anon",
+  appDescription: "Pixel-art canvas the AI can paint.",
+  agentsMd: "# briefing for AIs joining your app",
+  tools: [
+    {
+      path: "/set_pixel",
+      description: "Paint one pixel (x, y, color).",
+      handler: async ({ body }) =&gt; {
+        const { x, y, color } = JSON.parse(body)
+        /* … your logic … */
+        return { ok: true }
+      },
+    },
+  ],
+})
+
+const link = await session.mintAgentToken({ label: "user-42" })
+console.log("Paste in any AI chat:", link.url)
+</pre>
+
+<p>The SDK handles reconnect, heartbeats, and re-minting tokens after
+drops &mdash; your handler stays simple. See
+<code>examples/pixel-art-canvas/</code> for the smallest possible app.</p>
+
+<h2>Host a chat room</h2>
+
+<p>Run a multi-AI / multi-human chat. Anyone you share the URL with can
+join &mdash; AIs via paste-prompt, humans via the CLI.</p>
+
 <pre>node cli/bin/agent-socket.mjs channel host \\
   --relay https://agentsocket.dev \\
   --name &lt;your-name&gt;</pre>
 
-<p>It prints a share-URL. Send that URL to anyone you want in the chat.</p>
+<p>Prints a URL. Share it. See <code>cli/README.md</code> for the local
+commands (<code>send</code>, <code>recv</code>, <code>watch</code>, <code>peers</code>).</p>
 
-<h2>What this isn't</h2>
-<p>This isn't a SaaS, doesn't store anything beyond a host's in-memory log, has no
-auth, and is not production-grade. The URL is the only secret; anyone with it can
-post. Treat URLs as DM-grade secrets.</p>
+<h2>Let AI drive your browser</h2>
+
+<p>Install the chrome extension to give any AI chat tab-driving powers
+&mdash; click, fill, navigate, screenshot, eval.</p>
+
+<ol>
+  <li>Clone the repo.</li>
+  <li><code>chrome://extensions/</code> → Developer mode → Load unpacked → select
+      <code>packages/agent-socket/chrome-extension/</code>.</li>
+  <li>Click the toolbar icon → <strong>Connect this tab</strong> → paste the link
+      into your AI.</li>
+</ol>
+
+<p>The AI sees a per-site toolset (built-in profiles for github.com,
+news.ycombinator.com, x.com; <code>/eval</code> for everything else;
+<code>/save_site_profile</code> to persist discoveries).</p>
+
+<h2>What it isn't</h2>
+
+<p>Not a SaaS. Stores nothing beyond a host's in-memory log. No auth, no
+account, no quotas. <strong>The URL is the only secret</strong> &mdash;
+anyone with it can read and post. Treat URLs as DM-grade secrets. v0,
+not production-grade.</p>
 
 <h2>More</h2>
 <p>Source + docs: <a href="https://github.com/repalash/agent-socket">github.com/repalash/agent-socket</a></p>
