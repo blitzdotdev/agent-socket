@@ -12,6 +12,7 @@
   ],
   "scripts": {
     "harness": "node --experimental-vm-modules harness/run.mjs",
-    "dev": "npm run dev -w relay"
+    "dev": "npm run dev -w relay",
+    "ext:test": "xvfb-run -a -s \"-screen 0 1280x900x24\" node chrome-extension/test/e2e.mjs"
   }
 }
