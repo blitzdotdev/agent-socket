@@ -1,0 +1,18 @@
+# wrangler dev — local-only env (NEVER shipped to prod).
+#
+# Copy to relay/.dev.vars (gitignored) before running `bash scripts/deploy.sh dev`
+# or the harness. wrangler dev reads this file automatically; `wrangler deploy`
+# does NOT (it intentionally never sees DEBUG=1).
+
+# Enable /_debug/* endpoints during local dev. MUST be absent in production.
+DEBUG=1
+
+# Production default is 30000. Some harness scenarios (e.g. 28-tool-timeout)
+# rely on a low value so they don't take 30s — change to 3000 if you want
+# the harness to run faster.
+MAX_SYNC_TOOL_MS=30000
+
+# Production defaults are 25000 / 50000. Lower values surface heartbeat
+# bugs faster during dev but make some scenarios noisy. Tune as needed.
+HEARTBEAT_INTERVAL_MS=2000
+HEARTBEAT_TIMEOUT_MS=5000

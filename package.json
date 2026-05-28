@@ -18,8 +18,15 @@
     "harness"
   ],
   "scripts": {
-    "harness": "node --experimental-vm-modules harness/run.mjs",
-    "dev": "npm run dev -w relay",
-    "ext:test": "xvfb-run -a -s \"-screen 0 1280x900x24\" node chrome-extension/test/e2e.mjs"
+    "dev": "bash scripts/deploy.sh dev",
+    "check": "npm run check -w relay && npm run check -w sdk",
+    "build": "npm run build -w sdk",
+    "harness": "node harness/run.mjs all",
+    "ext:test": "xvfb-run -a -s \"-screen 0 1280x900x24\" node chrome-extension/test/e2e.mjs",
+    "ext:test:unit": "node chrome-extension/test/reconnect.unit.mjs",
+    "ext:test:reconnect": "node chrome-extension/test/reconnect.e2e.mjs",
+    "test": "npm run check && npm run harness && npm run ext:test:unit",
+    "deploy": "bash scripts/deploy.sh deploy",
+    "deploy:test": "bash scripts/test-deploy.sh"
   }
 }

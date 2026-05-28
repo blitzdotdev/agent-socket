@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+# Cancel duplicate runs on the same PR.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: TypeScript check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run check
+
+  deploy-pipeline-portability:
+    name: deploy.sh portability test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y jq
+      - run: bash scripts/test-deploy.sh
+
+  harness:
+    name: Integration harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Set up .dev.vars
+        run: cp relay/.dev.vars.example relay/.dev.vars
+      - run: npm run harness
+
+  chrome-ext-unit:
+    name: Chrome extension — unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run ext:test:unit
+
+  chrome-ext-e2e:
+    name: Chrome extension — E2E (chromium headless=new)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: sudo apt-get update && sudo apt-get install -y chromium-browser
+      - run: npm ci
+      - name: Set up .dev.vars
+        run: cp relay/.dev.vars.example relay/.dev.vars
+      - env:
+          CHROMIUM_PATH: /usr/bin/chromium-browser
+        run: npm run ext:test:reconnect
