@@ -3,7 +3,14 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "license": "Apache-2.0",
   "description": "A relay that lets any web app expose itself to AI chats via a paste-able URL.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/teenybase/agentsocket.git"
+  },
+  "homepage": "https://agentsocket.dev",
+  "bugs": "https://github.com/teenybase/agentsocket/issues",
   "workspaces": [
     "relay",
     "sdk",

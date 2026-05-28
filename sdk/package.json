@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "license": "Apache-2.0",
   "description": "Client SDK for agent-socket — connect any web app to AI chats via paste-able URLs.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
