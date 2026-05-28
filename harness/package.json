@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "license": "Apache-2.0",
   "description": "Runtime end-to-end harness for the agent-socket relay + SDK.",
   "dependencies": {
     "@agent-socket/cli": "*",

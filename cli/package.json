@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "license": "Apache-2.0",
   "description": "CLI for agent-socket — channel host, channel send/recv, and other tool packs.",
   "bin": {
     "agent-socket": "bin/agent-socket.mjs"
