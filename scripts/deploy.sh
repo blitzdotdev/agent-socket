@@ -6,8 +6,10 @@
 # anything that would otherwise be a wrangler command. Do NOT invoke
 # `wrangler` directly elsewhere.
 #
-# Credentials come from packages/teenybase/backend/.env (CLOUDFLARE_API_TOKEN
-# + CLOUDFLARE_ACCOUNT_ID). No interactive login is required.
+# Credentials come from `.env` at the repo root (CLOUDFLARE_API_TOKEN).
+# Copy `.env.example` to `.env` and fill in. No interactive wrangler-login
+# is required. account_id lives in relay/wrangler.jsonc (single source of
+# truth); the env var is not used.
 #
 # Subcommands:
 #   deploy    Push current source to production. Idempotent — handles both
@@ -20,18 +22,34 @@
 #   whoami    Verify CF credentials resolve to the expected account.
 #   dev       Local `wrangler dev` (port 8787). Useful for manual testing.
 #
-# Production URL: https://aisocket.dev
-#   (agentsocket.dev will be added as a second route once acquired.)
+# Production URL: https://agentsocket.dev (also aliased to aisocket.dev)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RELAY_DIR="$(cd "$SCRIPT_DIR/../relay" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-ENV_FILE="$REPO_ROOT/packages/teenybase/backend/.env"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+RELAY_DIR="$REPO_ROOT/relay"
+ENV_FILE="$REPO_ROOT/.env"
+WRANGLER_CONFIG="$RELAY_DIR/wrangler.jsonc"
 PROD_URL="https://agentsocket.dev"
 PROD_URL_ALIAS="https://aisocket.dev"
-EXPECTED_ACCOUNT_ID="d25a778b256fb6ef6eea554d77c40f27"
+
+# Optional safety check: if .env sets EXPECTED_ACCOUNT_ID, it must match
+# the account_id in wrangler.jsonc — prevents an accidentally-edited
+# wrangler config from deploying to a wrong account. Forks should set
+# this to their own account-id once past their first deploy.
+EXPECTED_ACCOUNT_ID="${EXPECTED_ACCOUNT_ID:-}"
+
+# Strip // comments (only line-leading ones, so we don't munge URL strings
+# that contain `://`) from wrangler.jsonc, then jq for the field. Portable
+# across BSD sed (macOS) and GNU sed (Linux): uses POSIX character classes
+# only, no GNU-isms (\s, \d, \b, --posix). Multi-line /* */ comments and
+# trailing commas are not supported — switch to `jsonc-parser` via Node
+# if you ever need them.
+jsonc_field() {
+  local field="$1"
+  sed -E 's,^[[:space:]]*//.*,,' "$WRANGLER_CONFIG" | jq -r ".$field // empty"
+}
 
 # ── helpers ───────────────────────────────────────────────────────────
 
@@ -41,19 +59,38 @@ usage() {
 }
 
 load_creds() {
-  [ -f "$ENV_FILE" ] || { echo "missing creds file: $ENV_FILE" >&2; exit 1; }
+  if [ ! -f "$ENV_FILE" ]; then
+    echo "missing creds file: $ENV_FILE" >&2
+    echo "  copy .env.example to .env and fill in CLOUDFLARE_API_TOKEN" >&2
+    exit 1
+  fi
   CLOUDFLARE_API_TOKEN=$(awk -F= '/^CLOUDFLARE_API_TOKEN=/ {sub(/^[^=]*=/, ""); print}' "$ENV_FILE")
-  CLOUDFLARE_ACCOUNT_ID=$(awk -F= '/^CLOUDFLARE_ACCOUNT_ID=/ {sub(/^[^=]*=/, ""); print}' "$ENV_FILE")
-  if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-    echo "missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID in $ENV_FILE" >&2
+  if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+    echo "missing CLOUDFLARE_API_TOKEN in $ENV_FILE" >&2
     exit 1
   fi
-  if [ "$CLOUDFLARE_ACCOUNT_ID" != "$EXPECTED_ACCOUNT_ID" ]; then
-    echo "account mismatch — env has $CLOUDFLARE_ACCOUNT_ID, expected $EXPECTED_ACCOUNT_ID" >&2
-    echo "(refusing to proceed in case the creds file was swapped)" >&2
+
+  # The account_id lives in wrangler.jsonc (single source of truth).
+  # Parse it for the safety check below; wrangler itself reads it
+  # directly from wrangler.jsonc when running deploy.
+  local cfg_account_id
+  cfg_account_id=$(jsonc_field "account_id")
+  if [ -z "$cfg_account_id" ]; then
+    echo "wrangler.jsonc has no account_id field" >&2
     exit 1
   fi
-  export CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
+
+  # Optional safety: if .env sets EXPECTED_ACCOUNT_ID, the config must match.
+  local expectedFromEnv
+  expectedFromEnv=$(awk -F= '/^EXPECTED_ACCOUNT_ID=/ {sub(/^[^=]*=/, ""); print}' "$ENV_FILE")
+  [ -n "$expectedFromEnv" ] && EXPECTED_ACCOUNT_ID="$expectedFromEnv"
+  if [ -n "$EXPECTED_ACCOUNT_ID" ] && [ "$cfg_account_id" != "$EXPECTED_ACCOUNT_ID" ]; then
+    echo "account mismatch — wrangler.jsonc has $cfg_account_id, expected $EXPECTED_ACCOUNT_ID" >&2
+    echo "(refusing to proceed; either edit wrangler.jsonc or unset EXPECTED_ACCOUNT_ID in .env)" >&2
+    exit 1
+  fi
+
+  export CLOUDFLARE_API_TOKEN
 }
 
 smoke_test() {
