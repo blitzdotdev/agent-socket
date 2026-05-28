@@ -38,6 +38,11 @@ export function readSinceCursor(ownName) {
   if (!fs.existsSync(PATHS.log)) return []
   const raw = fs.readFileSync(PATHS.log, "utf8")
   if (!raw) return []
+
+  // Restart detection lives in createResilientWatcher (stat-based: inode
+  // change OR size decrease). Don't try to detect restarts here from the
+  // content; doing so creates a feedback loop (cursor keeps resetting on
+  // every read).
   const out = []
   let lastSeq = since
   for (const line of raw.split("\n")) {
@@ -67,14 +72,109 @@ async function tailUntil({ ownName, waitMs }) {
     const finish = () => {
       if (done) return
       done = true
-      try { watcher?.close() } catch {}
+      handle.close()
       clearTimeout(timer)
       resolve()
     }
     const timer = setTimeout(finish, waitMs)
-    const watcher = fs.watch(PATHS.log, { persistent: false }, () => {
-      const fresh = readSinceCursor(ownName)
-      if (fresh.length > 0) { printMessages(fresh); finish() }
+    const handle = createResilientWatcher({
+      ownName,
+      persistent: false,
+      onMessages: (msgs) => { printMessages(msgs); finish() },
     })
   })
+}
+
+/**
+ * Watch ~/.agent-socket/current/log.jsonl for new messages. Survives host
+ * restart (which `rm -rf`s the channel root and recreates everything with
+ * new inodes).
+ *
+ * Bug history (2026-05-28): the original used a plain `fs.watch(PATHS.log)`
+ * bound to the file's inode. When `resetChannelRoot()` ran, the watcher's
+ * inode disappeared and it went silent forever. Three subagents reproduced
+ * + confirmed this on Linux. A first-pass fix added a parent-dir watcher
+ * — that survived ONE restart but died on the SECOND, because the parent
+ * dir itself is unlinked and recreated each restart, taking its watcher
+ * with it.
+ *
+ * Final design: fs.watch is best-effort for low-latency wakeups; a 250ms
+ * inode-stat poll is the safety net. Each poll, if log.jsonl's inode
+ * changed, the host restarted — reset cursor, rearm file watcher, drain.
+ * Idempotent: harmless if fs.watch fires too, since drain reads from
+ * cursor.
+ */
+export function createResilientWatcher({ ownName, onMessages, persistent = true, pollIntervalMs = 250 }) {
+  let closed = false
+  let fileWatcher = null
+  let lastInode = null
+  let lastSize = 0
+  let seenAnyFile = false
+
+  const drain = () => {
+    if (closed) return
+    const fresh = readSinceCursor(ownName)
+    if (fresh.length > 0) {
+      try { onMessages(fresh) } catch (e) { console.error("watcher onMessages error:", e?.message ?? e) }
+    }
+  }
+
+  const armFileWatcher = () => {
+    try { fileWatcher?.close() } catch {}
+    fileWatcher = null
+    if (!fs.existsSync(PATHS.log)) return
+    try {
+      fileWatcher = fs.watch(PATHS.log, { persistent }, () => drain())
+      fileWatcher.on?.("error", () => { /* poll will catch up */ })
+    } catch {}
+  }
+
+  // Stat-poll. Three signals:
+  //   • inode change OR size decrease → host restart → reset cursor + drain
+  //   • size grew OR mtime changed    → content appended → drain
+  //   • nothing changed               → idle, no work
+  // Pure stat-based — no content-based loops, no fs.watch dependence
+  // (fs.watch is a fast-path optimization; poll is the source of truth).
+  let lastMtimeMs = 0
+  const pollOnce = () => {
+    if (closed) return
+    let stat
+    try { stat = fs.statSync(PATHS.log) } catch { return }
+    if (!seenAnyFile) {
+      seenAnyFile = true
+      lastInode = stat.ino
+      lastSize = stat.size
+      lastMtimeMs = stat.mtimeMs
+      if (process.env.AS_DEBUG_WATCHER) console.error("[watcher] first sighting, ino=" + stat.ino)
+      armFileWatcher()
+      drain()
+      return
+    }
+    const restart = stat.ino !== lastInode || stat.size < lastSize
+    const changed = stat.size !== lastSize || stat.mtimeMs !== lastMtimeMs
+    if (restart) {
+      if (process.env.AS_DEBUG_WATCHER) console.error("[watcher] restart detected, ino " + lastInode + "→" + stat.ino + " size " + lastSize + "→" + stat.size)
+      try { fs.writeFileSync(PATHS.cursor, "0") } catch {}
+      armFileWatcher()    // rearm even if inode reused — old watcher is dead either way
+      drain()
+    } else if (changed) {
+      drain()
+    }
+    lastInode = stat.ino
+    lastSize = stat.size
+    lastMtimeMs = stat.mtimeMs
+  }
+
+  pollOnce()
+  const pollTimer = setInterval(pollOnce, pollIntervalMs)
+  if (!persistent) pollTimer.unref?.()
+
+  return {
+    close: () => {
+      if (closed) return
+      closed = true
+      clearInterval(pollTimer)
+      try { fileWatcher?.close() } catch {}
+    },
+  }
 }
