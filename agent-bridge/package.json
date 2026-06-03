@@ -1,0 +1,17 @@
+{
+  "name": "agent-socket-agent-bridge",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Per-user Node bridge that exposes the local AI agent harness (Claude Code / Codex / Hermes) as agent-socket tools. Blitz apps POST to the relay-minted URL to drive real-time agent work; one bridge serves N apps.",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs",
+    "install-launchd": "bash scripts/install-launchd.sh",
+    "uninstall-launchd": "bash scripts/uninstall-launchd.sh"
+  },
+  "dependencies": {
+    "@agent-socket/sdk": "file:../sdk",
+    "ws": "^8.18.0"
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "host": "docs.google.com",
+  "notes": "Google Sheets web UI (path /spreadsheets/d/...). The grid is canvas-rendered, so we drive it through the name box (#t-name-box), the rich-text editor (#waffle-rich-text-editor), the formula bar (#t-formula-bar-input), and synthetic clipboard events. /sheets_info FIRST to confirm you're on a spreadsheet and to learn the current selection / sheet tabs. /sheets_write_range pastes an HTML <table> so newlines, commas, em-dashes, and quotes inside cells are preserved (verified). Tools that touch the doc are persisted to Drive within ~1s but the on-screen render may lag — pair with a short /wait_for or re-read via /sheets_read_cell if you need confirmation. These tools are spreadsheet-only; for Docs / Slides you'll need a different profile.",
+  "tools": [
+    {
+      "path": "/sheets_info",
+      "description": "Return the current spreadsheet's state: document title, active sheet gid, active cell or selection (from name box), list of sheet tabs, and the URL. Cheap; call first to orient. Returns { error } if not on a /spreadsheets/d/* URL.",
+      "input_schema": { "type": "object", "properties": {} },
+      "code": "if (!/\\/spreadsheets\\/d\\//.test(location.pathname)) return { error: 'not on a spreadsheet', url: location.href };\nconst tabs = Array.from(document.querySelectorAll('.docs-sheet-tab')).map(t => ({ name: t.querySelector('.docs-sheet-tab-name')?.innerText ?? null, active: t.classList.contains('docs-sheet-active-tab') }));\nconst gid = location.hash.match(/gid=(\\d+)/)?.[1] ?? null;\nconst doc_id = location.pathname.match(/\\/spreadsheets\\/d\\/([^/]+)/)?.[1] ?? null;\nreturn {\n  url: location.href,\n  doc_id,\n  gid,\n  title: document.querySelector('.docs-title-input')?.value ?? null,\n  selection: document.querySelector('#t-name-box')?.value ?? null,\n  formula_bar: (document.querySelector('#t-formula-bar-input')?.innerText ?? '').replace(/\\n$/, ''),\n  sheets: tabs,\n  sheet_count: tabs.length\n};"
+    },
+    {
+      "path": "/sheets_goto_cell",
+      "description": "Jump to a cell or range (e.g. 'A1', 'C5:F12', 'Sheet2!A1'). Drives the name box. Returns the post-jump selection. Use this before /sheets_write_range or /sheets_clear_range when you want to be explicit about where you're writing.",
+      "input_schema": { "type": "object", "required": ["cell"], "properties": { "cell": { "type": "string", "description": "e.g. 'A1', 'B2:D10', or 'Sheet2!A1'" } } },
+      "code": "async function wait(ms){await new Promise(r=>setTimeout(r,ms))}\nconst ref = String(args.cell ?? '').trim();\nif (!ref) return { error: 'cell required' };\nconst nb = document.querySelector('#t-name-box');\nif (!nb) return { error: 'name box not found — are you on a spreadsheet?' };\nconst setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;\nnb.focus();\nsetter.call(nb, ref);\nnb.dispatchEvent(new Event('input', { bubbles: true }));\nnb.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));\nawait wait(300);\nreturn { ok: true, selection: document.querySelector('#t-name-box').value };"
+    },
+    {
+      "path": "/sheets_read_cell",
+      "description": "Read the value of a single cell by navigating to it and reading the formula bar. Returns the displayed value (or the formula source if it's a formula). For bulk reads, call multiple times or rely on the user exporting the sheet — there's no native multi-cell read because the grid is canvas-rendered.",
+      "input_schema": { "type": "object", "required": ["cell"], "properties": { "cell": { "type": "string", "description": "A1 notation" } } },
+      "code": "async function wait(ms){await new Promise(r=>setTimeout(r,ms))}\nconst ref = String(args.cell ?? '').trim();\nif (!ref) return { error: 'cell required' };\nconst nb = document.querySelector('#t-name-box');\nconst setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;\nnb.focus();\nsetter.call(nb, ref);\nnb.dispatchEvent(new Event('input', { bubbles: true }));\nnb.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));\nawait wait(250);\nconst fb = document.querySelector('#t-formula-bar-input');\nconst raw = fb?.innerText ?? fb?.textContent ?? '';\nreturn { cell: document.querySelector('#t-name-box').value, value: raw.replace(/\\n$/, '') };"
+    },
+    {
+      "path": "/sheets_write_range",
+      "description": "Write a 2D array of values starting at the given top-left cell. Builds an HTML <table> and pastes it via a synthetic ClipboardEvent — Sheets parses the table and fills cells row-by-row. Newlines, commas, em-dashes, and quotes inside cells are preserved (verified round-trip). Values are coerced to strings; pass formulas as their literal '=SUM(A1:A3)' string and Sheets will interpret them on paste. Each row must have the same column count. Returns the post-paste selection (typically the full range that was filled).",
+      "input_schema": {
+        "type": "object",
+        "required": ["cell", "values"],
+        "properties": {
+          "cell": { "type": "string", "description": "Top-left cell in A1 notation, e.g. 'A1' or 'Sheet2!A1'" },
+          "values": {
+            "type": "array",
+            "description": "2D array, outer = rows, inner = columns. e.g. [[\"h1\",\"h2\"],[\"r1c1\",\"r1c2\"]]",
+            "items": { "type": "array", "items": {} }
+          }
+        }
+      },
+      "code": "async function wait(ms){await new Promise(r=>setTimeout(r,ms))}\nconst cell = String(args.cell ?? '').trim();\nconst values = args.values;\nif (!cell) return { error: 'cell required' };\nif (!Array.isArray(values) || values.length === 0) return { error: 'values must be a non-empty 2D array' };\nif (!values.every(Array.isArray)) return { error: 'values must be a 2D array (each row is an array)' };\nconst cols = values[0].length;\nif (!values.every(r => r.length === cols)) return { error: 'all rows must have the same column count', expected: cols };\n// Navigate to top-left\nconst nb = document.querySelector('#t-name-box');\nif (!nb) return { error: 'name box missing — not on a spreadsheet?' };\nconst setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;\nnb.focus();\nsetter.call(nb, cell);\nnb.dispatchEvent(new Event('input', { bubbles: true }));\nnb.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));\nawait wait(300);\nconst editor = document.querySelector('#waffle-rich-text-editor');\nif (!editor) return { error: 'rich-text editor missing — paste target gone' };\neditor.focus();\nawait wait(40);\n// Build HTML <table>\nfunction escapeHtml(s) {\n  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\\n/g, '<br>');\n}\nconst rowsHtml = values.map(row => '<tr>' + row.map(v => '<td>' + escapeHtml(v ?? '') + '</td>').join('') + '</tr>').join('');\nconst html = '<table>' + rowsHtml + '</table>';\n// Plain-text fallback (tabs/newlines — single-line cells only)\nconst tsv = values.map(row => row.map(v => String(v ?? '').replace(/\\t/g, ' ').replace(/\\n/g, ' ')).join('\\t')).join('\\n');\nconst dt = new DataTransfer();\ndt.setData('text/html', html);\ndt.setData('text/plain', tsv);\nconst evt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });\neditor.dispatchEvent(evt);\nawait wait(500);\nreturn { ok: true, rows: values.length, cols, selection_after: document.querySelector('#t-name-box').value };"
+    },
+    {
+      "path": "/sheets_clear_range",
+      "description": "Clear all values in a range (Delete-key behavior — preserves formatting). Equivalent to selecting the range and pressing Delete.",
+      "input_schema": { "type": "object", "required": ["range"], "properties": { "range": { "type": "string", "description": "A1 notation, e.g. 'A1:Z100'" } } },
+      "code": "async function wait(ms){await new Promise(r=>setTimeout(r,ms))}\nconst range = String(args.range ?? '').trim();\nif (!range) return { error: 'range required' };\nconst nb = document.querySelector('#t-name-box');\nconst setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;\nnb.focus();\nsetter.call(nb, range);\nnb.dispatchEvent(new Event('input', { bubbles: true }));\nnb.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));\nawait wait(300);\nconst editor = document.querySelector('#waffle-rich-text-editor');\nif (!editor) return { error: 'editor missing' };\neditor.focus();\nawait wait(40);\nfor (const type of ['keydown', 'keypress', 'keyup']) {\n  editor.dispatchEvent(new KeyboardEvent(type, { key: 'Delete', code: 'Delete', keyCode: 46, which: 46, bubbles: true }));\n}\nawait wait(300);\nreturn { ok: true, cleared: range };"
+    },
+    {
+      "path": "/sheets_set_title",
+      "description": "Rename the spreadsheet (the doc title shown in the top bar and used by Drive). Sheets persists asynchronously; document.title may take a second to reflect the change.",
+      "input_schema": { "type": "object", "required": ["title"], "properties": { "title": { "type": "string" } } },
+      "code": "async function wait(ms){await new Promise(r=>setTimeout(r,ms))}\nconst title = String(args.title ?? '').trim();\nif (!title) return { error: 'title required' };\nconst input = document.querySelector('.docs-title-input');\nif (!input) return { error: 'title input not found' };\nconst setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;\ninput.focus();\nsetter.call(input, title);\ninput.dispatchEvent(new Event('input', { bubbles: true }));\ninput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));\nawait wait(500);\nreturn { ok: true, title_input_value: document.querySelector('.docs-title-input')?.value };"
+    },
+    {
+      "path": "/sheets_add_sheet",
+      "description": "Click the '+' add-sheet button at the bottom-left to create a new sheet tab. Returns the new active sheet's name (Sheets auto-names it 'Sheet2', 'Sheet3', ...). To rename, use /sheets_rename_sheet (not yet implemented — would need menu interaction).",
+      "input_schema": { "type": "object", "properties": {} },
+      "code": "async function wait(ms){await new Promise(r=>setTimeout(r,ms))}\nconst btn = document.querySelector('[aria-label=\"Add Sheet\"]');\nif (!btn) return { error: 'Add Sheet button not found' };\nconst before = document.querySelectorAll('.docs-sheet-tab').length;\nbtn.click();\nawait wait(600);\nconst tabs = Array.from(document.querySelectorAll('.docs-sheet-tab'));\nconst active = tabs.find(t => t.classList.contains('docs-sheet-active-tab'));\nreturn { ok: true, sheet_count: tabs.length, added: tabs.length > before, active_sheet: active?.querySelector('.docs-sheet-tab-name')?.innerText ?? null };"
+    },
+    {
+      "path": "/sheets_list_sheets",
+      "description": "List all sheet tabs in the current document with their names and active state. Quick reference for /sheets_goto_cell when you need a cross-sheet reference like 'Sheet2!A1'.",
+      "input_schema": { "type": "object", "properties": {} },
+      "code": "const tabs = Array.from(document.querySelectorAll('.docs-sheet-tab')).map((t, i) => ({ index: i, name: t.querySelector('.docs-sheet-tab-name')?.innerText ?? null, active: t.classList.contains('docs-sheet-active-tab') }));\nreturn { count: tabs.length, sheets: tabs };"
+    }
+  ]
+}
