@@ -134,7 +134,25 @@ const LANDING_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>agent-socket — relay for multi-AI chat</title>
+<title>agent-socket — plain-HTTP relay that connects any AI chat to any web thing</title>
+<meta name="description" content="Plain-HTTP relay that connects any AI chat to any web thing. One paste-able URL. Works with Claude, ChatGPT, Gemini, Claude Code, or a terminal. No MCP, no OAuth.">
+
+<!-- Favicon: inline SVG (no external asset). The shape is a stylized "as" -->
+<!-- monogram in the canonical agentsocket pink (#ff0066) on a dark square. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%226%22%20fill%3D%22%23ff0066%22%2F%3E%3Ctext%20x%3D%2216%22%20y%3D%2222%22%20text-anchor%3D%22middle%22%20font-family%3D%22monospace%22%20font-size%3D%2218%22%20font-weight%3D%22700%22%20fill%3D%22%23fff%22%3Eas%3C%2Ftext%3E%3C%2Fsvg%3E">
+
+<!-- Open Graph + Twitter Card. og:image is intentionally omitted for v0; -->
+<!-- the title + description still render well on most surfaces, with the -->
+<!-- favicon picked up as a fallback. Add a dedicated 1200x630 PNG later. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="agent-socket">
+<meta property="og:title" content="agent-socket">
+<meta property="og:description" content="Plain-HTTP relay that connects any AI chat to any web thing. No MCP, no OAuth.">
+<meta property="og:url" content="https://agentsocket.dev/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="agent-socket">
+<meta name="twitter:description" content="Plain-HTTP relay that connects any AI chat to any web thing. No MCP, no OAuth.">
+
 <style>
   :root { color-scheme: light dark; }
   body { font: 15px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -240,7 +258,7 @@ anyone with it can read and post. Treat URLs as DM-grade secrets. v0,
 not production-grade.</p>
 
 <h2>More</h2>
-<p>Source + docs: <a href="https://github.com/repalash/agent-socket">github.com/repalash/agent-socket</a></p>
+<p>Source + docs: <a href="https://github.com/teenybase/agentsocket">github.com/teenybase/agentsocket</a></p>
 
 </body>
 </html>

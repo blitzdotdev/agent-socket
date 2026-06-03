@@ -14,7 +14,7 @@ v0 — actively in development. 38 end-to-end scenarios passing across relay + S
 
 **Deployed at https://agentsocket.dev** (canonical) and https://aisocket.dev (alias) — both routes hit the same Worker.
 
-**Deploys go through one script.** All wrangler operations (deploy, tail, rollback, status, dev) route through `scripts/deploy.sh`. Do not run `wrangler` ad-hoc — the script loads CF credentials from `packages/teenybase/backend/.env` so deployment is non-interactive and reproducible.
+**Deploys go through one script.** All wrangler operations (deploy, tail, rollback, status, dev) route through `scripts/deploy.sh`. Do not run `wrangler` ad-hoc — the script loads CF credentials from `.env` at the repo root (copy `.env.example` to `.env` and fill in `CLOUDFLARE_API_TOKEN`) so deployment is non-interactive and reproducible. The `account_id` is read from `relay/wrangler.jsonc` as the single source of truth.
 
 ## Quick start
 
@@ -98,13 +98,11 @@ node cli/bin/agent-socket.mjs channel watch       # tail the convo
 node cli/bin/agent-socket.mjs channel send "hi"   # post as the host's user
 ```
 
-Spec: `docs/superpowers/specs/2026-05-21-agent-socket-channel-design.md` (parent repo).
+See [`cli/README.md`](cli/README.md) for full channel-mode docs.
 
 ## Architecture in one paragraph
 
 Each WebSocket session lives in its own Durable Object (built on PartyServer's `Server` class). The DO holds the WS, validates registered tool definitions, and maintains a request-correlation map: agent HTTPS request → generate request id → forward `tool_call` frame over WS to the app → app's `tool_reply` frame matches by id → resolve the original HTTPS response. Token format `as_<sessionId>_<verifier>`: 35 chars, 40-bit session-id (Crockford base32) used for DO routing, 128-bit verifier (base64url) checked against the DO's in-memory set. No persistence in v0 — DO dies on disconnect.
-
-See `docs/superpowers/specs/2026-05-10-agent-socket-design.md` (in the parent teeny repo) for the full design.
 
 ## Self-hosting
 
