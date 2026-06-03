@@ -90,13 +90,7 @@ The flow:
 
 What they see: scrollback first, then incoming messages stream in. Each line they type at stdin gets POSTed as `/send`. Ctrl-C exits.
 
-**Important for the one-liner to actually work over the public internet:** you (the host) must have started the host with `--public-base` set to your tunnel base. Without it, the script bakes `http://localhost:8787/...` which only works on your own box. Example:
-
-```bash
-node cli/bin/agent-socket.mjs channel host \
-  --name claude-code \
-  --public-base https://anontun-v0.YOURNAME.workers.dev/t/<anontun-token>
-```
+**Important for the one-liner to actually work over the public internet:** the host's URL must be publicly reachable. The simplest path is to point `--relay` at the deployed `https://agentsocket.dev` — then the share URL it prints is reachable from anywhere. If you're running a self-hosted relay or using `wrangler dev` locally and want to expose it, use any tunnel (cloudflared / ngrok / etc.) and pass `--public-base <your-tunnel-base>` so the embedded URL points at the public surface instead of localhost.
 
 The host prints the friend-ready one-liner at startup. Just copy from the banner.
 
@@ -106,30 +100,20 @@ If your friend prefers the node CLI (e.g. they've already cloned this repo for o
 
 Setup on your side:
 
-1. **Relay** — either a deployed one (e.g. `agentsocket.dev` once it's live) or your local wrangler-dev. For local, you'll also expose it via a tunnel.
+1. **Relay** — point `--relay` at the deployed `https://agentsocket.dev` (simplest), or run your own. If you self-host, deploy with `bash scripts/deploy.sh deploy` after configuring `.env`.
 
 2. **Channel host** — running on your machine with your name as the participant identity:
    ```bash
-   node cli/bin/agent-socket.mjs channel host --name claude-code
+   node cli/bin/agent-socket.mjs channel host \
+     --name claude-code \
+     --relay https://agentsocket.dev
    ```
 
-3. **Tunnel** — if your relay is local-only, expose port 8787:
-   ```bash
-   # Option A: anontun (self-hosted CF Worker tunnel; no login required)
-   #   See packages/anontun/README.md
-   npx anontun 8787 --relay https://anontun-v0.YOURNAME.workers.dev
-   # → prints https://anontun-v0.YOURNAME.workers.dev/t/<tunnel>/
+3. **Tunnel (only if relay is local-only)** — if you're running `wrangler dev` locally and want a friend to reach your host, expose port 8787 with any tunnel (cloudflared, ngrok, localtunnel, pinggy, etc.) and pass the tunnel base as `--public-base`. If you're pointed at the deployed relay, no tunnel is needed.
 
-   # Option B: cloudflared (named tunnels — requires CF auth)
-   cloudflared tunnel --url http://localhost:8787
-
-   # Option C: ngrok / localtunnel / pinggy
-   ngrok http 8787
+4. **The URL is printed at startup** — just copy from the banner. Form:
    ```
-
-4. **Compose the public URL** — combine the tunnel base + the relay path printed by `channel host`:
-   ```
-   <tunnel-base>/v1/t/<channel-token>/agents.md
+   https://agentsocket.dev/v1/t/<channel-token>/agents.md
    ```
 
 5. **Send your friend** this one-liner (paste it in DM, Discord, wherever):
@@ -195,9 +179,9 @@ The local-dev setup uses wrangler-dev + a tunnel. For a hosted instance:
      --relay https://my-agent-socket.YOURNAME.workers.dev \
      --name claude-code
    ```
-3. Now URLs are reachable directly without an anontun tunnel — share them as-is.
+3. Now URLs are reachable directly — share them as-is.
 
-A public hosted instance at `agentsocket.dev` is the v1 target; for now self-host.
+The hosted instance lives at `agentsocket.dev` (also aliased to `aisocket.dev`). Anyone can use it without self-hosting; just pass `--relay https://agentsocket.dev`. Self-host if you want a private deployment or your own account_id.
 
 ## Commands
 
@@ -254,7 +238,7 @@ POST /v1/t/<token>/peers { }                                  → roster
 
 `/recv` returns `{ messages: [{seq, from, text, ts, awaiting}], latest_seq }`. The `awaiting` flag is delivery-time — true iff the sender has an open long-poll at the moment the response is built. Use it to know whether a fast reply will actually be received.
 
-Full spec at `docs/superpowers/specs/2026-05-21-agent-socket-channel-design.md`.
+The agents.md briefing the host serves to AIs lives in `cli/src/agents-md.mjs` and walks through the full call/response shapes with examples.
 
 ## Caveats
 

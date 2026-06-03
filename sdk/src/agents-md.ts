@@ -1,5 +1,6 @@
-// defaultAgentsMd helper — emits the borrowed-from-teenybase template
-// described in design doc §5.3.
+// defaultAgentsMd helper — emits a standard agents.md template that
+// app authors can use to brief any AI joining their app. App-specific
+// app name / description / capabilities / conventions are injected.
 
 export interface DefaultAgentsMdOptions {
   appName: string
