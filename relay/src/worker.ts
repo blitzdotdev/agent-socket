@@ -18,6 +18,7 @@ import type { Env } from "./types"
 import { generateSessionId, parseAgentToken, validateTokenPrefix } from "./tokens"
 import { errorResponse } from "./errors"
 import { lookupApp } from "./apps"
+import { PRIVACY_HTML } from "./privacy"
 
 export { RelayServer }
 
@@ -41,6 +42,17 @@ export default {
     // ── Debug endpoints (DEBUG=1 only) ─────────────────────────────
     if (env.DEBUG === "1" && pathname.startsWith("/_debug/")) {
       return await handleDebug(req, env, pathname)
+    }
+
+    // ── Privacy policy (required by Chrome Web Store) ─────────────
+    if (pathname === "/privacy") {
+      return new Response(PRIVACY_HTML, {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "public, max-age=3600",
+        },
+      })
     }
 
     // ── WS upgrade for app connections ─────────────────────────────
