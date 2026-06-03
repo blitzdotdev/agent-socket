@@ -101,11 +101,24 @@ function buildAgentsMd({ host, profile, tools }) {
 // ── connection lifecycle ──────────────────────────────────────────
 
 async function startConnect(opts) {
-  if (client && client.connected) return { status: "already_connected", info: lastStatus, url: lastUrl, token: lastToken }
+  // Keybind-driven flow passes opts.tabId to bind a specific (usually
+  // background) tab. If a session already exists on a DIFFERENT tab, tear it
+  // down first so the new keybind press is the active session. Same-tab
+  // re-presses short-circuit.
+  if (client && client.connected) {
+    if (opts?.tabId && opts.tabId !== boundTabId) {
+      await stopConnect()
+    } else {
+      return { status: "already_connected", info: lastStatus, url: lastUrl, token: lastToken }
+    }
+  }
   const base = opts?.base ?? (await chrome.storage.local.get("relay_base")).relay_base ?? DEFAULT_BASE
 
-  // Capture which tab we're binding to.
-  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  // Capture which tab we're binding to. Keybind callers pass opts.tabId; the
+  // popup path falls back to the user's currently-active tab.
+  const activeTab = opts?.tabId
+    ? await chrome.tabs.get(opts.tabId).catch(() => null)
+    : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
   if (!activeTab) throw new Error("no active tab to bind")
   boundTabId = activeTab.id
   lastProfile = await loadSiteProfileForUrl(activeTab.url)
@@ -182,9 +195,134 @@ async function checkUserScripts() {
   }
 }
 
+// ── keybind-driven background-tab connect ──────────────────────────
+// Each user-assigned shortcut fires `connect-slot-N`. We look up the slot's
+// URL from chrome.storage.local.keybind_slots (managed by the agent via the
+// /configure_keybind tool), open it in a background tab without focus-
+// stealing, wait for the page to be scriptable, mint a session, copy the URL
+// to the clipboard, and surface a desktop notification.
+
+function waitForTabComplete(tabId, timeoutMs = 20000) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const done = (ok, err) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      chrome.tabs.onUpdated.removeListener(listener)
+      chrome.tabs.onRemoved.removeListener(removed)
+      ok ? resolve() : reject(err)
+    }
+    const timer = setTimeout(() => done(false, new Error("tab load timeout")), timeoutMs)
+    function listener(id, info) {
+      if (id === tabId && info.status === "complete") done(true)
+    }
+    function removed(id) {
+      if (id === tabId) done(false, new Error("tab closed before load completed"))
+    }
+    chrome.tabs.onUpdated.addListener(listener)
+    chrome.tabs.onRemoved.addListener(removed)
+    chrome.tabs.get(tabId).then((t) => {
+      if (t?.status === "complete") done(true)
+    }).catch((e) => done(false, e))
+  })
+}
+
+let _offscreenSetup = null
+async function ensureOffscreen() {
+  if (!chrome.offscreen) throw new Error("chrome.offscreen unavailable")
+  if (_offscreenSetup) return _offscreenSetup
+  _offscreenSetup = (async () => {
+    const has = await chrome.offscreen.hasDocument?.()
+    if (has) return
+    await chrome.offscreen.createDocument({
+      url: chrome.runtime.getURL("offscreen.html"),
+      reasons: ["CLIPBOARD"],
+      justification: "Copy minted agent-socket session URL after keybind connect.",
+    })
+  })()
+  try { await _offscreenSetup } catch (e) { _offscreenSetup = null; throw e }
+}
+
+async function copyToClipboard(text) {
+  try {
+    await ensureOffscreen()
+    const res = await chrome.runtime.sendMessage({ __as_target: "offscreen", type: "copy", text })
+    return !!res?.ok
+  } catch (e) {
+    console.warn("[as-ext] copyToClipboard failed:", e)
+    return false
+  }
+}
+
+async function notify(title, message) {
+  try {
+    if (!chrome.notifications) return
+    await new Promise((resolve) => {
+      chrome.notifications.create("", {
+        type: "basic",
+        iconUrl: chrome.runtime.getURL("icons/icon-128.png"),
+        title,
+        message: message ?? "",
+        priority: 1,
+      }, () => resolve())
+    })
+  } catch (e) { console.warn("[as-ext] notify failed:", e) }
+}
+
+async function connectViaSlot(slot) {
+  const { keybind_slots = {} } = await chrome.storage.local.get("keybind_slots")
+  const url = keybind_slots[String(slot)]
+  if (!url) {
+    await notify(`agent-socket slot ${slot}`, `No URL configured. Ask the agent to run /configure_keybind { slot: ${slot}, url: "https://…" }.`)
+    return { ok: false, error: "slot_not_configured", slot }
+  }
+  let host = ""
+  try { host = new URL(url).host } catch {}
+
+  let tab
+  try {
+    tab = await chrome.tabs.create({ url, active: false })
+  } catch (e) {
+    await notify(`agent-socket slot ${slot}`, `Failed to open tab: ${e?.message ?? String(e)}`)
+    return { ok: false, error: e?.message ?? String(e) }
+  }
+
+  try {
+    await waitForTabComplete(tab.id, 25000)
+  } catch (e) {
+    await notify(`agent-socket slot ${slot}`, `Tab load timed out for ${host || url}.`)
+    return { ok: false, error: "tab_load_timeout", url }
+  }
+
+  let res
+  try {
+    res = await startConnect({ tabId: tab.id })
+  } catch (e) {
+    await notify(`agent-socket slot ${slot}`, `Connect failed: ${e?.message ?? String(e)}`)
+    return { ok: false, error: e?.message ?? String(e) }
+  }
+
+  const copied = await copyToClipboard(res.url ?? "")
+  const tools = res.tool_count != null ? `${res.tool_count} tools` : "ready"
+  const msg = copied
+    ? `URL copied (${tools}). Paste into your AI.`
+    : `URL: ${res.url}`
+  await notify(`agent-socket: ${host || "session ready"}`, msg)
+  return { ok: true, slot, url: res.url, tab_id: tab.id, copied }
+}
+
+chrome.commands?.onCommand?.addListener((command) => {
+  const m = command?.match?.(/^connect-slot-(\d+)$/)
+  if (!m) return
+  void connectViaSlot(parseInt(m[1], 10))
+})
+
 // ── popup messaging ─────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  // Offscreen doc has its own listener for these; don't compete.
+  if (msg?.__as_target === "offscreen") return false
   ;(async () => {
     try {
       if (msg?.type === "connect") sendResponse({ ok: true, ...(await startConnect(msg.opts)) })
@@ -203,6 +341,23 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true })
       } else if (msg?.type === "check_user_scripts") {
         sendResponse({ ok: true, ...(await checkUserScripts()) })
+      } else if (msg?.type === "get_keybinds") {
+        const slots = (await chrome.storage.local.get("keybind_slots")).keybind_slots ?? {}
+        let commands = []
+        try { commands = await chrome.commands.getAll() } catch {}
+        sendResponse({ ok: true, slots, commands })
+      } else if (msg?.type === "set_keybind") {
+        const slot = msg.slot
+        const url = msg.url
+        if (!Number.isInteger(slot) || slot < 1 || slot > 4) {
+          sendResponse({ ok: false, error: "slot must be 1..4" })
+        } else {
+          const all = (await chrome.storage.local.get("keybind_slots")).keybind_slots ?? {}
+          if (!url) delete all[String(slot)]
+          else all[String(slot)] = String(url)
+          await chrome.storage.local.set({ keybind_slots: all })
+          sendResponse({ ok: true, slots: all })
+        }
       } else {
         sendResponse({ ok: false, error: `unknown message: ${msg?.type}` })
       }

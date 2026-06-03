@@ -1,0 +1,6 @@
+{
+  "harness": "claude",
+  "base_url": "https://aisocket.dev",
+  "app_id": "as_app_anon",
+  "log_path": "~/Library/Logs/agent-bridge.log"
+}

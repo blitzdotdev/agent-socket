@@ -91,6 +91,61 @@ async function execInPage(getActiveTabId, fn, args, opts) {
   return result.result
 }
 
+/**
+ * Build a JS source string for a site-profile tool. Mirrors `buildEvalScript`
+ * but exposes an `args` const (the parsed body) inside the user code. Inlined
+ * directly into a user-scripts execution so it bypasses page CSP — required
+ * for strict-CSP sites like reddit.com that block scripting.executeScript's
+ * `new Function()` path with the 'unsafe-eval' policy.
+ */
+function buildSiteToolScript(userCode, args, timeoutMs) {
+  // args is the parsed JSON body — serialize it via JSON.stringify so it lands
+  // in the page as a plain object const. Same safeSerialize as /eval.
+  const argsLiteral = JSON.stringify(args ?? {})
+  return `(async () => {
+  function safeSerialize(v, depth) {
+    if (depth == null) depth = 0;
+    if (depth > 6) return "[max depth]";
+    if (v === null || v === undefined) return v;
+    const t = typeof v;
+    if (t === "string" || t === "number" || t === "boolean") return v;
+    if (t === "function") return "[Function " + (v.name || "anonymous") + "]";
+    if (t === "bigint") return v.toString() + "n";
+    if (typeof Element !== "undefined" && v instanceof Element) {
+      return { __type: "Element", tag: v.tagName.toLowerCase(),
+        id: v.id || undefined,
+        classes: (typeof v.className === "string") ? v.className : undefined,
+        text: (v.textContent || "").slice(0, 200) };
+    }
+    if ((typeof NodeList !== "undefined" && v instanceof NodeList) ||
+        (typeof HTMLCollection !== "undefined" && v instanceof HTMLCollection)) {
+      return Array.from(v).slice(0, 50).map(x => safeSerialize(x, depth + 1));
+    }
+    if (Array.isArray(v)) return v.slice(0, 200).map(x => safeSerialize(x, depth + 1));
+    if (t === "object") {
+      const out = {}; let i = 0;
+      for (const k of Object.keys(v)) {
+        if (i++ > 100) { out.__truncated = true; break; }
+        try { out[k] = safeSerialize(v[k], depth + 1); } catch (_) { out[k] = "[unserializable]"; }
+      }
+      return out;
+    }
+    return String(v);
+  }
+  const args = ${argsLiteral};
+  const __timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("site tool timeout")), ${timeoutMs}));
+  const __work = (async () => {
+${userCode}
+  })();
+  try {
+    const value = await Promise.race([__work, __timeout]);
+    return { ok: true, value: safeSerialize(value) };
+  } catch (e) {
+    return { __err: (e && e.message) ? e.message : String(e), __stack: e && e.stack };
+  }
+})()`
+}
+
 // ── tool factories: produce tool objects bound to a getActiveTabId fn ─────
 
 export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetwork }) {
@@ -602,7 +657,69 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
       },
     },
 
-    // ── 15. Save profile ────────────────────────────────────────────
+    // ── 15a. Configure a keybind slot ───────────────────────────────
+    {
+      path: "/configure_keybind",
+      description:
+        "Bind a keybind slot (1..4) to a URL. The user has 4 Chrome keyboard-shortcut slots; this tool sets which URL each one opens. When the user presses the slot's shortcut, the extension opens that URL in a BACKGROUND tab (no focus steal), mints a fresh agent-socket session against it, copies the session URL to the system clipboard, and surfaces a desktop notification. Pass an empty string for `url` to clear a slot. NOTE: the user must one-time assign actual keystrokes at chrome://extensions/shortcuts — this tool only sets the slot→URL mapping. Use /list_keybinds first to see what's already bound.",
+      input_schema: {
+        type: "object",
+        required: ["slot", "url"],
+        properties: {
+          slot: { type: "integer", minimum: 1, maximum: 4, description: "Slot number 1..4." },
+          url: { type: "string", description: "Full URL, e.g. https://www.reddit.com. Empty string clears the slot." },
+        },
+      },
+      handler: async ({ body }) => {
+        const args = parseBody(body)
+        if (!Number.isInteger(args.slot) || args.slot < 1 || args.slot > 4) {
+          return bad("expected { slot: 1..4 }")
+        }
+        if (typeof args.url !== "string") return bad("expected { url: string }")
+        const all = (await chrome.storage.local.get("keybind_slots")).keybind_slots ?? {}
+        if (args.url === "") delete all[String(args.slot)]
+        else all[String(args.slot)] = args.url
+        await chrome.storage.local.set({ keybind_slots: all })
+        let shortcut = null
+        try {
+          const cmds = await chrome.commands.getAll()
+          shortcut = cmds.find((c) => c.name === `connect-slot-${args.slot}`)?.shortcut || null
+        } catch {}
+        return {
+          slot: args.slot,
+          url: args.url,
+          slots: all,
+          shortcut,
+          note: shortcut
+            ? `Slot ${args.slot} bound. Press ${shortcut} to mint a session.`
+            : `Slot ${args.slot} bound, but no keystroke is assigned to it yet. User: open chrome://extensions/shortcuts and assign a key for "agent-socket: connect slot ${args.slot}".`,
+        }
+      },
+    },
+
+    // ── 15b. List configured keybinds ───────────────────────────────
+    {
+      path: "/list_keybinds",
+      description:
+        "Return the current keybind slot→URL mapping and the actual Chrome keystrokes assigned (if any). Use to check what's configured before (re)binding a slot, or to tell the user which keystroke to press for a given site.",
+      input_schema: { type: "object", properties: {} },
+      handler: async () => {
+        const slots = (await chrome.storage.local.get("keybind_slots")).keybind_slots ?? {}
+        let commands = []
+        try { commands = await chrome.commands.getAll() } catch {}
+        const summary = [1, 2, 3, 4].map((n) => {
+          const cmd = commands.find((c) => c.name === `connect-slot-${n}`)
+          return {
+            slot: n,
+            url: slots[String(n)] ?? null,
+            shortcut: cmd?.shortcut || null,
+          }
+        })
+        return { slots: summary }
+      },
+    },
+
+    // ── 16. Save profile ────────────────────────────────────────────
     {
       path: "/save_site_profile",
       description: "Persist a discovered toolset (a list of tool definitions agents can later call) keyed by hostname. Use after exploring a new site with /eval. The profile is stored in chrome.storage and surfaced as extra tools on subsequent connections to that host. NOTE: this does NOT mutate the live session; the user must reconnect for new tools to be served by the relay.",
@@ -662,6 +779,49 @@ export function buildSiteTools(profile, getActiveTabId) {
     input_schema: t.input_schema,
     handler: async ({ body }) => {
       const args = parseBody(body)
+      const timeoutMs = 30000
+      const tabId = await getActiveTabId()
+      if (!tabId) return runtimeError(new Error("no active tab"))
+
+      // Primary path: chrome.userScripts.execute injects raw source via the
+      // user-scripts world, which bypasses the page's CSP entirely (no
+      // 'unsafe-eval' needed). Required for strict-CSP sites like reddit.com.
+      // Requires the user to have toggled "Allow User Scripts" on this
+      // extension in chrome://extensions.
+      if (chrome.userScripts && typeof chrome.userScripts.execute === "function") {
+        try {
+          const wrapped = buildSiteToolScript(t.code, args, timeoutMs)
+          const results = await chrome.userScripts.execute({
+            target: { tabId },
+            world: "MAIN",
+            js: [{ code: wrapped }],
+          })
+          const r = Array.isArray(results) ? results[0] : null
+          if (r?.error) return runtimeError(new Error(typeof r.error === "string" ? r.error : (r.error.message ?? "user script error")))
+          const v = r?.result
+          if (v && typeof v === "object" && v.__err) {
+            return { status: 500, body: { error: { code: "runtime_error", message: v.__err, stack: v.__stack } } }
+          }
+          return v
+        } catch (e) {
+          const msg = e?.message ?? String(e)
+          if (/user scripts? api is not allowed|user scripts? not allowed|developer mode|allow user scripts/i.test(msg)) {
+            return {
+              status: 400,
+              body: { error: {
+                code: "user_scripts_not_enabled",
+                message: "chrome.userScripts is disabled on this extension. Site-specific tools are blocked by site CSP without it. Enable: open chrome://extensions, find 'Agent Socket', click Details, toggle 'Allow User Scripts' on, then reconnect this tab from the extension popup.",
+              } },
+            }
+          }
+          // Other failure (e.g. cross-origin frame) — fall through to the
+          // scripting.executeScript path. Works on any site without strict CSP.
+        }
+      }
+
+      // Fallback: scripting.executeScript with new Function(). Hits page CSP
+      // on strict-CSP sites (reddit.com, x.com, github.com), but the resulting
+      // error message points the agent at the user-scripts toggle.
       try {
         const result = await execInPage(getActiveTabId, async (code, args) => {
           try {
@@ -673,7 +833,20 @@ export function buildSiteTools(profile, getActiveTabId) {
           }
         }, [t.code, args])
         return result
-      } catch (e) { return runtimeError(e) }
+      } catch (e) {
+        const msg = e?.message ?? String(e)
+        if (/unsafe-eval|Content Security Policy/i.test(msg)) {
+          return {
+            status: 400,
+            body: { error: {
+              code: "csp_blocked_enable_user_scripts",
+              message: "This site's CSP blocks the fallback site-tool path, and chrome.userScripts is not enabled. To run site tools here: open chrome://extensions, find 'Agent Socket', click Details, toggle 'Allow User Scripts' on, then reconnect this tab.",
+              page_error: msg,
+            } },
+          }
+        }
+        return runtimeError(e)
+      }
     },
   }))
 }
