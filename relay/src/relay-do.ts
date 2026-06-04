@@ -443,6 +443,25 @@ export class RelayServer extends Server<Env> {
     // Note: the debug-only kill-ws path is matched at the start of onRequest
     // before token validation, see the early-return below.
 
+    // CSRF defense on the user-tool surface. Tool paths run user-defined
+    // handlers and can have arbitrary side effects, so a browser-initiated
+    // cross-site request to one is a CSRF attempt. Browsers always send
+    // Sec-Fetch-Site (Forbidden Header — JS can't spoof it); non-browser
+    // HTTP clients (curl, Python requests, Node fetch, server-side AI
+    // runtimes) don't send it. Block anything other than "none" (which is
+    // user-initiated navigation: address-bar paste, bookmark, link from
+    // a non-web context like a desktop app or terminal).
+    //
+    // Read-only meta paths (/agents.md, /tools.json, /_as_tasks/<id>) are
+    // matched above and bypass this check — they're served by the relay
+    // (no user code), have no side effects, and clicking the URL from
+    // Gmail / web chat to "preview" is a normal user flow we want to
+    // keep working.
+    const sfs = req.headers.get("sec-fetch-site")
+    if (sfs && sfs !== "none") {
+      return errorResponse("csrf_denied", "tool calls not allowed from browser context", 403)
+    }
+
     // User tool call
     if (this.pending.size >= MAX_INFLIGHT) {
       return errorResponse("too_many_inflight", `max ${MAX_INFLIGHT} concurrent calls`, 429)
