@@ -31,6 +31,25 @@ const MAX_AGENTS_MD_BYTES = 64 * 1024
 
 const TOOL_PATH_RE = /^\/[a-zA-Z0-9_\-/.]+$/
 
+// Canonical "how to call" instructions prepended to every served agents.md (unless
+// the app's own doc already includes them). Without this, an AI that fetches a doc
+// describing only WHAT an app does tends to recite it back instead of calling the
+// tools — it never learns the tools are HTTP endpoints it should POST to. This
+// guarantees the contract for ALL apps, including ones that ship minimal markdown.
+const FRAMEWORK_PREAMBLE = `# You are connected to a live app (agent-socket)
+
+These are OPERATING INSTRUCTIONS — act on them, do NOT recite this document back to the user. Greet the user in one line, then use the tools below to do what they ask.
+
+- \`$BASE\` = the URL you fetched this from, with the trailing \`/agents.md\` removed.
+- The app's tools are HTTP endpoints under \`$BASE\`. Discover them first: \`GET $BASE/tools.json\` (each tool's method, path, and input_schema).
+- Call a tool with your web-request / fetch / code tool: \`<method> $BASE<path>\` (usually \`POST\`), with a JSON body when the schema requires one.
+- Errors: 4xx = framework (401 bad/expired token, 404 bad path, 429 rate-limited); HTTP 200 with \`{"error":{"code","message"}}\` = app-level (read it before retrying); 503 = app offline, retry shortly.
+- Keep this URL so you can re-read these instructions if your context is reset.
+
+---
+
+`
+
 interface PendingRequest {
   resolve: (r: Response) => void
   timer: ReturnType<typeof setTimeout>
@@ -397,7 +416,12 @@ export class RelayServer extends Server<Env> {
 
     // Reserved meta paths
     if (userPath === "/agents.md") {
-      return new Response(this.agentsMd || "", {
+      const appMd = this.agentsMd || ""
+      // Prepend the calling contract unless the app's own doc already ships it
+      // (e.g. via the SDK's defaultAgentsMd, which references tools.json) — so a
+      // minimal app doc gets driven, not recited, and rich docs don't double up.
+      const body = appMd.includes("tools.json") ? appMd : FRAMEWORK_PREAMBLE + appMd
+      return new Response(body, {
         status: 200,
         headers: { "content-type": "text/markdown; charset=utf-8" },
       })
