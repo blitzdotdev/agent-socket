@@ -15,6 +15,7 @@ export type ErrorCode =
   | "agents_md_too_large"
   | "protocol_error"
   | "internal_error"
+  | "csrf_denied"
 
 export function errorResponse(code: ErrorCode, message: string, status: number): Response {
   return new Response(

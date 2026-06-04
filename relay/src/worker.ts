@@ -82,6 +82,10 @@ export default {
 
     // ── Agent HTTPS to a token-scoped path ────────────────────────
     // Path: /v1/t/<agent-token>/<rest>
+    // CSRF defense lives inside the DO (relay-do.ts onRequest) so it can
+    // skip the gate for read-only meta paths (/agents.md, /tools.json,
+    // /_as_tasks/<id>) while still blocking browser-initiated requests
+    // to user-defined tool paths.
     const tokenMatch = pathname.match(/^\/v1\/t\/([^/]+)(?:\/|$)/)
     if (tokenMatch) {
       const tokenStr = tokenMatch[1]!
