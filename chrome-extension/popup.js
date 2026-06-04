@@ -18,6 +18,8 @@ const errorMsg = $("#error-msg")
 const userScriptsWarn = $("#user-scripts-warn")
 const openExtDetailsBtn = $("#open-ext-details")
 const recheckUserScriptsBtn = $("#recheck-user-scripts")
+const keybindsList = $("#keybinds-list")
+const openShortcutsBtn = $("#open-shortcuts")
 
 function setStatus(s) {
   const code = s?.status ?? "idle"
@@ -79,7 +81,38 @@ async function refresh() {
   } else {
     userScriptsWarn.hidden = true
   }
+
+  // Keybinds — read-only display. Agents own this via /configure_keybind.
+  const kb = await chrome.runtime.sendMessage({ type: "get_keybinds" })
+  if (kb?.ok) {
+    keybindsList.innerHTML = ""
+    for (let n = 1; n <= 4; n++) {
+      const url = kb.slots?.[String(n)] ?? ""
+      const cmd = (kb.commands ?? []).find((c) => c.name === `connect-slot-${n}`)
+      const key = cmd?.shortcut || ""
+      const li = document.createElement("li")
+      const slot = document.createElement("span")
+      slot.className = "kb-slot"
+      slot.textContent = `${n}.`
+      const keyEl = document.createElement("span")
+      keyEl.className = "kb-key" + (key ? "" : " unset")
+      keyEl.textContent = key || "no key"
+      const urlEl = document.createElement("span")
+      urlEl.className = "kb-url" + (url ? "" : " unset")
+      urlEl.textContent = url || "unconfigured"
+      urlEl.title = url
+      li.appendChild(slot)
+      li.appendChild(keyEl)
+      li.appendChild(urlEl)
+      keybindsList.appendChild(li)
+    }
+  }
 }
+
+openShortcutsBtn?.addEventListener("click", async (e) => {
+  e.preventDefault()
+  await chrome.tabs.create({ url: "chrome://extensions/shortcuts" })
+})
 
 openExtDetailsBtn?.addEventListener("click", async () => {
   // chrome:// URLs can't be opened from a popup directly; create a tab.
@@ -91,6 +124,21 @@ recheckUserScriptsBtn?.addEventListener("click", async () => {
   recheckUserScriptsBtn.disabled = true
   try { await refresh() } finally { recheckUserScriptsBtn.disabled = false }
 })
+
+async function copyLinkToClipboard() {
+  try {
+    await navigator.clipboard.writeText(linkInput.value)
+    return true
+  } catch {
+    linkInput.select()
+    return document.execCommand("copy")
+  }
+}
+
+function flashCopied() {
+  copyBtn.textContent = "Copied!"
+  setTimeout(() => (copyBtn.textContent = "Copy"), 1500)
+}
 
 connectBtn.addEventListener("click", async () => {
   setError("")
@@ -105,7 +153,11 @@ connectBtn.addEventListener("click", async () => {
     connectBtn.hidden = true
     disconnectBtn.hidden = false
     profileName.textContent = res.profile ?? "—"
-    copyHint.textContent = `${res.tool_count} tools registered. Paste this in your AI.`
+    const copied = await copyLinkToClipboard()
+    if (copied) flashCopied()
+    copyHint.textContent = copied
+      ? `${res.tool_count} tools registered. Link copied — paste into your AI.`
+      : `${res.tool_count} tools registered. Paste this in your AI.`
   } catch (e) {
     setError(e?.message ?? String(e))
     setStatus({ status: "error" })
@@ -120,9 +172,8 @@ disconnectBtn.addEventListener("click", async () => {
 })
 
 copyBtn.addEventListener("click", async () => {
-  try { await navigator.clipboard.writeText(linkInput.value); copyBtn.textContent = "Copied!" }
-  catch { linkInput.select(); document.execCommand("copy") }
-  setTimeout(() => (copyBtn.textContent = "Copy"), 1500)
+  await copyLinkToClipboard()
+  flashCopied()
 })
 
 saveRelay.addEventListener("click", async () => {

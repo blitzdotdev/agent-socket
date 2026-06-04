@@ -83,5 +83,27 @@ details > div, details > ul { margin-top: 6px; }
 #profiles-list { margin: 0; padding-left: 16px; font-size: 11px; }
 #profiles-list li { color: var(--muted); }
 
+.kb-list { list-style: none; margin: 4px 0 6px; padding: 0; font-size: 11px; }
+.kb-list li {
+  display: flex; gap: 6px; align-items: center;
+  padding: 2px 0;
+  color: var(--fg);
+}
+.kb-list .kb-slot { color: var(--muted); width: 16px; flex-shrink: 0; }
+.kb-list .kb-key {
+  color: var(--accent);
+  background: #1f1014;
+  border: 1px solid #3a181f;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.kb-list .kb-key.unset { color: var(--muted); background: transparent; border-color: var(--border); }
+.kb-list .kb-url { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.kb-list .kb-url.unset { color: var(--muted); font-style: italic; }
+a.muted { text-decoration: none; }
+a.muted:hover { color: var(--fg); }
+
 footer { margin-top: 4px; min-height: 18px; }
 #error-msg { color: var(--err); }
