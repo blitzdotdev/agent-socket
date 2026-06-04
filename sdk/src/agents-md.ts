@@ -1,6 +1,12 @@
 // defaultAgentsMd helper — emits a standard agents.md template that
 // app authors can use to brief any AI joining their app. App-specific
 // app name / description / capabilities / conventions are injected.
+//
+// NOTE: you don't strictly need this — the relay prepends a canonical "how to call
+// tools" contract (do-not-recite, $BASE, GET $BASE/tools.json, POST $BASE/<path>) to
+// any served agents.md that doesn't already include it. So a custom agentsMd can be
+// app-content-only and the agent will still drive the app. This template includes the
+// contract itself (so the relay won't double it up) and is handy if you want it inline.
 
 export interface DefaultAgentsMdOptions {
   appName: string

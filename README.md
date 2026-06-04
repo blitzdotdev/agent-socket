@@ -32,6 +32,14 @@ Click "Connect with AI", copy the URL, paste into Claude / ChatGPT / Gemini, ask
 
 ## Build your own integration
 
+> **`agentsMd` = app-specific content only.** The relay automatically prepends a
+> standard "how to call tools" contract (`$BASE`, `GET $BASE/tools.json`, "call as
+> `POST $BASE/<path>`", "do **not** recite this doc") to every served `agents.md`
+> when your doc doesn't already include it. So just describe *what your app does and
+> its conventions* — don't restate the calling mechanics, and never end up with a doc
+> that an AI reads and recites instead of acting on. `defaultAgentsMd` already includes
+> the contract (and the relay won't double it up).
+
 ```ts
 import { connect, defaultAgentsMd } from "@agent-socket/sdk"
 
