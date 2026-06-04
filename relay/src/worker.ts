@@ -96,7 +96,7 @@ export default {
 } satisfies ExportedHandler<Env>
 
 // ────────────────────────────────────────────────────────────────────
-// Debug endpoints — only when DEBUG=1. Never enabled in prod wrangler.toml.
+// Debug endpoints — only when DEBUG=1. Never enabled in prod wrangler.jsonc.
 // ────────────────────────────────────────────────────────────────────
 
 async function handleDebug(req: Request, env: Env, pathname: string): Promise<Response> {

@@ -20,7 +20,7 @@ function expectedTimeoutMs() {
     const m = text.match(/^MAX_SYNC_TOOL_MS\s*=\s*(\d+)/m)
     if (m) return parseInt(m[1], 10)
   } catch {}
-  return 30_000  // production default in wrangler.toml
+  return 30_000  // production default in wrangler.jsonc
 }
 
 export default async function () {

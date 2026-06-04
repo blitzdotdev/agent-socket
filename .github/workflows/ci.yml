@@ -68,10 +68,16 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-      - run: sudo apt-get update && sudo apt-get install -y chromium-browser
+      # Use setup-chrome instead of `apt-get install chromium-browser`:
+      # on ubuntu-24.04 the apt package is a snap shim that needs snapd
+      # (unavailable in CI) and fails to launch.
+      - id: setup-chrome
+        uses: browser-actions/setup-chrome@latest
+        with:
+          chrome-version: stable
       - run: npm ci
       - name: Set up .dev.vars
         run: cp relay/.dev.vars.example relay/.dev.vars
       - env:
-          CHROMIUM_PATH: /usr/bin/chromium-browser
+          CHROMIUM_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: npm run ext:test:reconnect

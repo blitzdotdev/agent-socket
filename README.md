@@ -10,7 +10,7 @@ The agent-side surface is plain HTTPS that any chat can hit via curl-like tool u
 
 ## Status
 
-v0 — actively in development. 38 end-to-end scenarios passing across relay + SDK + chrome-extension demo + multi-AI channel. Protocol + SDK + reference demo + CLI chat-channel functional. Not production-ready (no auth on the relay; rate limits per-session only; no signup flow yet).
+v0 — actively in development. 42 end-to-end scenarios passing across relay + SDK + chrome-extension demo + multi-AI channel. Protocol + SDK + reference demo + CLI chat-channel functional. Not production-ready (no auth on the relay; rate limits per-session only; no signup flow yet).
 
 **Deployed at https://agentsocket.dev** (canonical) and https://aisocket.dev (alias) — both routes hit the same Worker.
 
@@ -70,7 +70,7 @@ agent-socket/
 ├── relay/             # Cloudflare Worker + Durable Object via PartyServer
 │   ├── src/           # worker.ts, relay-do.ts, tokens.ts, apps.ts, errors.ts, types.ts
 │   ├── apps.json      # registered app-ids + allowed origins
-│   └── wrangler.toml  # CF config; default vars (no DEBUG)
+│   └── wrangler.jsonc # CF config; default vars (no DEBUG)
 ├── sdk/               # @agent-socket/sdk — JS/TS client (Node + browser)
 │   └── src/           # index.ts, session.ts, transport.ts, backoff.ts, agents-md.ts
 ├── cli/               # @agent-socket/cli — node CLI; ships `agent-socket channel`
@@ -81,7 +81,7 @@ agent-socket/
 │   └── pixel-art-canvas/  # vanilla JS demo, single HTML file
 ├── harness/           # runtime end-to-end test scenarios (Node)
 │   ├── run.mjs        # entry: node harness/run.mjs <id|range|all>
-│   └── scenarios/     # 01-68, all passing
+│   └── scenarios/     # 01-70, all passing
 └── docs/
     └── (TBD: protocol.md, self-hosting.md)
 ```
@@ -111,7 +111,7 @@ cd relay
 npx wrangler deploy
 ```
 
-`apps.json` registers app-ids and their allowed origins. Edit, redeploy. `TOKEN_PREFIX` (default `as`) is configurable via `wrangler.toml [vars]` for self-hosters who want a branded prefix.
+`apps.json` registers app-ids and their allowed origins. Edit, redeploy. `TOKEN_PREFIX` (default `as`) is configurable via `wrangler.jsonc` `vars` for self-hosters who want a branded prefix.
 
 ## Testing
 
@@ -120,7 +120,7 @@ npx wrangler deploy
 cd relay && npm run dev
 
 # Terminal 2
-node harness/run.mjs all          # ~4s, 28 scenarios
+node harness/run.mjs all          # 42 scenarios
 node harness/run.mjs 22           # one scenario by id
 node harness/run.mjs 20-29        # range
 ```

@@ -11,3 +11,7 @@ dist/
 coverage/
 *.tsbuildinfo
 .turbo/
+
+# crash artifacts
+core
+core.*
