@@ -165,6 +165,17 @@ class SessionImpl implements Session {
     }))
   }
 
+  completeTask(taskId: string, result?: { status?: number; body?: unknown }): void {
+    if (typeof taskId !== "string" || taskId.length === 0) {
+      throw new Error("completeTask: taskId must be a non-empty string")
+    }
+    if (!this.ws || this.ws.readyState !== READY_STATE_OPEN) {
+      throw new Error("completeTask: WS not open")
+    }
+    const status = result?.status ?? 200
+    this._sendFrame({ type: "task_complete", taskId, status, body: result?.body })
+  }
+
   close(): void {
     this.giveUpReconnect = true
     this._teardownHeartbeat()
@@ -248,8 +259,12 @@ class SessionImpl implements Session {
     }
     try {
       const result = await handler(ctx)
-      const { status, body } = normalizeResult(result)
-      this._sendFrame({ type: "tool_reply", id: msg.id, status, body })
+      const { status, body, taskId } = normalizeResult(result)
+      const frame: Record<string, unknown> = { type: "tool_reply", id: msg.id, status, body }
+      if (status === 202 && typeof taskId === "string" && taskId.length > 0) {
+        frame.taskId = taskId
+      }
+      this._sendFrame(frame)
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e)
       this._sendFrame({
@@ -400,9 +415,10 @@ class SessionImpl implements Session {
   }
 }
 
-function normalizeResult(result: ToolResult): { status: number; body: unknown } {
+function normalizeResult(result: ToolResult): { status: number; body: unknown; taskId?: string } {
   if (result && typeof result === "object" && "status" in (result as any) && typeof (result as any).status === "number") {
-    return { status: (result as any).status, body: (result as any).body }
+    const r = result as { status: number; body?: unknown; taskId?: string }
+    return { status: r.status, body: r.body, taskId: r.taskId }
   }
   return { status: 200, body: result }
 }
