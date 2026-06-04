@@ -26,7 +26,7 @@ export interface ToolCallContext {
 }
 
 export type ToolResult =
-  | { status?: number; body?: unknown }
+  | { status?: number; body?: unknown; taskId?: string }
   | unknown  // shorthand: returned value becomes the body with status 200
 
 export type ToolHandler = (ctx: ToolCallContext) => Promise<ToolResult> | ToolResult
@@ -123,6 +123,17 @@ export interface Session {
   revokeAgentToken(token: string): Promise<{ ok: boolean }>
   /** List currently-active agent-tokens. */
   listAgentTokens(): Promise<ListedToken[]>
+  /**
+   * Complete an async task. The handler must have previously returned
+   * `{ status: 202, taskId }`. The agent's poll on `<URL>/_as_tasks/<taskId>`
+   * will then return the supplied status + body.
+   *
+   * Fire-and-forget — no reply frame. Throws if the WS is not currently
+   * open, or if taskId is missing. Async tasks do NOT survive a WS
+   * reconnect (the relay's task map lives in DO memory); completing a
+   * task minted in a prior session is a no-op on the relay.
+   */
+  completeTask(taskId: string, result?: { status?: number; body?: unknown }): void
   /** Close the WS and give up. */
   close(): void
 }

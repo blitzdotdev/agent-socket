@@ -70,13 +70,39 @@ Generates a fresh paste-able URL for one agent. Returns `{ token, url, label }`.
 
 Standard CRUD for the session's tokens.
 
+### `session.completeTask(taskId, { status?, body? })`
+
+Completes an async task previously started by a handler that returned `{ status: 202, taskId }`. Fire-and-forget — no reply. Throws if the WS is closed or `taskId` is empty. `status` defaults to 200.
+
+Async tasks live in the relay's Durable Object memory; they do **not** survive a WS reconnect. After `onSessionChanged` fires, taskIds from the prior session are dead — the agent's poll on the old paste-URL will already be returning errors.
+
 ### `session.close()`
 
 Tear down the WS. Stops accepting tool calls.
 
 ## Async tools (long-running work)
 
-If a tool exceeds the relay's `MAX_SYNC_TOOL_MS` (default 30 s), it can be reported as async: return `{ status: 202, taskId: "<your-id>" }` from the handler, then later call `session.completeTask(taskId, { status: 200, body: { ... } })`. The agent polls `<URL>/_as_tasks/<taskId>` to retrieve the result.
+If a tool exceeds the relay's `MAX_SYNC_TOOL_MS` (default 30 s), report it as async:
+
+```ts
+tools: [
+  {
+    path: "/render_report",
+    description: "Kick off a long-running report.",
+    handler: async ({ body }) => {
+      const taskId = crypto.randomUUID()
+      // start the work without awaiting it
+      queueMicrotask(async () => {
+        const result = await doExpensiveWork(body)
+        session.completeTask(taskId, { status: 200, body: result })
+      })
+      return { status: 202, taskId }
+    },
+  },
+]
+```
+
+The agent gets `202 { taskId }` immediately, then polls `<URL>/_as_tasks/<taskId>` until it returns 200 with the body.
 
 ## Reconnect + remint semantics
 
