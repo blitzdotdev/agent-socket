@@ -32,6 +32,11 @@
       "description": "Reddit www subdomain — same tools as reddit.com."
     },
     {
+      "host_match": "docs.google.com",
+      "file": "docs.google.com.json",
+      "description": "Google Sheets web UI: read selection, navigate cells, paste HTML tables, clear ranges. Spreadsheets only — Docs/Slides not covered."
+    },
+    {
       "host_match": "*",
       "file": "generic.json",
       "description": "Fallback hints for any site."

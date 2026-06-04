@@ -25,11 +25,12 @@ Format: `<TOKEN_PREFIX>_<sessionId>_<verifier>` — by default `as_<8>_<22>`. Th
 | Path | What |
 |---|---|
 | `GET /` | Inline-HTML landing page |
+| `GET /privacy` | Inline-HTML privacy policy (linked from Chrome Web Store submission) |
 | `GET /v1/_ws` | WS upgrade; mints a fresh session-id at the edge and routes to a brand-new DO |
-| `POST /v1/t/<token>/<path>` | Forward to that token's DO, which invokes the registered tool handler over WS |
-| `GET /v1/t/<token>/agents.md` | The app's briefing document for AIs |
-| `GET /v1/t/<token>/tools.json` | The registered tool list (machine-readable) |
-| `POST /v1/t/<token>/_as_tasks/<task-id>` | Async-task lookup (for tools that exceed sync timeout) |
+| `POST /v1/t/<token>/<path>` | Forward to that token's DO, which invokes the registered tool handler over WS. CSRF-gated via `Sec-Fetch-Site` (see SECURITY.md). |
+| `GET /v1/t/<token>/agents.md` | The app's briefing document for AIs (CSRF gate exempt) |
+| `GET /v1/t/<token>/tools.json` | The registered tool list (machine-readable, CSRF gate exempt) |
+| `GET /v1/t/<token>/_as_tasks/<task-id>` | Async-task status poll for tools that exceed `MAX_SYNC_TOOL_MS` (CSRF gate exempt) |
 | `GET /_debug/*` | Only when `DEBUG=1` in vars — health, kill-ws, etc. Production must NOT set DEBUG. |
 
 ## Config
