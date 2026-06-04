@@ -26,12 +26,14 @@ read, evaluate, and screenshot the page on your behalf.
 | `POST /tabs_list` | List open tabs in the current window. |
 | `POST /tabs_switch` | Switch the active tab. |
 | `POST /console_recent` | Last N console messages from the page. |
+| `POST /configure_keybind` | Bind a URL to keybind slot 1–4. Pressing the assigned shortcut later opens that URL in a background tab and connects a fresh agent-socket session to it. |
+| `POST /list_keybinds` | Return the current slot → URL map plus the user's configured shortcuts (`chrome.commands.getAll`). |
 | `POST /save_site_profile` | Persist a discovered toolset keyed by hostname. After reconnect those tools are first-class. |
 
 **Site-specific tools** (loaded automatically based on the active tab's host):
 
 - `tools-lib/_index.json` maps host patterns → tool files.
-- Bundled profiles: `github.com.json`, `news.ycombinator.com.json`, plus a `generic.json` fallback.
+- Bundled profiles: `github.com.json`, `x.com.json` (+ `twitter.com` alias), `news.ycombinator.com.json`, `reddit.com.json` (+ `www.reddit.com` alias), `docs.google.com.json`, plus a `generic.json` fallback.
 - User-saved profiles (via `/save_site_profile`) live in `chrome.storage.local`
   under `site_profiles[host]` and take precedence over bundled ones.
 
@@ -69,9 +71,13 @@ xvfb-run -a -s "-screen 0 1280x900x24" \
   node chrome-extension/test/e2e.mjs
 ```
 
-25 scenarios cover: connect/mint, meta endpoints, page info, eval (success/error/await),
+Coverage: connect/mint, meta endpoints, page info, eval (success/error/await),
 DOM query, click/fill/submit, wait_for, scroll, text/html, dynamic lists, tabs,
 screenshot, save_site_profile, reconnect-loads-saved, and the negative paths.
+
+A separate **unit** test at `test/reconnect.unit.mjs` (23 assertions, ~3s, no
+chromium needed) drives the SDK's reconnect path against a mocked WebSocket
+to catch regressions in the vendored `lib/sdk/`.
 
 ## Architecture in one paragraph
 

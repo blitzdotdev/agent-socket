@@ -8,7 +8,7 @@ Not on npm; runs from the monorepo root.
 
 ```bash
 # From the repo root:
-node harness/run.mjs all     # ~50 sec, all scenarios
+node harness/run.mjs all     # ~45 sec, 42 scenarios
 node harness/run.mjs 60      # one specific scenario
 node harness/run.mjs 60-69   # a range
 ```
@@ -25,9 +25,9 @@ The harness boots its own `wrangler dev` for the relay before each scenario set;
   - `assert.mjs` — tiny assertion harness.
 - `scenarios/NN-name.mjs` — each scenario exports a default async function. Numbered groups:
   - **01–03** Relay boots, bad URLs, token format
-  - **10–20** WS handshake + register + mint + tools.json + agents.md
-  - **21–29** SDK reconnect, concurrency limits, post-close behavior
-  - **30–35** Origin checks, tool round-trip, ping-pong, async tasks
+  - **10–19** Raw WS handshake + register + mint + tools.json + agents.md
+  - **20–29** SDK happy path, concurrency limits, post-close behavior, tool timeout
+  - **30–37** Origin/CSRF defenses, tool round-trip, ping-pong, async tasks (raw + SDK)
   - **41** SDK reconnect + remint
   - **50** Puppeteer pixel-art-canvas visual test
   - **60–70** Channel CLI (host/send/recv/watch + edge cases)
@@ -57,11 +57,12 @@ export default async function () {
 Separate from the harness because they need chromium:
 
 ```bash
-node chrome-extension/test/reconnect.unit.mjs   # mocked WS; no chromium
-node chrome-extension/test/reconnect.e2e.mjs    # real chromium; headless
+node chrome-extension/test/reconnect.unit.mjs   # 23 assertions, mocked WS; no chromium
+node chrome-extension/test/reconnect.e2e.mjs    # real chromium; headless=new
 ```
 
 The E2E uses `/usr/bin/chromium` by default, override with `CHROMIUM_PATH=`.
+The unit test drives the vendored SDK at `chrome-extension/lib/sdk/` against a mocked WebSocket.
 
 ## CI
 

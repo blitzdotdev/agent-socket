@@ -67,23 +67,33 @@ console.log("Paste in your AI chat:", link.url)
 
 ```
 agent-socket/
-├── relay/             # Cloudflare Worker + Durable Object via PartyServer
-│   ├── src/           # worker.ts, relay-do.ts, tokens.ts, apps.ts, errors.ts, types.ts
-│   ├── apps.json      # registered app-ids + allowed origins
-│   └── wrangler.jsonc # CF config; default vars (no DEBUG)
-├── sdk/               # @agent-socket/sdk — JS/TS client (Node + browser)
-│   └── src/           # index.ts, session.ts, transport.ts, backoff.ts, agents-md.ts
-├── cli/               # @agent-socket/cli — node CLI; ships `agent-socket channel`
-│   ├── bin/           # agent-socket entry; dispatches to subcommands
-│   ├── src/           # channel-host, channel-send/recv/watch/peers/stop, log-store, agents-md
-│   └── README.md      # CLI usage (focus: channel — multi-participant chat)
+├── relay/                # Cloudflare Worker + Durable Object via PartyServer
+│   ├── src/              # worker.ts, relay-do.ts, tokens.ts, apps.ts, errors.ts, privacy.ts, types.ts
+│   ├── apps.json         # registered app-ids + allowed origins
+│   └── wrangler.jsonc    # CF config; default vars (no DEBUG)
+├── sdk/                  # @agent-socket/sdk — JS/TS client (Node + browser)
+│   └── src/              # index.ts, session.ts, transport.ts, backoff.ts, agents-md.ts
+├── cli/                  # @agent-socket/cli — node CLI; ships `agent-socket channel`
+│   ├── bin/              # agent-socket entry; dispatches to subcommands
+│   ├── src/              # channel-host, channel-send/recv/watch/peers/stop, log-store, agents-md
+│   └── README.md         # CLI usage (focus: channel — multi-participant chat)
+├── chrome-extension/     # MV3 extension exposing the active tab as agent-socket tools
+│   ├── background.js     # service worker; vendored SDK in lib/sdk/
+│   ├── tools-lib/        # per-site tool profiles (github, x.com, reddit, docs.google, …)
+│   └── scripts/          # vendor-sdk.sh — pulls sdk/dist/*.js into lib/sdk/
+├── agent-bridge/         # per-user Node service exposing a local AI harness as agent-socket tools
 ├── examples/
-│   └── pixel-art-canvas/  # vanilla JS demo, single HTML file
-├── harness/           # runtime end-to-end test scenarios (Node)
-│   ├── run.mjs        # entry: node harness/run.mjs <id|range|all>
-│   └── scenarios/     # 01-70, all passing
-└── docs/
-    └── (TBD: protocol.md, self-hosting.md)
+│   └── pixel-art-canvas/ # vanilla JS demo, single HTML file
+├── harness/              # runtime end-to-end test scenarios (Node)
+│   ├── run.mjs           # entry: node harness/run.mjs <id|range|all>
+│   └── scenarios/        # 01-70, all passing
+├── issues/               # design + bug tracking; open/ vs closed/
+├── docs/                 # (TBD: protocol.md, self-hosting.md)
+├── PRIVACY.md            # privacy policy linked from the relay's /privacy page
+├── SECURITY.md           # disclosure policy + known v0 trust-model limits
+├── CONTRIBUTING.md       # how to file issues / open PRs
+├── CHANGELOG.md          # Unreleased / Added / Fixed / Changed
+└── LICENSE               # Apache 2.0
 ```
 
 ## Channel mode (CLI)
