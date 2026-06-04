@@ -5,16 +5,26 @@
 // tool_call frames to handlers that run chrome.scripting.executeScript in the
 // page's MAIN world.
 
-import { ASClient } from "./lib/as-client.js"
+import { connect, exponentialBackoff } from "./lib/sdk/index.js"
 import { buildBaseTools, buildSiteTools } from "./lib/tools-base.js"
 
 // ── state ──────────────────────────────────────────────────────────
-let client = null
+let session = null         // SDK Session — owns the WS to the relay
 let lastStatus = { status: "idle" }
 let lastUrl = null
 let lastToken = null
 let lastProfile = null     // site profile loaded for the currently-bound tab
 let boundTabId = null      // the tab we last connected for (so we know which one to "drive")
+
+// emitStatus is the popup-facing status stream. The SDK exposes a granular
+// onDisconnect + onSessionChanged surface; this wraps both into the
+// "connecting / connected / disconnected / reconnect-failed / closed / idle"
+// vocabulary that popup.js already speaks.
+function emitStatus(s) {
+  lastStatus = s
+  void chrome.storage.session?.set?.({ status: s }).catch(() => {})
+  try { chrome.runtime.sendMessage({ type: "status", status: s }).catch(() => {}) } catch {}
+}
 
 // Recent console messages per tab, kept in-memory.
 const consoleByTab = new Map()  // tabId → [{ level, text, ts }]
@@ -105,7 +115,7 @@ async function startConnect(opts) {
   // background) tab. If a session already exists on a DIFFERENT tab, tear it
   // down first so the new keybind press is the active session. Same-tab
   // re-presses short-circuit.
-  if (client && client.connected) {
+  if (session && session.connected) {
     if (opts?.tabId && opts.tabId !== boundTabId) {
       await stopConnect()
     } else {
@@ -129,33 +139,52 @@ async function startConnect(opts) {
   const tools = [...baseTools, ...siteTools]
   const agentsMd = buildAgentsMd({ host, profile: lastProfile, tools })
 
-  client = new ASClient({
-    baseUrl: base,
-    appId: "as_app_anon",
-    appDescription: `Chrome extension driving an active tab on ${host || "unknown host"}.`,
-    agentsMd,
-    tools,
-    onStatusChange: (s) => {
-      lastStatus = s
-      void chrome.storage.session?.set?.({ status: s }).catch(() => {})
-      try { chrome.runtime.sendMessage({ type: "status", status: s }).catch(() => {}) } catch {}
-    },
-    // When the WS reconnects under a new session-id (e.g. after a SW
-    // wake-up post idle-kill), the old paste URL is dead. The client
-    // re-mints under the same label and reports the remap here.
-    onSessionChanged: ({ tokensRemapped }) => {
-      // We hold exactly one minted URL (`lastUrl`); look it up and swap.
-      const fresh = tokensRemapped.get(lastUrl)
-      if (fresh) {
-        lastUrl = fresh
-        void chrome.storage.local.set({ last_url: lastUrl }).catch(() => {})
-        try { chrome.runtime.sendMessage({ type: "url_changed", url: lastUrl }).catch(() => {}) } catch {}
-      }
-    },
-  })
+  emitStatus({ status: "connecting" })
 
-  await client.connect()
-  const link = await client.mintToken("chrome-extension")
+  // Reconnect backoff is the SDK default; we keep a single instance across
+  // the session so the attempt counter passes through cleanly.
+  const reconnectBackoff = exponentialBackoff()
+
+  try {
+    session = await connect({
+      baseUrl: base,
+      appId: "as_app_anon",
+      appDescription: `Chrome extension driving an active tab on ${host || "unknown host"}.`,
+      agentsMd,
+      tools,
+      onDisconnect: (info) => {
+        // First fire (attempt=1) = initial WS close; subsequent fires =
+        // a reconnect attempt's connect() threw. Emit the matching legacy
+        // status name so popup.js doesn't have to learn a new vocabulary.
+        emitStatus({
+          status: info.attempt === 1 ? "disconnected" : "reconnect-failed",
+          reason: info.reason,
+          ...(info.attempt > 1 ? { attempt: info.attempt } : {}),
+        })
+        reconnectBackoff(info)
+      },
+      // After a successful reconnect with a new session-id, the SDK has
+      // already re-minted our token under the same label. Update lastUrl
+      // and tell the popup so it can refresh its "paste this URL" pill.
+      onSessionChanged: ({ sessionId, tokensRemapped }) => {
+        const fresh = tokensRemapped.get(lastUrl)
+        if (fresh) {
+          lastUrl = fresh
+          void chrome.storage.local.set({ last_url: lastUrl }).catch(() => {})
+          try { chrome.runtime.sendMessage({ type: "url_changed", url: lastUrl }).catch(() => {}) } catch {}
+        }
+        emitStatus({ status: "connected", sessionId })
+      },
+    })
+  } catch (e) {
+    emitStatus({ status: "closed", reason: e?.message ?? String(e) })
+    session = null
+    throw e
+  }
+
+  emitStatus({ status: "connected", sessionId: session.sessionId })
+
+  const link = await session.mintAgentToken({ label: "chrome-extension" })
   lastUrl = link.url
   lastToken = link.token
   await chrome.storage.local.set({ last_url: lastUrl, last_token: lastToken })
@@ -163,16 +192,16 @@ async function startConnect(opts) {
 }
 
 async function stopConnect() {
-  if (client) {
-    try { client.close() } catch {}
-    client = null
+  if (session) {
+    try { session.close() } catch {}
+    session = null
   }
   lastUrl = null
   lastToken = null
-  lastStatus = { status: "idle" }
   boundTabId = null
   lastProfile = null
   await chrome.storage.local.remove(["last_url", "last_token"])
+  emitStatus({ status: "idle" })
   return { status: "idle" }
 }
 
@@ -183,7 +212,7 @@ async function snapshot() {
     token: lastToken,
     boundTabId,
     profileHost: lastProfile?.host ?? null,
-    connected: client?.connected ?? false,
+    connected: session?.connected ?? false,
   }
 }
 
@@ -395,7 +424,7 @@ self.__as_internal = {
 // ── keep-alive: MV3 service workers idle-kill after ~30s ──────────
 // Chrome wakes the SW briefly when an alarm fires, but the SW goes right
 // back to sleep unless something exercises it. A no-op alarm handler is
-// useless. Calling client.pingNow() sends a real WS ping frame — the
+// useless. Calling session.ping() sends a real WS ping frame — the
 // outbound write + the inbound pong dispatch both run through the SW,
 // keeping it (and therefore the WebSocket) alive.
 //
@@ -404,7 +433,7 @@ self.__as_internal = {
 chrome.alarms.create("as-keepalive", { periodInMinutes: 1 / 3 })
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === "as-keepalive") {
-    if (client?.connected) client.pingNow()
+    if (session?.connected) session.ping()
   }
 })
 

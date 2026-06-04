@@ -75,13 +75,14 @@ screenshot, save_site_profile, reconnect-loads-saved, and the negative paths.
 
 ## Architecture in one paragraph
 
-`background.js` is an ES-module service worker. On `connect`, it instantiates
-`lib/as-client.js` (a slim agent-socket client speaking the same WS frame
-protocol as `@agent-socket/sdk`), registers a toolset built from
-`lib/tools-base.js` (universal) plus the site profile (if any), and mints an
-agent token. Each tool's handler runs in the service worker and forwards work
-into the page via `chrome.scripting.executeScript({ world: "MAIN", ... })`,
-which has full access to page globals. Tool input is parsed from the JSON body
-the relay forwards; output is whatever the handler returns. The popup
-(`popup.html`) is a thin client that exchanges `chrome.runtime.sendMessage`
-calls with the SW.
+`background.js` is an ES-module service worker. On `connect`, it imports
+`@agent-socket/sdk` (vendored at `lib/sdk/`; see `lib/sdk/VENDORED.md`),
+registers a toolset built from `lib/tools-base.js` (universal) plus the site
+profile (if any), and mints an agent token. Each tool's handler runs in the
+service worker and forwards work into the page via
+`chrome.scripting.executeScript({ world: "MAIN", ... })`, which has full
+access to page globals. Tool input is parsed from the JSON body the relay
+forwards; output is whatever the handler returns. The popup (`popup.html`)
+is a thin client that exchanges `chrome.runtime.sendMessage` calls with the
+SW. A `chrome.alarms` keepalive fires every 20s and calls `session.ping()`
+to keep the WS warm against MV3 service-worker idle-kill.

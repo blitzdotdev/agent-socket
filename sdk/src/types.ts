@@ -134,6 +134,14 @@ export interface Session {
    * task minted in a prior session is a no-op on the relay.
    */
   completeTask(taskId: string, result?: { status?: number; body?: unknown }): void
+  /**
+   * Send a heartbeat ping immediately. No-op if the WS isn't open or
+   * there's already a ping in flight. Intended for environments where
+   * the runtime can suspend setTimeout-based heartbeats (e.g. Chrome MV3
+   * service workers, which use chrome.alarms to wake periodically and
+   * call ping() to exercise the WS path).
+   */
+  ping(): void
   /** Close the WS and give up. */
   close(): void
 }

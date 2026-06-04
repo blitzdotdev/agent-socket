@@ -121,7 +121,7 @@ See the parent [`README.md`](../README.md) and [`SECURITY.md`](../SECURITY.md) f
 ## Examples
 
 - [`examples/pixel-art-canvas/`](../examples/pixel-art-canvas/) — vanilla JS pixel-painting demo. Single HTML file, no build, ~120 lines of JS.
-- [`chrome-extension/`](../chrome-extension/) — the chrome extension is itself an SDK consumer (technically uses a slim re-implementation `lib/as-client.js`, but speaks the same protocol).
+- [`chrome-extension/`](../chrome-extension/) — the chrome extension is itself an SDK consumer; the compiled SDK is vendored at `chrome-extension/lib/sdk/` (see `chrome-extension/scripts/vendor-sdk.sh`) so the extension can load-unpacked with no build step.
 
 ## Browser usage
 

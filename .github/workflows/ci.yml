@@ -58,6 +58,32 @@ jobs:
       - run: npm ci
       - run: npm run ext:test:unit
 
+  vendor-freshness:
+    name: chrome-extension/lib/sdk vendor-freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      # Build SDK and re-run the vendor script. If the vendored files in
+      # chrome-extension/lib/sdk/ are out of date with sdk/dist/, the diff
+      # check below fails the build and the PR is blocked.
+      - run: npm run build -w sdk
+      - run: bash chrome-extension/scripts/vendor-sdk.sh
+      - name: Assert no drift in vendored SDK
+        run: |
+          # The VENDORED.md file stamps the current repo HEAD, so it will
+          # always differ in CI (HEAD on PR != HEAD on the source commit
+          # the vendoring was originally run against). Exclude it from the
+          # drift check; the actual .js files are what need to match.
+          git diff --exit-code -- 'chrome-extension/lib/sdk/*.js' \
+            || (echo "::error::Vendored SDK in chrome-extension/lib/sdk/ is stale."; \
+                echo "Run: npm run build -w sdk && bash chrome-extension/scripts/vendor-sdk.sh"; \
+                exit 1)
+
   chrome-ext-e2e:
     name: Chrome extension — E2E (chromium headless=new)
     runs-on: ubuntu-latest
