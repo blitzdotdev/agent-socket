@@ -176,6 +176,12 @@ class SessionImpl implements Session {
     this._sendFrame({ type: "task_complete", taskId, status, body: result?.body })
   }
 
+  ping(): void {
+    if (!this.ws || this.ws.readyState !== READY_STATE_OPEN) return
+    if (this.pendingPingId !== null) return
+    this._sendPing()
+  }
+
   close(): void {
     this.giveUpReconnect = true
     this._teardownHeartbeat()

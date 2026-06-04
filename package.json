@@ -20,7 +20,8 @@
   "scripts": {
     "dev": "bash scripts/deploy.sh dev",
     "check": "npm run check -w relay && npm run check -w sdk",
-    "build": "npm run build -w sdk",
+    "build": "npm run build -w sdk && bash chrome-extension/scripts/vendor-sdk.sh",
+    "ext:vendor": "bash chrome-extension/scripts/vendor-sdk.sh",
     "harness": "node harness/run.mjs all",
     "ext:test": "xvfb-run -a -s \"-screen 0 1280x900x24\" node chrome-extension/test/e2e.mjs",
     "ext:test:unit": "node chrome-extension/test/reconnect.unit.mjs",
