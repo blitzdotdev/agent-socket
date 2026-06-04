@@ -1,0 +1,317 @@
+{
+  "host": "reddit.com",
+  "notes": "Reddit (modern shreddit UI, www.reddit.com). The user is logged in; tools act as them. Read tools (/reddit_me, /reddit_timeline, /reddit_get_post) are safe. Drafting tools (/reddit_compose_reply_to_post, /reddit_compose_reply_to_comment, /reddit_send_dm) fill forms but do not submit \u2014 reversible. Voting (/reddit_upvote_post, /reddit_upvote_comment) is reversible (toggle/remove). Submit tools (/reddit_submit_reply, /reddit_submit_dm) are IRREVERSIBLE \u2014 they post comments / send DMs. /reddit_delete_comment removes one of YOUR own comments (also irreversible, but typical use is undoing a test post). Modern Reddit uses shadow DOM heavily: vote buttons live inside shreddit-post.shadowRoot and shreddit-comment-action-row.shadowRoot; the reply textbox is a Lexical contenteditable inside shreddit-composer wrapped in a faceplate-form. Listing/feed pages route the post link via a slot=full-post-link <a> overlay; navigate with the /reddit_open_* tools rather than clicking. If a read tool returns count: 0 you're probably on the wrong route \u2014 call /reddit_open_home, /reddit_open_subreddit, or /reddit_open_post first. old.reddit.com is NOT supported \u2014 these selectors only work on www.reddit.com.\n\nPOSTING PATH (the load-bearing thing): Reddit's composer is Lit + Lexical, and Lexical refuses every form of synthetic InputEvent / KeyboardEvent because it checks isTrusted. The compose tools instead use the editor instance exposed at `contenteditable.__lexicalEditor` and call `editor.update(() => { rootNode.append(new ParaKlass(textNode)); })` directly inside Lexical's reconciler, then submit via the ancestor `faceplate-form.submit()` (NOT the slotted `button[slot=submit-button].click()` \u2014 that button has rect 0x0 because it's slotted out, and clicking it does NOT trigger the form's submit handler). The submit handler reads `composer.value` (a richtext JSON document) and POSTs the comment via Reddit's internal API. Verified working 2026-05-29.\n\nLAZY-LOAD CAVEAT (affects /reddit_upvote_comment, /reddit_compose_reply_to_comment, /reddit_delete_comment): Each shreddit-comment's action row (`shreddit-comment-action-row` containing the upvote/reply/overflow buttons) is rendered inside a `faceplate-loader[name*=CommentActionRowFull]` that only fires its IntersectionObserver after real user mouse-over or scroll. Synthetic mouseover/focus dispatchEvents do NOT trigger it as of 2026-05-29. Practical consequence: on a freshly-loaded thread, these comment-targeted tools will return `error: 'overflow menu never rendered'` or similar. Workarounds: (a) have the user mouse over the comment list in their browser once, then retry; (b) for delete, the modal is a singleton \u2014 once any comment's Delete menu has opened in this tab, /reddit_delete_comment uses a fast path and works for any comment thereafter; (c) call /reddit_get_post on busier threads where Reddit's hydration completes pre-IntersectionObserver.\n\nRATE LIMIT: posting two replies <10s apart returns an empty new-comment list (Reddit silently rejects the second). Space submissions \u226515s apart for reliability.",
+  "tools": [
+    {
+      "path": "/reddit_me",
+      "description": "Return the logged-in user's username and profile URL. The username isn't on the page until the user drawer has been opened once (Reddit lazy-loads it). This tool: (1) checks for an existing /user/<X>/achievements link; (2) if absent, briefly clicks the user-drawer button to force-render it, then closes the drawer. On subsequent calls the link persists, so it's fast. Returns { error: 'not logged in' } if no drawer button exists.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "code": "function findUser() {\n  const a = Array.from(document.querySelectorAll('a[href*=\"/achievements\"]'))\n    .map(el => el.getAttribute('href'))\n    .find(h => /^\\/user\\/[^/]+\\/achievements/.test(h));\n  return a ? a.match(/^\\/user\\/([^/]+)/)[1] : null;\n}\nlet username = findUser();\nif (username) return { username, profile_url: `https://www.reddit.com/user/${username}/` };\nconst drawerBtn = document.querySelector('#expand-user-drawer-button');\nif (!drawerBtn) return { error: 'not logged in', hint: 'sign in to reddit.com in this tab' };\ndrawerBtn.click();\nfor (let t = 0; t < 30; t++) {\n  await new Promise(r => setTimeout(r, 100));\n  username = findUser();\n  if (username) break;\n}\ndrawerBtn.click();\nif (!username) return { error: 'username never appeared in drawer', hint: 'drawer opened but no /user/<X>/achievements link rendered' };\nreturn { username, profile_url: `https://www.reddit.com/user/${username}/` };"
+    },
+    {
+      "path": "/reddit_open_home",
+      "description": "Navigate to the Reddit home feed (/). The handler does not wait for full load \u2014 pair with /wait_for if needed.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "code": "if (location.pathname !== '/') location.assign('/');\nreturn { navigating_to: '/' };"
+    },
+    {
+      "path": "/reddit_open_subreddit",
+      "description": "Navigate to /r/{name}. Strips a leading 'r/' or '/r/' if the caller included one.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Subreddit name without the 'r/' prefix, e.g. 'programming'"
+          }
+        }
+      },
+      "code": "let n = String(args.name ?? '').trim().replace(/^\\/?(r\\/)/, '');\nif (!n) return { error: 'name required' };\nconst target = '/r/' + encodeURIComponent(n) + '/';\nlocation.assign(target);\nreturn { navigating_to: target };"
+    },
+    {
+      "path": "/reddit_open_post",
+      "description": "Navigate to a specific post. Provide either { url } (full https://www.reddit.com/... or /r/... path) OR { subreddit, post_id } (post_id is the base36 id, with or without the 't3_' prefix).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Full post URL or relative path"
+          },
+          "subreddit": {
+            "type": "string"
+          },
+          "post_id": {
+            "type": "string",
+            "description": "Post id, e.g. '1tq65b4' or 't3_1tq65b4'"
+          }
+        }
+      },
+      "code": "let target = args.url ? String(args.url).trim() : null;\nif (!target && args.subreddit && args.post_id) {\n  const sub = String(args.subreddit).replace(/^\\/?(r\\/)/, '');\n  const pid = String(args.post_id).replace(/^t3_/, '');\n  target = `/r/${encodeURIComponent(sub)}/comments/${encodeURIComponent(pid)}/`;\n}\nif (!target) return { error: 'need { url } or { subreddit, post_id }' };\nif (/^https?:\\/\\//.test(target)) { location.assign(target); }\nelse { location.assign(target.startsWith('/') ? target : '/' + target); }\nreturn { navigating_to: target };"
+    },
+    {
+      "path": "/reddit_open_inbox",
+      "description": "Navigate to the message inbox (/message/inbox/).",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "code": "location.assign('/message/inbox/');\nreturn { navigating_to: '/message/inbox/' };"
+    },
+    {
+      "path": "/reddit_open_user",
+      "description": "Navigate to a user's profile page (/user/{username}/). Strips a leading 'u/' or '/u/' if included.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "username"
+        ],
+        "properties": {
+          "username": {
+            "type": "string",
+            "description": "Username without 'u/', e.g. 'spez'"
+          }
+        }
+      },
+      "code": "let u = String(args.username ?? '').trim().replace(/^\\/?(u\\/)/, '');\nif (!u) return { error: 'username required' };\nconst target = '/user/' + encodeURIComponent(u) + '/';\nlocation.assign(target);\nreturn { navigating_to: target };"
+    },
+    {
+      "path": "/reddit_search",
+      "description": "Run a Reddit search. Navigates to /search/?q=...&sort=...&t=... \u2014 sort=relevance|hot|top|new|comments, time=hour|day|week|month|year|all (time only matters when sort=top).",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "relevance",
+              "hot",
+              "top",
+              "new",
+              "comments"
+            ],
+            "default": "relevance"
+          },
+          "time": {
+            "type": "string",
+            "enum": [
+              "hour",
+              "day",
+              "week",
+              "month",
+              "year",
+              "all"
+            ],
+            "default": "all"
+          }
+        }
+      },
+      "code": "const q = String(args.query ?? '').trim();\nif (!q) return { error: 'query required' };\nconst sort = args.sort ?? 'relevance';\nconst time = args.time ?? 'all';\nconst target = `/search/?q=${encodeURIComponent(q)}&sort=${encodeURIComponent(sort)}&t=${encodeURIComponent(time)}`;\nlocation.assign(target);\nreturn { navigating_to: target };"
+    },
+    {
+      "path": "/reddit_timeline",
+      "description": "Read visible posts on the current listing page (home feed, /r/<sub>, search, user profile, etc). Returns title, author, subreddit, score, comment_count, posted_at (ISO timestamp), permalink (relative), URL, post_type (text/link/image/video), upvote_ratio, and a body excerpt for self-posts. Caps at `limit` (default 25). Returns count: 0 if you're not on a listing route \u2014 use /reddit_open_home or /reddit_open_subreddit first.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 25
+          }
+        }
+      },
+      "code": "const limit = args.limit ?? 25;\nconst posts = Array.from(document.querySelectorAll('shreddit-post')).slice(0, limit);\nconst out = posts.map((p, i) => {\n  const a = (k) => p.getAttribute(k);\n  const permalink = a('permalink');\n  const body = p.querySelector('[slot=text-body]')?.innerText?.trim() ?? null;\n  return {\n    index: i,\n    id: a('id'),\n    title: a('post-title'),\n    author: a('author'),\n    subreddit: a('subreddit-prefixed-name'),\n    score: Number(a('score')) || 0,\n    comment_count: Number(a('comment-count')) || 0,\n    upvote_ratio: Number(a('upvote-ratio')) || null,\n    posted_at: a('created-timestamp'),\n    post_type: a('post-type'),\n    permalink,\n    url: permalink ? `https://www.reddit.com${permalink}` : null,\n    body_excerpt: body ? body.slice(0, 500) : null\n  };\n});\nreturn { page: location.pathname, count: out.length, posts: out };"
+    },
+    {
+      "path": "/reddit_get_post",
+      "description": "On a post page (/r/<sub>/comments/<id>/...), return the focal post (title, author, subreddit, score, body, permalink) plus the currently-visible comments (capped at limit_comments, default 25). Each comment includes depth, author, score, posted_at, body, and permalink. NOTE: comments lazy-load on scroll \u2014 this tool reads only what's currently rendered. Returns { error } if not on a post page.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit_comments": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 200,
+            "default": 25
+          }
+        }
+      },
+      "code": "if (!/\\/comments\\//.test(location.pathname)) return { error: 'not on a post page', current: location.pathname, hint: 'call /reddit_open_post first' };\nconst limit = args.limit_comments ?? 25;\nconst p = document.querySelector('shreddit-post');\nif (!p) return { error: 'shreddit-post not found on page', current: location.pathname };\nconst a = (k) => p.getAttribute(k);\nconst body = p.querySelector('[slot=text-body]')?.innerText?.trim() ?? null;\nconst post = {\n  id: a('id'),\n  title: a('post-title'),\n  author: a('author'),\n  subreddit: a('subreddit-prefixed-name'),\n  score: Number(a('score')) || 0,\n  comment_count: Number(a('comment-count')) || 0,\n  upvote_ratio: Number(a('upvote-ratio')) || null,\n  posted_at: a('created-timestamp'),\n  post_type: a('post-type'),\n  permalink: a('permalink'),\n  url: a('permalink') ? `https://www.reddit.com${a('permalink')}` : null,\n  body\n};\nconst cs = Array.from(document.querySelectorAll('shreddit-comment')).slice(0, limit);\nconst comments = cs.map((c, i) => {\n  const ca = (k) => c.getAttribute(k);\n  const ctext = c.querySelector('[slot=comment]')?.innerText?.trim() ?? null;\n  return {\n    index: i,\n    thingid: ca('thingid'),\n    author: ca('author'),\n    depth: Number(ca('depth')) || 0,\n    score: Number(ca('score')) || 0,\n    posted_at: ca('created'),\n    permalink: ca('permalink'),\n    body: ctext ? ctext.slice(0, 1500) : null\n  };\n});\nreturn { url: location.href, post, comments_returned: comments.length, comments };"
+    },
+    {
+      "path": "/reddit_compose_reply_to_post",
+      "description": "On a post page (/r/<sub>/comments/<id>/...), fill the top-level reply composer WITHOUT submitting. Reversible \u2014 navigate away to abandon, or call /reddit_submit_reply to post. The composer is Lit + Lexical; this tool grabs the editor instance from `contenteditable.__lexicalEditor` and calls `editor.update()` with the registered ParagraphNode + TextNode classes to write text directly into Lexical's reconciler. Newlines split into separate paragraph nodes. Replaces any existing draft. Returns { ok, char_count, body_preview, submit_ready }.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Reply body. Newlines split into paragraph breaks."
+          }
+        }
+      },
+      "code": "const text = String(args.text ?? '');\nif (!text) return { error: 'text required' };\nif (!/\\/comments\\//.test(location.pathname)) return { error: 'not on a post page', current: location.pathname };\nconst composers = Array.from(document.querySelectorAll('shreddit-composer'));\nconst composer = composers.find(c => !c.closest('shreddit-comment')) ?? composers[0];\nif (!composer) return { error: 'no top-level shreddit-composer on this page' };\nconst editorEl = composer.querySelector('[contenteditable=true][data-lexical-editor=true]');\nif (!editorEl) return { error: 'composer has no Lexical contenteditable' };\nconst editor = editorEl.__lexicalEditor;\nif (!editor) return { error: 'contenteditable has no __lexicalEditor instance', hint: 'shreddit-composer schema changed or composer not yet hydrated' };\nconst nodes = editor._nodes;\nconst ParaKlass = nodes.get('paragraph')?.klass;\nconst TextKlass = nodes.get('text')?.klass;\nif (!ParaKlass || !TextKlass) return { error: 'Lexical paragraph/text node klasses missing', registered: Array.from(nodes.keys()) };\nconst paragraphs = text.split(/\\n/);\nlet updateError = null;\neditor.update(() => {\n  try {\n    const rootNode = editor.getEditorState()._nodeMap.get('root');\n    rootNode.clear();\n    for (const line of paragraphs) {\n      const para = new ParaKlass();\n      if (line.length > 0) para.append(new TextKlass(line));\n      rootNode.append(para);\n    }\n  } catch (e) { updateError = e.message; }\n});\nif (updateError) return { error: 'editor.update threw: ' + updateError };\nawait new Promise(r => setTimeout(r, 200));\nconst plainText = editor.getEditorState().read(() => editor.getRootElement()?.innerText) ?? '';\nlet form = null; let n = composer;\nwhile (n) { if (n.tagName === 'FACEPLATE-FORM') { form = n; break; } n = n.parentNode; }\nreturn {\n  ok: true,\n  char_count: plainText.length,\n  body_preview: plainText.slice(0, 200),\n  submit_ready: !!form && typeof form.submit === 'function',\n  faceplate_form_found: !!form\n};"
+    },
+    {
+      "path": "/reddit_submit_reply",
+      "description": "Submit the currently-drafted reply by calling the ancestor faceplate-form.submit() method. IRREVERSIBLE \u2014 posts the comment to Reddit. Picks the shreddit-composer whose Lexical editor has the most text (top-level reply OR an inline comment-reply form). Waits up to 12s for a new shreddit-comment with matching text + author=invocation02 to appear in the DOM, then returns its thingid + permalink. Returns { ok: false, error } if no composer has content, the form is missing, the submit throws, or no new comment appears.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "wait_ms": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 30000,
+            "default": 12000,
+            "description": "How long to wait for the new comment to appear in the DOM after submit."
+          }
+        }
+      },
+      "code": "const waitMs = args.wait_ms ?? 12000;\nconst composers = Array.from(document.querySelectorAll('shreddit-composer'));\nif (!composers.length) return { error: 'no composer present', hint: 'call /reddit_compose_reply_to_post first' };\nconst scored = composers.map(c => {\n  const ed = c.querySelector('[contenteditable=true]');\n  return { c, len: ed?.innerText?.trim().length ?? 0 };\n}).filter(x => x.len > 0).sort((a, b) => b.len - a.len);\nif (!scored.length) return { error: 'all composers are empty', hint: 'draft text first with /reddit_compose_reply_to_post or /reddit_compose_reply_to_comment' };\nconst composer = scored[0].c;\nconst editorEl = composer.querySelector('[contenteditable=true][data-lexical-editor=true]');\nconst draftText = editorEl?.innerText?.trim() ?? '';\nconst isInline = !!composer.closest('shreddit-comment');\nconst parentComment = composer.closest('shreddit-comment');\nconst parentCommentId = parentComment?.getAttribute('thingid') ?? null;\nlet form = null; let n = composer;\nwhile (n) { if (n.tagName === 'FACEPLATE-FORM') { form = n; break; } n = n.parentNode; }\nif (!form) return { error: 'no faceplate-form ancestor on composer \u2014 schema may have changed' };\nif (typeof form.submit !== 'function') return { error: 'faceplate-form has no submit() method' };\n// Find own username from the user-drawer link so we can identify the new comment\nconst ownAchHref = Array.from(document.querySelectorAll('a[href*=\"/achievements\"]')).map(a => a.getAttribute('href')).find(h => /^\\/user\\/[^/]+\\/achievements/.test(h));\nconst ownUsername = ownAchHref?.match(/^\\/user\\/([^/]+)/)?.[1] ?? null;\nconst beforeIds = new Set(Array.from(document.querySelectorAll('shreddit-comment')).map(c => c.getAttribute('thingid')));\ntry { await form.submit(); } catch (e) { return { error: 'form.submit threw: ' + e.message }; }\nconst deadline = Date.now() + waitMs;\nlet newComment = null;\nwhile (Date.now() < deadline) {\n  await new Promise(r => setTimeout(r, 200));\n  const all = Array.from(document.querySelectorAll('shreddit-comment'));\n  newComment = all.find(c => {\n    if (beforeIds.has(c.getAttribute('thingid'))) return false;\n    if (ownUsername && c.getAttribute('author') !== ownUsername) return false;\n    const t = c.querySelector('[slot=comment]')?.innerText?.trim() ?? '';\n    return t === draftText;\n  });\n  if (newComment) break;\n}\nif (!newComment) return { ok: false, error: 'no matching new comment appeared within ' + waitMs + 'ms', draft_text_preview: draftText.slice(0, 80), kind: isInline ? 'comment-reply' : 'post-reply' };\nreturn {\n  ok: true,\n  kind: isInline ? 'comment-reply' : 'post-reply',\n  parent_comment_thingid: parentCommentId,\n  new_thingid: newComment.getAttribute('thingid'),\n  permalink: newComment.getAttribute('permalink'),\n  url: 'https://www.reddit.com' + newComment.getAttribute('permalink'),\n  author: newComment.getAttribute('author'),\n  posted_at: newComment.getAttribute('created')\n};"
+    },
+    {
+      "path": "/reddit_compose_reply_to_comment",
+      "description": "Open the inline reply form on a specific visible comment (by index \u2014 use /reddit_get_post to enumerate first), fill it, and do NOT submit (reversible). Hovers the comment to force its lazy-loaded action row to render before clicking Reply, then uses the same Lexical-via-__lexicalEditor.update() pattern as /reddit_compose_reply_to_post. Returns the form state and the parent comment's thingid so you can confirm before /reddit_submit_reply.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "comment_index",
+          "text"
+        ],
+        "properties": {
+          "comment_index": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Index in the currently-rendered shreddit-comment list (matches /reddit_get_post comments[].index)"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "code": "const idx = args.comment_index ?? 0;\nconst text = String(args.text ?? '');\nif (!text) return { error: 'text required' };\nconst comments = document.querySelectorAll('shreddit-comment');\nconst c = comments[idx];\nif (!c) return { error: `no comment at index ${idx}`, available_count: comments.length };\nc.scrollIntoView({ block: 'center' });\nawait new Promise(r => setTimeout(r, 200));\nfor (const ev of ['pointerover', 'mouseover', 'mouseenter', 'focus']) {\n  c.dispatchEvent(ev === 'focus' ? new FocusEvent(ev, { bubbles: true }) : new MouseEvent(ev, { bubbles: true }));\n}\nlet replyBtn = null;\nfor (let t = 0; t < 30; t++) {\n  replyBtn = c.querySelector('[slot=comment-reply] button');\n  if (replyBtn) break;\n  await new Promise(r => setTimeout(r, 100));\n}\nif (!replyBtn) return { error: 'comment-reply button never appeared (action row did not lazy-load)' };\nreplyBtn.click();\nlet composer = null;\nfor (let t = 0; t < 30; t++) {\n  composer = c.querySelector('shreddit-composer');\n  if (composer && composer.querySelector('[contenteditable=true]')) break;\n  await new Promise(r => setTimeout(r, 100));\n}\nif (!composer) return { error: 'inline composer did not appear after clicking Reply' };\nconst editorEl = composer.querySelector('[contenteditable=true][data-lexical-editor=true]');\nif (!editorEl) return { error: 'inline composer has no Lexical contenteditable' };\nconst editor = editorEl.__lexicalEditor;\nif (!editor) return { error: 'inline contenteditable has no __lexicalEditor instance' };\nconst nodes = editor._nodes;\nconst ParaKlass = nodes.get('paragraph')?.klass;\nconst TextKlass = nodes.get('text')?.klass;\nif (!ParaKlass || !TextKlass) return { error: 'Lexical paragraph/text node klasses missing' };\nconst paragraphs = text.split(/\\n/);\nlet updateError = null;\neditor.update(() => {\n  try {\n    const rootNode = editor.getEditorState()._nodeMap.get('root');\n    rootNode.clear();\n    for (const line of paragraphs) {\n      const para = new ParaKlass();\n      if (line.length > 0) para.append(new TextKlass(line));\n      rootNode.append(para);\n    }\n  } catch (e) { updateError = e.message; }\n});\nif (updateError) return { error: 'editor.update threw: ' + updateError };\nawait new Promise(r => setTimeout(r, 200));\nconst plainText = editor.getEditorState().read(() => editor.getRootElement()?.innerText) ?? '';\nlet form = null; let n = composer;\nwhile (n) { if (n.tagName === 'FACEPLATE-FORM') { form = n; break; } n = n.parentNode; }\nreturn {\n  ok: true,\n  comment_thingid: c.getAttribute('thingid'),\n  comment_author: c.getAttribute('author'),\n  char_count: plainText.length,\n  body_preview: plainText.slice(0, 200),\n  submit_ready: !!form && typeof form.submit === 'function'\n};"
+    },
+    {
+      "path": "/reddit_upvote_post",
+      "description": "Vote on the current post. Reversible \u2014 call again with action='remove' (or the matching action) to undo. The vote buttons live inside shreddit-post's shadow root. action='up' upvotes (no-op if already upvoted), 'down' downvotes, 'remove' clears the current vote, 'toggle' flips up/none. Returns the resulting state. Returns { error } if not on a post page or the post is locked/archived.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "remove",
+              "toggle"
+            ],
+            "default": "toggle"
+          }
+        }
+      },
+      "code": "if (!/\\/comments\\//.test(location.pathname)) return { error: 'not on a post page', current: location.pathname };\nconst action = args.action ?? 'toggle';\nconst p = document.querySelector('shreddit-post');\nif (!p) return { error: 'shreddit-post not found' };\nconst sr = p.shadowRoot;\nif (!sr) return { error: 'shreddit-post has no shadow root' };\nconst upBtn = sr.querySelector('button[upvote]');\nconst dnBtn = sr.querySelector('button[downvote]');\nif (!upBtn || !dnBtn) return { error: 'vote buttons missing \u2014 post may be locked/archived' };\nconst isUp = upBtn.getAttribute('aria-pressed') === 'true';\nconst isDn = dnBtn.getAttribute('aria-pressed') === 'true';\nconst current = isUp ? 'up' : isDn ? 'down' : 'none';\nlet btn = null;\nif (action === 'up') btn = isUp ? null : upBtn;\nelse if (action === 'down') btn = isDn ? null : dnBtn;\nelse if (action === 'remove') btn = isUp ? upBtn : isDn ? dnBtn : null;\nelse { btn = isUp ? upBtn : upBtn; }\nif (!btn) return { ok: true, no_op: true, already: current, action };\nbtn.click();\nawait new Promise(r => setTimeout(r, 200));\nconst nowUp = upBtn.getAttribute('aria-pressed') === 'true';\nconst nowDn = dnBtn.getAttribute('aria-pressed') === 'true';\nreturn { ok: true, was: current, now: nowUp ? 'up' : nowDn ? 'down' : 'none', action };"
+    },
+    {
+      "path": "/reddit_upvote_comment",
+      "description": "Vote on a specific visible comment (by index). Reversible \u2014 call with action='remove' to undo. Comment vote buttons live inside shreddit-comment-action-row's shadow root, which itself only renders after the comment is hovered/focused. This tool hovers the comment first to force-render the action row, then clicks the appropriate button. Returns the resulting vote-state.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "comment_index"
+        ],
+        "properties": {
+          "comment_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "remove",
+              "toggle"
+            ],
+            "default": "toggle"
+          }
+        }
+      },
+      "code": "const idx = args.comment_index ?? 0;\nconst action = args.action ?? 'toggle';\nconst comments = document.querySelectorAll('shreddit-comment');\nconst c = comments[idx];\nif (!c) return { error: `no comment at index ${idx}`, available_count: comments.length };\nc.scrollIntoView({ block: 'center' });\nawait new Promise(r => setTimeout(r, 200));\nfor (const ev of ['pointerover', 'mouseover', 'mouseenter', 'focus']) {\n  c.dispatchEvent(ev === 'focus' ? new FocusEvent(ev, { bubbles: true }) : new MouseEvent(ev, { bubbles: true }));\n}\nlet actionRow = null;\nfor (let t = 0; t < 30; t++) {\n  actionRow = c.querySelector('shreddit-comment-action-row');\n  if (actionRow?.shadowRoot?.querySelector('button[upvote]')) break;\n  await new Promise(r => setTimeout(r, 100));\n}\nif (!actionRow?.shadowRoot) return { error: 'action row never rendered for this comment' };\nconst sr = actionRow.shadowRoot;\nconst upBtn = sr.querySelector('button[upvote]');\nconst dnBtn = sr.querySelector('button[downvote]');\nif (!upBtn || !dnBtn) return { error: 'vote buttons missing in action row' };\nconst isUp = upBtn.getAttribute('aria-pressed') === 'true';\nconst isDn = dnBtn.getAttribute('aria-pressed') === 'true';\nconst current = isUp ? 'up' : isDn ? 'down' : 'none';\nlet btn = null;\nif (action === 'up') btn = isUp ? null : upBtn;\nelse if (action === 'down') btn = isDn ? null : dnBtn;\nelse if (action === 'remove') btn = isUp ? upBtn : isDn ? dnBtn : null;\nelse { btn = isUp ? upBtn : upBtn; }\nif (!btn) return { ok: true, no_op: true, already: current, action, comment_thingid: c.getAttribute('thingid') };\nbtn.click();\nawait new Promise(r => setTimeout(r, 300));\nconst nowUp = upBtn.getAttribute('aria-pressed') === 'true';\nconst nowDn = dnBtn.getAttribute('aria-pressed') === 'true';\nconst now = nowUp ? 'up' : nowDn ? 'down' : 'none';\nreturn { ok: true, was: current, now, action, comment_thingid: c.getAttribute('thingid') };"
+    },
+    {
+      "path": "/reddit_delete_comment",
+      "description": "Delete one of YOUR own comments by thingid (e.g. 't1_oons2sr' — found via /reddit_get_post or returned from /reddit_submit_reply). IRREVERSIBLE on the server, but the typical use is undoing a test reply. Opens the comment's overflow menu, clicks 'Delete comment', then calls `shreddit-comment-deletion-modal.deleteCurrentComment()` directly (the modal's faceplate-modal is never rendered open by clicking the menu item — only the LitElement instance materialises — so calling the method is the only path that completes). The comment stays in the DOM until reload; this tool waits up to 4s for the server to confirm, then reports back. Caller should /navigate to refresh if they want the visual update.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "thingid"
+        ],
+        "properties": {
+          "thingid": {
+            "type": "string",
+            "description": "Comment fullname, e.g. 't1_oons2sr'."
+          },
+          "reload": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, reload the page after deletion so the comment disappears from the DOM."
+          }
+        }
+      },
+      "code": "const thingid = String(args.thingid ?? '').trim();\nif (!thingid) return { error: 'thingid required' };\nif (!/^t1_/.test(thingid)) return { error: 'thingid must start with t1_ (comment fullname)', got: thingid };\nconst target = document.querySelector(`shreddit-comment[thingid=\"${thingid}\"]`);\nif (!target) return { error: 'comment not visible on this page', thingid };\n// Fast path: if a shreddit-comment-deletion-modal is already mounted (the Reddit\n// custom element is registered the moment ANY user opens ANY comment's overflow\n// menu in this tab), we can short-circuit the menu dance entirely.\nlet modal = document.querySelector('shreddit-comment-deletion-modal');\nif (modal) {\n  modal.commentId = thingid;\n  try { await modal.deleteCurrentComment(); } catch (e) { return { error: 'deleteCurrentComment (fast path) threw: ' + e.message }; }\n  await new Promise(r => setTimeout(r, 500));\n  if (args.reload) { location.reload(); return { ok: true, thingid, reloaded: true, path: 'fast' }; }\n  return { ok: true, thingid, path: 'fast', hint: 'pass { reload: true } or call /navigate to verify visually' };\n}\n// Slow path: open the overflow menu, click 'Delete comment', wait for the modal to mount, call deleteCurrentComment().\n// REDDIT LIMITATION: the overflow menu is rendered inside a faceplate-loader that only fires its IntersectionObserver after real user mouse-over or scroll. Synthetic mouseover/focus events do NOT trigger it as of 2026-05-29 — so on pages where Reddit hasn't yet hydrated the action row (typical for just-loaded threads with quiet comment counts), this slow path will return an error.\ntarget.scrollIntoView({ block: 'center' });\nawait new Promise(r => setTimeout(r, 200));\nfor (const ev of ['pointerover', 'mouseover', 'mouseenter', 'focus']) {\n  target.dispatchEvent(ev === 'focus' ? new FocusEvent(ev, { bubbles: true }) : new MouseEvent(ev, { bubbles: true }));\n}\nlet overflow = null;\nfor (let t = 0; t < 50; t++) {\n  overflow = target.querySelector('shreddit-overflow-menu');\n  if (overflow?.shadowRoot?.querySelector('#overflow-trigger')) break;\n  await new Promise(r => setTimeout(r, 100));\n}\nif (!overflow?.shadowRoot) return { error: 'overflow menu never rendered (Reddit lazy-load did not fire). Workaround: have the user mouse over the comment area in their browser, then retry — OR call /reddit_delete_comment from a page where another comment overflow menu has already been opened (the modal singleton survives navigation).', thingid };\nconst isAuthor = overflow.hasAttribute('is-comment-author');\nif (!isAuthor) return { error: 'not your comment — Reddit only allows deleting comments you authored', author: target.getAttribute('author') };\nconst trigger = overflow.shadowRoot.querySelector('#overflow-trigger');\ntrigger.click();\nlet deleteItem = null;\nfor (let t = 0; t < 30; t++) {\n  await new Promise(r => setTimeout(r, 100));\n  deleteItem = Array.from(overflow.shadowRoot.querySelectorAll('[role=menuitem]')).find(i => i.innerText?.trim() === 'Delete comment');\n  if (deleteItem) break;\n}\nif (!deleteItem) return { error: \"'Delete comment' menu item never appeared\" };\nconst innerDiv = deleteItem.querySelector('div');\n(innerDiv ?? deleteItem).click();\nfor (let t = 0; t < 30; t++) {\n  await new Promise(r => setTimeout(r, 100));\n  const candidates = document.querySelectorAll('shreddit-comment-deletion-modal');\n  modal = Array.from(candidates).find(m => m.commentId === thingid) ?? candidates[candidates.length - 1];\n  if (modal && modal.commentId === thingid) break;\n}\nif (!modal) return { error: 'deletion modal never mounted' };\nif (modal.commentId !== thingid) return { error: 'modal mounted with wrong commentId', expected: thingid, got: modal.commentId };\ntry { await modal.deleteCurrentComment(); } catch (e) { return { error: 'deleteCurrentComment threw: ' + e.message }; }\nawait new Promise(r => setTimeout(r, 500));\nif (args.reload) { location.reload(); return { ok: true, thingid, reloaded: true, path: 'slow' }; }\nreturn { ok: true, thingid, path: 'slow', hint: 'pass { reload: true } or call /navigate to verify visually' };"
+    },
+    {
+      "path": "/reddit_send_dm",
+      "description": "Navigate to /message/compose/?to={username}, wait for the compose form to render, then fill subject and body WITHOUT submitting (reversible \u2014 you can navigate away or call /reddit_submit_dm). The DM form's inputs live inside the shadow roots of faceplate-text-input / faceplate-textarea-input custom elements; this tool sets each native input's value via the prototype setter and dispatches a composed InputEvent so the form's state tracker enables the Send button. Returns form-state.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "username",
+          "subject",
+          "body"
+        ],
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          }
+        }
+      },
+      "code": "const username = String(args.username ?? '').replace(/^\\/?(u\\/)/, '').trim();\nconst subject = String(args.subject ?? '');\nconst body = String(args.body ?? '');\nif (!username) return { error: 'username required' };\nif (!subject) return { error: 'subject required' };\nif (!body) return { error: 'body required' };\nconst target = `/message/compose/?to=${encodeURIComponent(username)}`;\nif (!location.pathname.startsWith('/message/compose')) {\n  location.assign(target);\n  await new Promise(r => setTimeout(r, 1500));\n}\nlet form = null;\nfor (let t = 0; t < 40; t++) {\n  form = document.querySelector('compose-message-form');\n  if (form && form.querySelector('faceplate-text-input[name=message-title]')) break;\n  await new Promise(r => setTimeout(r, 100));\n}\nif (!form) return { error: 'compose-message-form did not render', current: location.pathname };\nfunction setHostValue(host, el, val) {\n  const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;\n  const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;\n  el.focus();\n  setter.call(el, val);\n  el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: val }));\n  host.setAttribute('value', val);\n  el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));\n  el.blur();\n}\nasync function touchField(el) {\n  el.focus();\n  for (const ev of ['keydown', 'keypress', 'keyup']) {\n    el.dispatchEvent(new KeyboardEvent(ev, { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, composed: true }));\n  }\n  await new Promise(r => setTimeout(r, 100));\n  el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: ' ' }));\n  el.blur();\n}\nconst recipientHost = form.querySelector('faceplate-text-input[name=message-recipient-input]');\nconst titleHost = form.querySelector('faceplate-text-input[name=message-title]');\nconst contentHost = form.querySelector('faceplate-textarea-input[name=message-content]');\nconst recipientInput = recipientHost?.shadowRoot?.querySelector('input');\nconst titleInput = titleHost?.shadowRoot?.querySelector('input');\nconst contentInput = contentHost?.shadowRoot?.querySelector('textarea');\nif (!titleHost || !contentHost || !titleInput || !contentInput) return { error: 'subject/body inputs not found in form' };\nif (recipientHost && recipientInput) { setHostValue(recipientHost, recipientInput, username); await new Promise(r => setTimeout(r, 400)); }\nsetHostValue(titleHost, titleInput, subject);\nawait new Promise(r => setTimeout(r, 150));\nsetHostValue(contentHost, contentInput, body);\nawait new Promise(r => setTimeout(r, 400));\nif (recipientInput) await touchField(recipientInput);\nawait touchField(titleInput);\nawait touchField(contentInput);\nawait new Promise(r => setTimeout(r, 500));\nconst submitBtn = form.querySelector('button[type=submit]');\nreturn {\n  ok: true,\n  recipient: recipientInput?.value ?? username,\n  subject: titleInput.value,\n  body_chars: contentInput.value.length,\n  submit_button_visible: !!submitBtn,\n  submit_disabled: submitBtn ? (submitBtn.disabled || submitBtn.getAttribute('aria-disabled') === 'true') : null\n};"
+    },
+    {
+      "path": "/reddit_submit_dm",
+      "description": "Click the Send button on the currently-drafted DM. IRREVERSIBLE \u2014 this actually sends the message. Call /reddit_send_dm first to fill the form. Returns { error } if not on the compose page or the Send button is disabled (e.g. missing recipient/subject/body, or reCAPTCHA pending).",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "code": "if (!location.pathname.startsWith('/message/compose')) return { error: 'not on /message/compose', current: location.pathname };\nconst form = document.querySelector('compose-message-form');\nif (!form) return { error: 'no compose form' };\nconst submit = form.querySelector('button[type=submit]');\nif (!submit) return { error: 'no Send button on form' };\nif (submit.disabled || submit.getAttribute('aria-disabled') === 'true') return { error: 'Send button is disabled', hint: 'fill subject and body via /reddit_send_dm first; check reCAPTCHA' };\nsubmit.click();\nreturn { clicked: true };"
+    }
+  ]
+}

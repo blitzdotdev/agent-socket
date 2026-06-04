@@ -22,6 +22,16 @@
       "description": "Hacker News story list, comments, voting."
     },
     {
+      "host_match": "reddit.com",
+      "file": "reddit.com.json",
+      "description": "Reddit (modern shreddit UI): read feed/post/comments, vote, draft + send replies, draft + send DMs."
+    },
+    {
+      "host_match": "www.reddit.com",
+      "file": "reddit.com.json",
+      "description": "Reddit www subdomain — same tools as reddit.com."
+    },
+    {
       "host_match": "*",
       "file": "generic.json",
       "description": "Fallback hints for any site."

@@ -3,7 +3,7 @@
   "name": "Agent Socket — Connect any site to AI",
   "short_name": "Agent Socket",
   "version": "0.1.0",
-  "description": "Let any AI chat (Claude, ChatGPT, Gemini) drive the page you're looking at. Paste a URL into the chat; the AI clicks, types, and reads via tool calls.",
+  "description": "Let AI chats (Claude, ChatGPT, Gemini) drive your active tab. Paste a session URL; the AI clicks, types, and reads.",
   "permissions": [
     "activeTab",
     "tabs",
@@ -11,7 +11,10 @@
     "storage",
     "alarms",
     "webNavigation",
-    "userScripts"
+    "userScripts",
+    "notifications",
+    "offscreen",
+    "clipboardWrite"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -41,5 +44,11 @@
       "resources": ["tools-lib/*.json"],
       "matches": ["<all_urls>"]
     }
-  ]
+  ],
+  "commands": {
+    "connect-slot-1": { "description": "agent-socket: connect slot 1" },
+    "connect-slot-2": { "description": "agent-socket: connect slot 2" },
+    "connect-slot-3": { "description": "agent-socket: connect slot 3" },
+    "connect-slot-4": { "description": "agent-socket: connect slot 4" }
+  }
 }
