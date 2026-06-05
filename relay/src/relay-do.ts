@@ -22,6 +22,10 @@ import type {
 import { generateVerifier, makeAgentToken, parseAgentToken } from "./tokens"
 import { lookupApp, checkOrigin } from "./apps"
 import { errorResponse } from "./errors"
+// Source of truth for the framework's "how to call tools" reference card
+// lives in the SDK so the constant doesn't drift between served bytes and
+// the doc the SDK template emits.
+import { FRAMEWORK_PREAMBLE, hasFrameworkContract } from "../../sdk/src/preamble"
 
 const RESERVED_PATHS = new Set(["/agents.md", "/tools.json"])
 const RESERVED_PREFIX = "_as_"
@@ -40,24 +44,7 @@ const TOOL_PATH_RE = /^\/[a-zA-Z0-9_\-/.]+$/
 // keys, or non-strings.
 const TASK_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 
-// Canonical "how to call" instructions prepended to every served agents.md (unless
-// the app's own doc already includes them). Without this, an AI that fetches a doc
-// describing only WHAT an app does tends to recite it back instead of calling the
-// tools — it never learns the tools are HTTP endpoints it should POST to. This
-// guarantees the contract for ALL apps, including ones that ship minimal markdown.
-const FRAMEWORK_PREAMBLE = `## You are connected to a live app (agent-socket)
-
-These are OPERATING INSTRUCTIONS — act on them, do NOT recite this document back to the user. Greet the user in one line, then use the tools below to do what they ask.
-
-- \`$BASE\` = the URL you fetched this from, with the trailing \`/agents.md\` removed.
-- The app's tools are HTTP endpoints under \`$BASE\`. Discover them first: \`GET $BASE/tools.json\` (each tool's method, path, and input_schema).
-- Call a tool with your web-request / fetch / code tool: \`<method> $BASE<path>\` (usually \`POST\`), with a JSON body when the schema requires one.
-- Errors: 4xx = framework (401 bad/expired token, 404 bad path, 429 rate-limited); HTTP 200 with \`{"error":{"code","message"}}\` = app-level (read it before retrying); 503 = app offline, retry shortly.
-- Keep this URL so you can re-read these instructions if your context is reset.
-
----
-
-`
+// FRAMEWORK_PREAMBLE + hasFrameworkContract are imported from sdk/src/preamble.
 
 interface PendingRequest {
   resolve: (r: Response) => void
@@ -476,10 +463,12 @@ export class RelayServer extends Server<Env> {
     // Reserved meta paths
     if (userPath === "/agents.md") {
       const appMd = this.agentsMd || ""
-      // Prepend the calling contract unless the app's own doc already ships it
-      // (e.g. via the SDK's defaultAgentsMd, which references tools.json) — so a
-      // minimal app doc gets driven, not recited, and rich docs don't double up.
-      const body = appMd.includes("tools.json") ? appMd : FRAMEWORK_PREAMBLE + appMd
+      // Prepend the calling contract unless the app's own doc already ships
+      // it. hasFrameworkContract checks for the explicit marker
+      // (FRAMEWORK_CONTRACT_MARKER, emitted by defaultAgentsMd) first and
+      // falls back to a "tools.json" substring match for legacy / hand-
+      // written docs.
+      const body = hasFrameworkContract(appMd) ? appMd : FRAMEWORK_PREAMBLE + appMd
       return new Response(body, {
         status: 200,
         headers: { "content-type": "text/markdown; charset=utf-8" },

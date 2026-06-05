@@ -18,7 +18,7 @@ if [ ! -d "$SDK_DIST" ]; then
 fi
 
 # Pin the file list — vendor only the runtime .js files, skip .d.ts.
-files=(index.js session.js transport.js backoff.js agents-md.js types.js)
+files=(index.js session.js transport.js backoff.js agents-md.js preamble.js types.js)
 for f in "${files[@]}"; do
   if [ ! -f "$SDK_DIST/$f" ]; then
     echo "vendor-sdk: expected $SDK_DIST/$f missing — SDK build incomplete?" >&2

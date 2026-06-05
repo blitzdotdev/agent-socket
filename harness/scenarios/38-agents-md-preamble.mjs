@@ -64,6 +64,14 @@ export default async function () {
   a.equal(rB.body, appMdRich, "rich: body unchanged when 'tools.json' present in app md (no double preamble)")
   sB.close()
 
+  // ── B2) explicit marker → unchanged (preferred signal over substring)
+  const appMdMarker = "<!-- as:contract-v1 -->\n# Marker App\n\nNo tools-dot-thing here, just the marker.\n"
+  const sB2 = await freshSessionToken(appMdMarker)
+  const rB2 = await httpGet(`/v1/t/${sB2.token}/agents.md`)
+  a.equal(rB2.status, 200, "marker: status 200")
+  a.equal(rB2.body, appMdMarker, "marker: body unchanged when explicit marker present (no double preamble)")
+  sB2.close()
+
   // ── C) empty doc → preamble only ─────────────────────────────────────
   const sC = await freshSessionToken("")
   const rC = await httpGet(`/v1/t/${sC.token}/agents.md`)
