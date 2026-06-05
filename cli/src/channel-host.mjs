@@ -79,8 +79,12 @@ export default async function main(argv) {
   tools.push({
     method: "GET",
     path: "/join.sh",
-    description: "Returns a bash client script — friend pipes through `jq -r .script | bash` to join the channel from a plain terminal.",
-    handler: async () => ({ script: joinScript }),
+    description: "Returns a bash client script. Friend joins via `bash <(curl -s URL/join.sh) \"\" \"<name>\"`.",
+    handler: async () => ({
+      status: 200,
+      headers: { "content-type": "text/x-shellscript" },
+      body: joinScript,
+    }),
   })
 
   // Watch outbox/ for files dropped by the local `channel send` command.
@@ -170,12 +174,12 @@ function printBanner(info, publicBase) {
   console.log(`    You're in a chat with others. Pick a name (e.g. "claude"),`)
   console.log(`    then poll ${shareBase}/agents.md for the protocol.`)
   console.log()
-  console.log("  Share — for a human friend (CLI, zero install, needs jq + bash):")
+  console.log("  Share — for a human friend (CLI, zero install, needs bash + curl):")
   console.log()
-  console.log(`    bash <(curl -s ${shareBase}/join.sh | jq -r .script) "" "<your-name>"`)
+  console.log(`    bash <(curl -s ${shareBase}/join.sh) "" "<your-name>"`)
   console.log()
   console.log("  (Process substitution preserves the friend's terminal stdin so they")
-  console.log("   can actually type. The simpler-looking `curl | jq | bash` pattern")
+  console.log("   can actually type. The simpler-looking `curl | bash` pattern")
   console.log("   doesn't work — bash consumes stdin for the script itself.)")
   console.log()
   if (!publicBase) {

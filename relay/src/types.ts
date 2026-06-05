@@ -116,6 +116,14 @@ export interface ToolReplyFrame {
   status: number
   body?: unknown
   taskId?: string  // present when status === 202 (async)
+  /**
+   * Optional response headers. v0 only honors `content-type` and only when
+   * `body` is a string — the relay sends the string verbatim with that
+   * content-type. Any other headers are accepted-but-ignored by v0; bytes
+   * (ArrayBuffer/Uint8Array) bodies are NOT yet supported and fall back
+   * to JSON encoding.
+   */
+  headers?: Record<string, string>
 }
 
 export interface TaskCompleteFrame {
@@ -123,6 +131,8 @@ export interface TaskCompleteFrame {
   taskId: string
   status: number
   body?: unknown
+  /** Same shape as ToolReplyFrame.headers; honored on /_as_tasks/<id> poll. */
+  headers?: Record<string, string>
 }
 
 export interface PingFrame {

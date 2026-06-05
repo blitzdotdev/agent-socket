@@ -39,3 +39,21 @@ Implementation touches:
 ## Provenance
 
 Encountered 2026-05-21 while building `channel host`'s `/join.sh` endpoint. Workaround: serve the script wrapped in JSON, require the friend's one-liner to include `| jq -r .script`. Works fine but inelegant — and breaks any "paste this URL into the address bar" UX.
+
+---
+
+**CLOSED 2026-06-05.** Implementation:
+
+- `relay/src/types.ts` — `ToolReplyFrame` and `TaskCompleteFrame` gain optional `headers?: Record<string, string>`.
+- `sdk/src/types.ts` — `ToolResult` object branch formalizes `headers?: Record<string, string>`. `Session.completeTask`'s `result` arg gains the same field.
+- `sdk/src/session.ts` — `_handleToolCall` and `completeTask` forward `headers` on the wire when the handler set them; `normalizeResult` extracts them.
+- `relay/src/relay-do.ts` — new `buildToolResponse(status, body, headers?)` helper used by both the sync (`handleToolReply`) and async (`/_as_tasks/<id>` poll) paths. `PendingTask` gains `contentType?` carrying the handler's declared type through the completion flow. Case-insensitive `content-type` lookup via `extractContentType`.
+
+**Contract (v0):**
+- handler returns `{ status, body: <string>, headers: { "content-type": X } }` → relay serves the string verbatim with `Content-Type: X`.
+- handler returns the legacy `{ status, body }` (no headers) → JSON-stringify, `Content-Type: application/json; charset=utf-8` (unchanged).
+- handler returns content-type with a non-string body → relay falls back to JSON. Bytes (ArrayBuffer/Uint8Array) are not yet supported — the wire frame is JSON-encoded and binary doesn't round-trip. Future: explicit `bodyEncoding: "base64"` or a separate binary WS frame type.
+
+**Channel host updated:** `/join.sh` now serves the bash script with `Content-Type: text/x-shellscript` directly. The share one-liner simplifies from `bash <(curl -s URL/join.sh | jq -r .script) "" "name"` to `bash <(curl -s URL/join.sh) "" "name"` — no more `jq` dependency.
+
+**Harness:** new scenario `40-tool-content-type` covers text/html, text/plain (case-insensitive Content-Type header), legacy JSON path, declared-content-type-with-object-body fallback, custom-status + content-type, and verifies `/agents.md` and `/tools.json` are unaffected. 45/45 scenarios pass.

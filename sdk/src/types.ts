@@ -26,7 +26,22 @@ export interface ToolCallContext {
 }
 
 export type ToolResult =
-  | { status?: number; body?: unknown; taskId?: string }
+  | {
+      status?: number
+      body?: unknown
+      taskId?: string
+      /**
+       * Optional response headers. The relay only honors `content-type`
+       * in v0 (and only when `body` is a string — the relay sends the
+       * string verbatim with the declared content-type). Other headers
+       * are accepted-but-ignored; non-string bodies fall back to JSON.
+       *
+       * Use for tools that serve HTML, plain text, CSV, shell scripts,
+       * etc. — anything where the AI's HTTP client needs a specific
+       * content-type to render or parse correctly.
+       */
+      headers?: Record<string, string>
+    }
   | unknown  // shorthand: returned value becomes the body with status 200
 
 export type ToolHandler = (ctx: ToolCallContext) => Promise<ToolResult> | ToolResult
@@ -133,7 +148,7 @@ export interface Session {
    * reconnect (the relay's task map lives in DO memory); completing a
    * task minted in a prior session is a no-op on the relay.
    */
-  completeTask(taskId: string, result?: { status?: number; body?: unknown }): void
+  completeTask(taskId: string, result?: { status?: number; body?: unknown; headers?: Record<string, string> }): void
   /**
    * Send a heartbeat ping immediately. No-op if the WS isn't open or
    * there's already a ping in flight. Intended for environments where

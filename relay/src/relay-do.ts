@@ -62,6 +62,8 @@ interface PendingTask {
   status: number
   body: unknown
   completed: boolean
+  /** Handler-supplied content-type for non-JSON responses (HTML, text, etc.). */
+  contentType?: string
 }
 
 export class RelayServer extends Server<Env> {
@@ -170,7 +172,7 @@ export class RelayServer extends Server<Env> {
         this.handleToolReply(msg)
         return
       case "task_complete":
-        this.handleTaskComplete(msg.taskId, msg.status, msg.body)
+        this.handleTaskComplete(msg.taskId, msg.status, msg.body, msg.headers)
         return
       case "ping":
         this.send({ type: "pong", id: msg.id })
@@ -370,16 +372,10 @@ export class RelayServer extends Server<Env> {
       return
     }
 
-    p.resolve(new Response(
-      msg.body !== undefined ? JSON.stringify(msg.body) : "",
-      {
-        status: msg.status,
-        headers: { "content-type": "application/json; charset=utf-8" },
-      },
-    ))
+    p.resolve(buildToolResponse(msg.status, msg.body, msg.headers))
   }
 
-  private handleTaskComplete(taskId: string, status: number, body: unknown): void {
+  private handleTaskComplete(taskId: string, status: number, body: unknown, headers?: Record<string, string>): void {
     // task_complete is fire-and-forget (no reply frame), so unhealthy frames
     // are dropped silently with a debug-log breadcrumb. The protections below
     // prevent a hostile or buggy app from preloading the tasks Map with
@@ -409,7 +405,8 @@ export class RelayServer extends Server<Env> {
       if (this.env.DEBUG === "1") console.log(`[DO] task_complete dropped: body ${serialized.length} > ${MAX_TASK_BODY_BYTES} bytes`)
       return
     }
-    this.tasks.set(taskId, { status, body, completed: true })
+    const contentType = extractContentType(headers)
+    this.tasks.set(taskId, { status, body, completed: true, contentType })
   }
 
   // ── HTTP entry ────────────────────────────────────────────────────
@@ -504,10 +501,13 @@ export class RelayServer extends Server<Env> {
           headers: { "content-type": "application/json; charset=utf-8" },
         })
       }
-      return new Response(JSON.stringify(task.body ?? null), {
-        status: task.status,
-        headers: { "content-type": "application/json; charset=utf-8" },
-      })
+      // Honor the content-type the app set when it called task_complete
+      // (carried through PendingTask.contentType), same as the sync path.
+      return buildToolResponse(
+        task.status,
+        task.body ?? null,
+        task.contentType ? { "content-type": task.contentType } : undefined,
+      )
     }
     if (userPath.startsWith("/_as_")) {
       return errorResponse("not_found", "unknown internal path", 404)
@@ -596,4 +596,43 @@ export class RelayServer extends Server<Env> {
       return false
     }
   }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Response builders honoring handler-supplied content-type.
+//
+// v0 contract: handler can declare a content-type via `headers` on its
+// tool_reply / task_complete frame. The relay sends the body verbatim
+// only when (a) the declared content-type is present AND (b) `body` is
+// a string. Anything else (object body, undefined body, missing header)
+// falls back to JSON-encoding with `application/json; charset=utf-8`.
+//
+// Bytes (ArrayBuffer/Uint8Array) are NOT supported in v0 — the wire
+// frame is JSON-encoded and binary doesn't round-trip cleanly. Future
+// work: add an explicit `bodyEncoding: "base64"` field, or move binary
+// onto a separate WS frame type.
+// ────────────────────────────────────────────────────────────────────
+
+function extractContentType(headers: Record<string, string> | undefined): string | undefined {
+  if (!headers || typeof headers !== "object") return undefined
+  // Case-insensitive lookup so handlers can use "Content-Type" or "content-type".
+  for (const [k, v] of Object.entries(headers)) {
+    if (typeof v === "string" && k.toLowerCase() === "content-type") return v
+  }
+  return undefined
+}
+
+function buildToolResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
+  const contentType = extractContentType(headers)
+  // Handler opted into a custom content-type AND gave us a string body —
+  // pass it through verbatim. (Non-string bodies with a declared
+  // content-type fall through to JSON; cheaper than guessing at
+  // serialization.)
+  if (contentType && typeof body === "string") {
+    return new Response(body, { status, headers: { "content-type": contentType } })
+  }
+  return new Response(
+    body !== undefined ? JSON.stringify(body) : "",
+    { status, headers: { "content-type": "application/json; charset=utf-8" } },
+  )
 }

@@ -58,7 +58,7 @@ Key `opts`:
 - **`appId`** — public, hardcoded in client code. Same role as a Google OAuth client ID or Supabase anon key. `as_app_anon` is the anonymous demo app; for production register your own.
 - **`agentsMd`** — markdown briefing served at `<URL>/agents.md`. Use `defaultAgentsMd({...})` for a template, or write your own.
 - **`appDescription`** — 1-3 sentence summary surfaced in `tools.json`.
-- **`tools[]`** — `{ method?, path, description, input_schema?, handler }`. Handler receives `{ method, path, body, headers }`, returns `{ status?, body? }` or just a value (defaults to status 200).
+- **`tools[]`** — `{ method?, path, description, input_schema?, handler }`. Handler receives `{ method, path, body, headers }`, returns `{ status?, body?, headers? }` (or just a value — defaults to status 200, JSON body). If `headers["content-type"]` is set AND `body` is a string, the relay serves it verbatim with that content-type — useful for HTML/text/CSV/shell-script tools. Non-string bodies always JSON-encode in v0.
 - **`baseUrl`** — defaults to `https://agentsocket.dev`. Override for self-hosted relays or local dev.
 - **`autoReconnect`** — defaults to `true`. The SDK handles WS drops with exponential backoff and re-mints any previously-issued tokens under the new session-id, reporting the remap via `onSessionChanged`.
 
