@@ -28,8 +28,17 @@ const RESERVED_PREFIX = "_as_"
 const MAX_INFLIGHT = 10
 const MAX_TOKENS_PER_SESSION = 50
 const MAX_AGENTS_MD_BYTES = 64 * 1024
+// Async-task caps. Without these a misbehaving (or hostile) app can flood
+// `task_complete` frames with arbitrary IDs and bodies and grow the DO's
+// in-memory `tasks` Map until workerd OOM-kills the isolate.
+const MAX_TASKS_PER_SESSION = 100
+const MAX_TASK_BODY_BYTES = 64 * 1024
 
 const TOOL_PATH_RE = /^\/[a-zA-Z0-9_\-/.]+$/
+// Task IDs are app-supplied strings used as Map keys and echoed in HTTP
+// responses. Bound the shape so an app can't store control chars, oversized
+// keys, or non-strings.
+const TASK_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 
 // Canonical "how to call" instructions prepended to every served agents.md (unless
 // the app's own doc already includes them). Without this, an AI that fetches a doc
@@ -344,7 +353,18 @@ export class RelayServer extends Server<Env> {
     this.pending.delete(msg.id)
 
     if (msg.status === 202 && msg.taskId) {
-      // Async: app reports the call started; agent should poll /_as_tasks/<id>
+      // Async: app reports the call started; agent should poll /_as_tasks/<id>.
+      // Validate the taskId shape and cap the per-session task count before
+      // accepting — both are app-controlled inputs that otherwise grow the
+      // DO's memory unboundedly.
+      if (typeof msg.taskId !== "string" || !TASK_ID_RE.test(msg.taskId)) {
+        p.resolve(errorResponse("protocol_error", "invalid taskId (use [A-Za-z0-9_-]{1,64})", 502))
+        return
+      }
+      if (this.tasks.size >= MAX_TASKS_PER_SESSION) {
+        p.resolve(errorResponse("too_many_tasks", `max ${MAX_TASKS_PER_SESSION} pending tasks per session`, 503))
+        return
+      }
       this.tasks.set(msg.taskId, { status: 0, body: undefined, completed: false })
       p.resolve(new Response(JSON.stringify({ taskId: msg.taskId }), {
         status: 202,
@@ -363,6 +383,35 @@ export class RelayServer extends Server<Env> {
   }
 
   private handleTaskComplete(taskId: string, status: number, body: unknown): void {
+    // task_complete is fire-and-forget (no reply frame), so unhealthy frames
+    // are dropped silently with a debug-log breadcrumb. The protections below
+    // prevent a hostile or buggy app from preloading the tasks Map with
+    // arbitrary keys, oversized bodies, or invalid status codes.
+    if (typeof taskId !== "string" || !TASK_ID_RE.test(taskId)) {
+      if (this.env.DEBUG === "1") console.log("[DO] task_complete dropped: invalid taskId shape")
+      return
+    }
+    // Only UPDATE an existing pending task — we never create entries here.
+    // Combined with the cap on the 202 path, the Map size is bounded.
+    if (!this.tasks.has(taskId)) {
+      if (this.env.DEBUG === "1") console.log("[DO] task_complete dropped: taskId not pending:", taskId)
+      return
+    }
+    if (typeof status !== "number" || !Number.isInteger(status) || status < 100 || status > 599) {
+      if (this.env.DEBUG === "1") console.log("[DO] task_complete dropped: invalid status:", status)
+      return
+    }
+    let serialized: string
+    try {
+      serialized = JSON.stringify(body ?? null)
+    } catch {
+      if (this.env.DEBUG === "1") console.log("[DO] task_complete dropped: body not JSON-serializable")
+      return
+    }
+    if (serialized.length > MAX_TASK_BODY_BYTES) {
+      if (this.env.DEBUG === "1") console.log(`[DO] task_complete dropped: body ${serialized.length} > ${MAX_TASK_BODY_BYTES} bytes`)
+      return
+    }
     this.tasks.set(taskId, { status, body, completed: true })
   }
 
