@@ -134,7 +134,11 @@ class SessionImpl {
             throw new Error("completeTask: WS not open");
         }
         const status = result?.status ?? 200;
-        this._sendFrame({ type: "task_complete", taskId, status, body: result?.body });
+        const frame = { type: "task_complete", taskId, status, body: result?.body };
+        if (result?.headers && typeof result.headers === "object") {
+            frame.headers = result.headers;
+        }
+        this._sendFrame(frame);
     }
     ping() {
         if (!this.ws || this.ws.readyState !== READY_STATE_OPEN)
@@ -228,10 +232,13 @@ class SessionImpl {
         };
         try {
             const result = await handler(ctx);
-            const { status, body, taskId } = normalizeResult(result);
+            const { status, body, taskId, headers } = normalizeResult(result);
             const frame = { type: "tool_reply", id: msg.id, status, body };
             if (status === 202 && typeof taskId === "string" && taskId.length > 0) {
                 frame.taskId = taskId;
+            }
+            if (headers && typeof headers === "object") {
+                frame.headers = headers;
             }
             this._sendFrame(frame);
         }
@@ -420,7 +427,7 @@ class SessionImpl {
 function normalizeResult(result) {
     if (result && typeof result === "object" && "status" in result && typeof result.status === "number") {
         const r = result;
-        return { status: r.status, body: r.body, taskId: r.taskId };
+        return { status: r.status, body: r.body, taskId: r.taskId, headers: r.headers };
     }
     return { status: 200, body: result };
 }

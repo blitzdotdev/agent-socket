@@ -165,7 +165,7 @@ class SessionImpl implements Session {
     }))
   }
 
-  completeTask(taskId: string, result?: { status?: number; body?: unknown }): void {
+  completeTask(taskId: string, result?: { status?: number; body?: unknown; headers?: Record<string, string> }): void {
     if (typeof taskId !== "string" || taskId.length === 0) {
       throw new Error("completeTask: taskId must be a non-empty string")
     }
@@ -173,7 +173,11 @@ class SessionImpl implements Session {
       throw new Error("completeTask: WS not open")
     }
     const status = result?.status ?? 200
-    this._sendFrame({ type: "task_complete", taskId, status, body: result?.body })
+    const frame: Record<string, unknown> = { type: "task_complete", taskId, status, body: result?.body }
+    if (result?.headers && typeof result.headers === "object") {
+      frame.headers = result.headers
+    }
+    this._sendFrame(frame)
   }
 
   ping(): void {
@@ -265,10 +269,13 @@ class SessionImpl implements Session {
     }
     try {
       const result = await handler(ctx)
-      const { status, body, taskId } = normalizeResult(result)
+      const { status, body, taskId, headers } = normalizeResult(result)
       const frame: Record<string, unknown> = { type: "tool_reply", id: msg.id, status, body }
       if (status === 202 && typeof taskId === "string" && taskId.length > 0) {
         frame.taskId = taskId
+      }
+      if (headers && typeof headers === "object") {
+        frame.headers = headers
       }
       this._sendFrame(frame)
     } catch (e: unknown) {
@@ -433,10 +440,10 @@ class SessionImpl implements Session {
   }
 }
 
-function normalizeResult(result: ToolResult): { status: number; body: unknown; taskId?: string } {
+function normalizeResult(result: ToolResult): { status: number; body: unknown; taskId?: string; headers?: Record<string, string> } {
   if (result && typeof result === "object" && "status" in (result as any) && typeof (result as any).status === "number") {
-    const r = result as { status: number; body?: unknown; taskId?: string }
-    return { status: r.status, body: r.body, taskId: r.taskId }
+    const r = result as { status: number; body?: unknown; taskId?: string; headers?: Record<string, string> }
+    return { status: r.status, body: r.body, taskId: r.taskId, headers: r.headers }
   }
   return { status: 200, body: result }
 }

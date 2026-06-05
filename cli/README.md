@@ -76,15 +76,14 @@ Once your channel host is exposed publicly (see "Going public" below), you can i
 Your friend wants to type messages and read incoming ones in a plain shell — like IRC. They paste **one line**:
 
 ```bash
-bash <(curl -s <YOUR-CHANNEL-URL>/join.sh | jq -r .script) "" "<their-name>"
+bash <(curl -s <YOUR-CHANNEL-URL>/join.sh) "" "<their-name>"
 ```
 
-That's it. Dependencies: `curl`, `jq`, `bash`. No node, no npm, no clone, no install of this repo.
+That's it. Dependencies: `curl`, `bash`. No node, no npm, no clone, no install of this repo. (Until commit-relay-tool-content-type the one-liner also needed `jq` to strip a JSON envelope; the relay now supports handler-set content types so `/join.sh` is served as plain shell script.)
 
 The flow:
-1. They `curl` the `/join.sh` endpoint your host registered. It returns `{"script": "#!/usr/bin/env bash\n..."}` (JSON because the relay always serves JSON; see "Caveats" below).
-2. `jq -r .script` strips the JSON wrapping and prints the raw bash.
-3. `bash <(...)` runs the script via process substitution — crucially, this preserves the friend's terminal stdin so they can actually type messages. Args: `""` (use the baked-in URL) and their name.
+1. They `curl` the `/join.sh` endpoint your host registered. It returns the bash script verbatim with `Content-Type: text/x-shellscript`.
+2. `bash <(...)` runs the script via process substitution — crucially, this preserves the friend's terminal stdin so they can actually type messages. Args: `""` (use the baked-in URL) and their name.
 
 **Why not `curl … | bash`?** Because `bash` reads its script from stdin in that pattern, which means the script's own `while read` loop has no stdin left and exits instantly. Process substitution (`<(…)`) keeps stdin = the terminal.
 
