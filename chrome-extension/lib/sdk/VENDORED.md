@@ -14,4 +14,4 @@ bash chrome-extension/scripts/vendor-sdk.sh
 
 CI fails if the vendored files drift from `sdk/dist/`.
 
-Last vendored from repo SHA `53cfa80`.
+Last vendored from repo SHA `b6ea75e`.

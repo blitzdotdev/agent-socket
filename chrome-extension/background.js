@@ -428,9 +428,11 @@ self.__as_internal = {
 // outbound write + the inbound pong dispatch both run through the SW,
 // keeping it (and therefore the WebSocket) alive.
 //
-// 20s period < the relay's HEARTBEAT_INTERVAL_MS (25s), so the SW stays
-// warm at least as often as the relay would otherwise tear the conn down.
-chrome.alarms.create("as-keepalive", { periodInMinutes: 1 / 3 })
+// Chrome MV3 clamps periodInMinutes to a minimum of 0.5 (30s) in packed
+// extensions, regardless of what we ask for. The relay's HEARTBEAT_TIMEOUT_MS
+// is 50s — generous enough that a 30s alarm period keeps the connection
+// alive (alarm wakes SW → session.ping() → pong) before the relay times out.
+chrome.alarms.create("as-keepalive", { periodInMinutes: 0.5 })
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === "as-keepalive") {
     if (session?.connected) session.ping()
@@ -494,8 +496,9 @@ async function pullConsoleFromPage(tabId, limit) {
 
 // Hook: every time the active tab changes or before tool dispatch, we refresh
 // the console cache. We can't easily hook tool dispatch, so we periodically
-// pull on an alarm. Cheap.
-chrome.alarms.create("as-pull-console", { periodInMinutes: 0.25 })
+// pull on an alarm. Cheap. (0.5 = Chrome MV3's clamped minimum in packed
+// extensions; asking for less is silently rounded up.)
+chrome.alarms.create("as-pull-console", { periodInMinutes: 0.5 })
 chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name !== "as-pull-console") return
   const tabId = await getActiveTabId()

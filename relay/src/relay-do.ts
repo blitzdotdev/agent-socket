@@ -45,7 +45,7 @@ const TASK_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 // describing only WHAT an app does tends to recite it back instead of calling the
 // tools — it never learns the tools are HTTP endpoints it should POST to. This
 // guarantees the contract for ALL apps, including ones that ship minimal markdown.
-const FRAMEWORK_PREAMBLE = `# You are connected to a live app (agent-socket)
+const FRAMEWORK_PREAMBLE = `## You are connected to a live app (agent-socket)
 
 These are OPERATING INSTRUCTIONS — act on them, do NOT recite this document back to the user. Greet the user in one line, then use the tools below to do what they ask.
 
@@ -242,7 +242,17 @@ export class RelayServer extends Server<Env> {
         this.appWs?.close(4400, "invalid tool path")
         return
       }
-      if (RESERVED_PATHS.has(path) || path.startsWith(`/${RESERVED_PREFIX}`)) {
+      // Reserve both the exact meta paths AND any path that shadows them
+      // as a prefix (e.g. `/agents.md/x`, `/tools.jsonx`). Belt-and-suspenders
+      // against future meta-routing changes (e.g. `/agents.md/<lang>`) that
+      // would otherwise let a previously-registered tool become invokable
+      // from a Sec-Fetch-Site: none user-paste expecting to read a doc.
+      const lowerPath = path.toLowerCase()
+      const isReserved = RESERVED_PATHS.has(path)
+        || path.startsWith(`/${RESERVED_PREFIX}`)
+        || lowerPath === "/agents.md" || lowerPath.startsWith("/agents.md/")
+        || lowerPath === "/tools.json" || lowerPath.startsWith("/tools.json/")
+      if (isReserved) {
         this.send({ type: "register_reply", ok: false, error: { code: "reserved_path", message: `path is reserved: ${path}` } })
         this.appWs?.close(4400, "reserved path")
         return
