@@ -272,7 +272,13 @@ class SessionImpl implements Session {
       }
       this._sendFrame(frame)
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : String(e)
+      // Prefer a duck-typed `.message` over String(e) — handlers that throw
+      // plain objects like `{message, code}` (idiomatic in older JS without
+      // Error subclasses) otherwise stringify to "[object Object]".
+      const eMaybe = e as { message?: unknown } | null | undefined
+      const message = typeof eMaybe?.message === "string"
+        ? eMaybe.message
+        : (e instanceof Error ? e.message : String(e))
       this._sendFrame({
         type: "tool_reply",
         id: msg.id,
@@ -297,6 +303,11 @@ class SessionImpl implements Session {
     const reconnect = (): void => {
       if (resolved) return
       resolved = true
+      // Re-check giveUpReconnect at fire-time. A consumer's onDisconnect can
+      // schedule reconnect() via setTimeout (e.g. exponentialBackoff). If the
+      // app calls session.close() during that delay, the timer still fires —
+      // without this check it would open a brand-new WS on a closed session.
+      if (this.giveUpReconnect) return
       void this._reconnectAndRemint()
     }
     const giveUp = (): void => {
@@ -313,6 +324,7 @@ class SessionImpl implements Session {
   }
 
   async _reconnectAndRemint(): Promise<void> {
+    if (this.giveUpReconnect) return  // close() raced with backoff timer
     const priorSessionId = this._sessionId
     const priorTokens = Array.from(this.myTokens.values())
     this.myTokens.clear()

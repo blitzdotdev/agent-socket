@@ -39,9 +39,12 @@ export default async function () {
   a.ok(rA.body.includes("tools.json"), "minimal: preamble references tools.json")
   a.ok(/do\s*NOT\s*recite/i.test(rA.body), "minimal: preamble warns against reciting")
   a.ok(rA.body.includes("$BASE"), "minimal: preamble defines $BASE")
-  // Preamble's separator + app text — the app md should come AFTER the horizontal rule.
-  const sepIdx = rA.body.indexOf("---")
-  a.ok(sepIdx > 0 && sepIdx < rA.body.length - appMdMinimal.length, "minimal: preamble ends with --- before app md")
+  // Preamble's separator + app text — the served body must end with the literal
+  // `\n\n---\n\n` separator immediately followed by the registered app md.
+  // (Just checking endsWith(md) + length>md.length isn't enough — that passes
+  // even if the seam newline is corrupted; the seam matters for downstream
+  // markdown parsers.)
+  a.ok(rA.body.endsWith("\n\n---\n\n" + appMdMinimal), "minimal: separator + app md present at end")
   sA.close()
 
   // ── B) rich doc that mentions tools.json → unchanged ─────────────────
