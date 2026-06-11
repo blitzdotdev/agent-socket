@@ -142,9 +142,9 @@ async function handleDebug(req: Request, env: Env, pathname: string): Promise<Re
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Landing page served at /. Inline CSS + SVG; one external dependency:
-// Google Fonts (Fraunces + Plus Jakarta Sans). The page degrades to
-// Georgia + system-sans if the CDN is unreachable.
+// Landing page served at /. Inline CSS, single external dependency:
+// Google Fonts (Geist). Degrades to system-sans if the CDN is
+// unreachable.
 // ────────────────────────────────────────────────────────────────────
 
 const LANDING_HTML = `
@@ -153,686 +153,540 @@ const LANDING_HTML = `
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>agent-socket — any AI, any app, one URL</title>
-<meta name="description" content="A relay that lets any AI chat drive any web app through a paste-able URL. Plain HTTP. No MCP, no OAuth, no SDK on the AI side.">
+<title>agent-socket — a relay between AI chats and web apps</title>
+<meta name="description" content="A relay that lets any AI chat drive any web app over plain HTTPS. Paste a URL into Claude, ChatGPT, Gemini, or Claude Code. No MCP, no OAuth, no SDK on the AI side.">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,200..900,0..100;1,9..144,200..900,0..100&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&display=swap">
 
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ff0066'/%3E%3Ccircle cx='10' cy='16' r='2.5' fill='white'/%3E%3Ccircle cx='22' cy='16' r='2.5' fill='white'/%3E%3Cpath d='M12.5 16h7' stroke='white' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E">
 
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="agent-socket">
-<meta property="og:title" content="agent-socket — any AI, any app, one URL">
-<meta property="og:description" content="A relay that lets any AI chat drive any web app through a paste-able URL.">
+<meta property="og:title" content="agent-socket">
+<meta property="og:description" content="A relay between AI chats and web apps. Plain HTTPS. No MCP, no OAuth.">
 <meta property="og:url" content="https://agentsocket.dev/">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="agent-socket">
-<meta name="twitter:description" content="A relay that lets any AI chat drive any web app through a paste-able URL.">
+<meta name="twitter:description" content="A relay between AI chats and web apps. Plain HTTPS. No MCP, no OAuth.">
 
 <style>
   :root {
-    --bg: #f3eadb;
-    --paper: #efe4d1;
-    --ink: #16120d;
-    --ink-soft: #534637;
-    --ink-faint: #9f917b;
-    --rule: #ccbf9f;
-    --accent: #ff0066;
-    --accent-shadow: rgba(255, 0, 102, 0.22);
-    --code-bg: #e6dcc4;
-    --shell: clamp(20px, 6vw, 84px);
+    --bg: #0a0b0d;
+    --bg-elev: #14161a;
+    --fg: #e7e7ea;
+    --fg-2: #b3b3b8;
+    --fg-3: #71727a;
+    --fg-4: #4a4b53;
+    --rule: #1d1f25;
+    --rule-hi: #2a2d35;
+    --accent: #ff2674;
+    --accent-glow: rgba(255, 38, 116, 0.18);
+    --code-bg: #111317;
+    --shell: clamp(20px, 5vw, 56px);
+    --maxw: 1200px;
   }
 
   *, *::before, *::after { box-sizing: border-box; }
-
-  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); }
+  html { color-scheme: dark; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
 
   body {
-    font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    font-size: clamp(15px, 1.05vw + 11px, 18px);
+    font-family: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-size: 15.5px;
     line-height: 1.55;
-    font-feature-settings: "ss01", "cv11";
+    font-feature-settings: "cv11", "ss01", "ss03";
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
   }
 
-  /* Paper grain. Static SVG noise, soft and warm-tinted. */
-  body::before {
-    content: "";
-    position: fixed; inset: 0;
-    pointer-events: none;
-    background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.08  0 0 0 0 0.07  0 0 0 0 0.05  0 0 0 0.16 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-    opacity: 0.55;
-    mix-blend-mode: multiply;
-    z-index: 100;
-  }
+  ::selection { background: var(--accent); color: white; }
 
-  /* Vignette / warm tonal bath at edges */
-  body::after {
-    content: "";
-    position: fixed; inset: 0; pointer-events: none;
-    background:
-      radial-gradient(120% 80% at 100% 0%, rgba(255, 0, 102, 0.05), transparent 55%),
-      radial-gradient(80% 60% at 0% 100%, rgba(60, 30, 5, 0.06), transparent 60%);
-    z-index: 99;
-  }
-
-  a { color: inherit; text-decoration: none; }
+  a { color: inherit; text-decoration: none; transition: color 0.15s; }
   a:hover { color: var(--accent); }
 
-  /* ─── Header ─────────────────────────────────────────────────── */
-  header {
-    display: flex; align-items: baseline; justify-content: space-between;
-    gap: 24px;
-    padding: 28px var(--shell) 0;
-    position: relative;
-    z-index: 2;
+  /* ─── Top bar ─────────────────────────────────────────────────── */
+  .topbar {
+    border-bottom: 1px solid var(--rule);
+    background: var(--bg);
+    position: sticky; top: 0; z-index: 10;
+    backdrop-filter: blur(8px);
   }
-
-  .brand {
-    font-family: "Fraunces", Georgia, serif;
-    font-variation-settings: "opsz" 60, "wght" 460, "SOFT" 50;
-    font-size: clamp(20px, 1.6vw + 10px, 26px);
-    letter-spacing: -0.01em;
+  .topbar-inner {
+    max-width: var(--maxw); margin: 0 auto;
+    padding: 14px var(--shell);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 18px;
   }
-  .brand b {
-    color: var(--accent);
-    font-style: italic;
-    font-variation-settings: "opsz" 60, "wght" 500, "SOFT" 100;
+  .wordmark {
     font-weight: 500;
+    font-size: 14.5px;
+    letter-spacing: -0.005em;
+    color: var(--fg);
+    display: inline-flex; align-items: center; gap: 9px;
+  }
+  .wordmark::before {
+    content: "";
+    width: 11px; height: 11px;
+    background: var(--accent);
+    border-radius: 3px;
+    box-shadow: 0 0 14px var(--accent-glow);
   }
 
-  .top-nav {
-    display: flex; gap: 22px; align-items: center;
-    font-size: 13.5px; font-weight: 500;
-    color: var(--ink-soft);
+  .top-links {
+    display: flex; align-items: center; gap: 22px;
+    font-size: 13.5px;
+    color: var(--fg-2);
   }
-  .top-nav a { transition: color 0.16s; }
+  .top-links .gh { color: var(--fg-2); }
+  .top-links .gh:hover { color: var(--fg); }
 
   .status {
     display: inline-flex; align-items: center; gap: 7px;
-    padding: 4px 10px 4px 9px;
-    border: 1px solid var(--rule);
-    border-radius: 999px;
-    font-size: 12px; letter-spacing: 0.02em;
+    font-size: 12.5px;
+    color: var(--fg-3);
   }
-  .status::before {
-    content: ""; width: 6px; height: 6px; border-radius: 50%;
-    background: #20a268;
-    box-shadow: 0 0 0 3px rgba(32, 162, 104, 0.18);
-    animation: pulse 2.4s ease-in-out infinite;
+  .status .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #4ade80;
+    box-shadow: 0 0 0 2.5px rgba(74, 222, 128, 0.18);
+    animation: dot 2.4s ease-in-out infinite;
   }
-  @keyframes pulse {
-    0%, 100% { box-shadow: 0 0 0 3px rgba(32, 162, 104, 0.18); }
-    50%      { box-shadow: 0 0 0 6px rgba(32, 162, 104, 0.05); }
+  @keyframes dot {
+    0%, 100% { box-shadow: 0 0 0 2.5px rgba(74, 222, 128, 0.18); }
+    50%      { box-shadow: 0 0 0 6px rgba(74, 222, 128, 0); }
   }
+  .status b { color: var(--fg-2); font-weight: 500; }
 
   /* ─── Hero ────────────────────────────────────────────────────── */
   .hero {
-    padding: clamp(60px, 9vw, 130px) var(--shell) 0;
-    position: relative;
-    max-width: 1280px;
-    margin: 0 auto;
-    z-index: 2;
-  }
-
-  .eyebrow {
-    display: inline-flex; align-items: center; gap: 14px;
-    font-size: 12px; font-weight: 600;
-    letter-spacing: 0.22em; text-transform: uppercase;
-    color: var(--ink-soft);
-    margin-bottom: 30px;
-    opacity: 0; animation: rise 0.9s 0.05s forwards;
-  }
-  .eyebrow::before {
-    content: ""; width: 32px; height: 1px; background: var(--ink-soft);
-  }
-
-  h1.headline {
-    font-family: "Fraunces", Georgia, serif;
-    font-variation-settings: "opsz" 144, "wght" 380, "SOFT" 20;
-    font-weight: 380;
-    font-size: clamp(56px, 10.5vw, 160px);
-    line-height: 0.9;
-    letter-spacing: -0.05em;
-    margin: 0;
-    max-width: 14ch;
-    color: var(--ink);
-  }
-  h1.headline span { display: block; }
-  h1.headline em {
-    font-style: italic;
-    font-variation-settings: "opsz" 144, "wght" 480, "SOFT" 100;
-    font-weight: 480;
-    color: var(--accent);
-    letter-spacing: -0.06em;
+    padding: clamp(80px, 12vw, 160px) var(--shell) clamp(60px, 9vw, 110px);
+    max-width: var(--maxw); margin: 0 auto;
     position: relative;
   }
-  h1.headline em::after {
+  .hero::before {
     content: "";
     position: absolute;
-    left: 0; right: 8%;
-    bottom: -2px;
-    height: 8px;
-    background: var(--accent);
-    opacity: 0.18;
-    border-radius: 2px;
-    transform: skewX(-12deg);
-  }
-  h1.headline span:nth-child(1) { opacity: 0; animation: rise 0.8s 0.2s forwards; }
-  h1.headline span:nth-child(2) { opacity: 0; animation: rise 0.8s 0.32s forwards; }
-  h1.headline span:nth-child(3) { opacity: 0; animation: rise 0.8s 0.44s forwards; }
-
-  @keyframes rise {
-    from { opacity: 0; transform: translateY(14px); }
-    to   { opacity: 1; transform: none; }
+    top: 0; right: -10%;
+    width: 70%; height: 100%;
+    background: radial-gradient(60% 50% at 100% 30%, var(--accent-glow), transparent 70%);
+    pointer-events: none;
+    z-index: -1;
   }
 
-  .lead {
-    max-width: 56ch;
-    margin: 38px 0 0;
-    font-size: clamp(17px, 1.1vw + 12px, 22px);
-    line-height: 1.48;
-    color: var(--ink);
-    font-weight: 400;
-    opacity: 0; animation: rise 0.9s 0.62s forwards;
-  }
-  .lead b { color: var(--ink); font-weight: 600; }
-  .lead i {
-    color: var(--accent); font-style: normal; font-weight: 500;
-    border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
-  }
-
-  .cta-row {
-    display: flex; gap: 18px; flex-wrap: wrap;
-    margin-top: 40px;
-    opacity: 0; animation: rise 0.9s 0.78s forwards;
-  }
-
-  .btn {
+  .kicker {
     display: inline-flex; align-items: center; gap: 10px;
-    padding: 14px 22px;
-    border-radius: 999px;
-    font-size: 14.5px; font-weight: 600;
-    letter-spacing: 0.01em;
-    transition: transform 0.18s, background 0.18s, color 0.18s, box-shadow 0.18s;
+    margin-bottom: 26px;
+    font-size: 12.5px;
+    color: var(--fg-3);
+    font-weight: 500;
+    letter-spacing: 0.04em;
   }
-  .btn.primary {
-    background: var(--ink); color: var(--bg);
-    box-shadow: 0 6px 22px -8px rgba(22, 18, 13, 0.4);
-  }
-  .btn.primary:hover {
-    background: var(--accent); color: white;
-    box-shadow: 0 10px 26px -8px var(--accent-shadow);
-    transform: translateY(-1px);
-  }
-  .btn.ghost {
-    color: var(--ink); border: 1px solid var(--ink);
-  }
-  .btn.ghost:hover {
-    background: var(--ink); color: var(--bg);
-  }
-  .btn .ar { transition: transform 0.2s; }
-  .btn:hover .ar { transform: translateX(3px); }
-
-  /* ─── Wire diagram ───────────────────────────────────────────── */
-  .wire {
-    position: relative;
-    margin: clamp(72px, 11vw, 140px) auto 0;
-    width: 100%;
-    max-width: 1180px;
-    padding: 0 var(--shell);
-    opacity: 0; animation: rise 1s 0.95s forwards;
-  }
-  .wire svg { display: block; width: 100%; height: auto; }
-
-  .wire .frame {
-    position: relative;
-    padding: clamp(36px, 4vw, 60px) clamp(32px, 4vw, 64px);
-    background: #faf3e3;
-    border: 1px solid var(--rule);
-    border-radius: 18px;
-    box-shadow:
-      0 1px 0 rgba(255,255,255,0.7) inset,
-      0 30px 60px -36px rgba(22, 18, 13, 0.4),
-      0 4px 12px -6px rgba(22, 18, 13, 0.1);
-  }
-  .wire .frame::before, .wire .frame::after {
+  .kicker::before {
     content: "";
-    position: absolute;
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--accent);
-    opacity: 0.65;
+    width: 22px; height: 1px;
+    background: var(--fg-4);
   }
-  .wire .frame::before { top: -4px; left: 32px; }
-  .wire .frame::after  { bottom: -4px; right: 32px; }
+  .kicker b { color: var(--fg-2); font-weight: 500; }
 
-  .wire-meta {
-    display: flex; justify-content: space-between; align-items: baseline;
-    margin-bottom: 24px;
-    font-size: 11.5px; font-weight: 600;
-    letter-spacing: 0.2em; text-transform: uppercase;
-    color: var(--ink-faint);
-  }
-  .wire-meta strong { color: var(--accent); font-weight: 700; }
-
-  /* ─── Sections (the four audiences) ──────────────────────────── */
-  .paths { position: relative; z-index: 2; }
-
-  .path {
-    position: relative;
-    padding: clamp(80px, 12vw, 140px) var(--shell);
-    border-top: 1px solid var(--rule);
-    max-width: 1280px;
-    margin: 0 auto;
-  }
-  .path + .path { border-top: 1px solid var(--rule); }
-
-  .path-grid {
-    display: grid;
-    grid-template-columns: 1fr 6fr;
-    gap: clamp(28px, 5vw, 84px);
-    align-items: start;
-  }
-
-  .num-col {
-    position: relative;
-  }
-  .num {
-    font-family: "Fraunces", Georgia, serif;
-    font-variation-settings: "opsz" 144, "wght" 280, "SOFT" 0;
-    font-style: italic;
-    font-size: clamp(72px, 12vw, 144px);
-    line-height: 0.85;
-    color: var(--ink);
-    letter-spacing: -0.04em;
-    display: block;
-  }
-  .num-meta {
-    margin-top: 14px;
-    font-size: 12px; font-weight: 600;
-    letter-spacing: 0.2em; text-transform: uppercase;
-    color: var(--ink-faint);
-    border-top: 1px solid var(--rule);
-    padding-top: 14px;
-    max-width: 16ch;
-  }
-
-  .path h2 {
-    font-family: "Fraunces", Georgia, serif;
-    font-variation-settings: "opsz" 80, "wght" 400, "SOFT" 30;
-    font-weight: 400;
-    font-size: clamp(32px, 4.4vw, 56px);
-    line-height: 1.02;
-    letter-spacing: -0.025em;
-    margin: 0 0 24px;
+  h1.h {
+    margin: 0;
+    font-size: clamp(34px, 4.4vw + 14px, 72px);
+    line-height: 1.04;
+    letter-spacing: -0.035em;
+    font-weight: 500;
+    color: var(--fg);
     max-width: 22ch;
   }
-  .path h2 em {
-    font-style: italic;
-    color: var(--accent);
-    font-variation-settings: "opsz" 80, "wght" 400, "SOFT" 100;
-  }
+  h1.h .ac { color: var(--accent); font-weight: 500; }
 
-  .path p {
-    max-width: 58ch;
-    margin: 0 0 18px;
-    font-size: clamp(16px, 0.6vw + 13px, 18px);
-    color: var(--ink-soft);
-    line-height: 1.62;
+  .lead {
+    margin: 28px 0 0;
+    max-width: 62ch;
+    font-size: clamp(16px, 0.6vw + 12px, 19px);
+    line-height: 1.55;
+    color: var(--fg-2);
   }
-  .path p b { color: var(--ink); font-weight: 500; }
-  .path p .pkg, .path p .link {
-    background: var(--code-bg);
-    color: var(--ink);
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-weight: 500;
-    font-feature-settings: "tnum", "ss01";
-    letter-spacing: -0.005em;
-    white-space: nowrap;
-  }
-  .path p .link em {
-    font-style: normal;
-    color: var(--accent);
-    font-weight: 600;
-  }
+  .lead b { color: var(--fg); font-weight: 500; }
 
-  /* Code blocks — NOT monospace. Plus Jakarta Sans w/ tabular figures
-     and a tinted block treatment to read as "code". */
-  .code {
-    margin: 26px 0 6px;
-    padding: 20px 22px;
-    background: var(--code-bg);
-    border-left: 2px solid var(--accent);
-    border-radius: 0 8px 8px 0;
+  .cta {
+    margin-top: 36px;
+    display: flex; flex-wrap: wrap; gap: 10px;
     font-size: 14px;
+    align-items: center;
+  }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 16px;
+    border-radius: 6px;
     font-weight: 500;
-    line-height: 1.62;
-    color: var(--ink);
-    font-feature-settings: "tnum", "cv11", "ss01";
-    overflow-x: auto;
-    max-width: 70ch;
-    white-space: pre;
+    letter-spacing: -0.005em;
+    border: 1px solid transparent;
+    transition: background 0.16s, border-color 0.16s, color 0.16s, transform 0.16s;
   }
-  .code .k { color: #884800; font-weight: 600; }    /* keyword */
-  .code .s { color: #1a6a40; }                       /* string */
-  .code .p { color: var(--accent); font-weight: 600; } /* punct/highlight */
-  .code .c { color: var(--ink-faint); font-style: italic; }
-  .code .v { color: var(--ink); font-weight: 600; }
-
-  .paste-quote {
-    margin: 26px 0 6px;
-    padding: 22px 26px;
-    background: rgba(255,255,255,0.45);
-    border: 1px dashed var(--rule);
-    border-radius: 10px;
-    font-family: "Fraunces", Georgia, serif;
-    font-variation-settings: "opsz" 24, "wght" 400, "SOFT" 50;
-    font-size: clamp(16px, 0.5vw + 13px, 19px);
-    line-height: 1.5;
-    font-style: italic;
-    color: var(--ink);
-    max-width: 60ch;
-    position: relative;
+  .btn.solid {
+    background: var(--fg);
+    color: var(--bg);
   }
-  .paste-quote::before {
-    content: "paste prompt";
-    position: absolute; top: -10px; left: 18px;
-    background: var(--bg);
-    padding: 0 8px;
-    font-family: "Plus Jakarta Sans", sans-serif;
-    font-style: normal;
-    font-size: 10.5px;
-    font-weight: 700;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--ink-faint);
+  .btn.solid:hover { background: var(--accent); color: white; }
+  .btn.ghost {
+    color: var(--fg-2);
+    border-color: var(--rule-hi);
   }
-  .paste-quote em {
-    color: var(--accent);
-    font-style: italic;
+  .btn.ghost:hover { color: var(--fg); border-color: var(--fg-3); }
+  .btn .ar { transition: transform 0.18s; opacity: 0.7; }
+  .btn:hover .ar { transform: translateX(2px); opacity: 1; }
+  .or {
+    color: var(--fg-4);
+    font-size: 13px;
+    padding: 0 4px;
   }
 
-  .aside {
-    margin-top: 16px !important;
-    font-size: 14.5px !important;
-    color: var(--ink-faint) !important;
+  /* ─── Live curl demo ─────────────────────────────────────────── */
+  .demo {
+    margin: clamp(50px, 7vw, 90px) auto 0;
+    max-width: var(--maxw);
+    padding: 0 var(--shell);
   }
-  .aside .link { font-size: 13px; }
-
-  /* Decorative ghost-number variant for sections that have a code block:
-     Pull the number up & rotate slightly. (Off for accessibility,
-     decorative only.) */
-
-  /* ─── Caveats strip ──────────────────────────────────────────── */
-  .caveats {
-    background: var(--paper);
-    padding: clamp(60px, 9vw, 110px) var(--shell);
-    border-top: 1px solid var(--rule);
+  .demo-frame {
+    background: var(--bg-elev);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.025) inset, 0 40px 80px -40px rgba(0,0,0,0.7);
+  }
+  .demo-tabs {
+    display: flex; gap: 1px;
     border-bottom: 1px solid var(--rule);
+    padding: 0 12px;
+    background: linear-gradient(to bottom, rgba(255,255,255,0.015), transparent);
   }
-  .caveats .inner {
-    max-width: 1280px; margin: 0 auto;
+  .demo-tab {
+    padding: 12px 14px;
+    font-size: 12.5px;
+    color: var(--fg-3);
+    letter-spacing: 0.005em;
+    border-bottom: 1.5px solid transparent;
+    margin-bottom: -1px;
+  }
+  .demo-tab.on {
+    color: var(--fg);
+    border-bottom-color: var(--accent);
+  }
+  .demo-tab .n { color: var(--fg-4); margin-right: 8px; font-variant-numeric: tabular-nums; }
+  .demo-body {
+    padding: 22px 24px 26px;
+    font-size: 14px;
+    line-height: 1.7;
+    font-feature-settings: "tnum", "ss01";
+  }
+  .prompt { color: var(--fg-4); user-select: none; }
+  .cmd { color: var(--fg); font-weight: 500; }
+  .cmd .ac { color: var(--accent); }
+  .out-meta { color: var(--fg-3); font-size: 12.5px; margin: 16px 0 12px; }
+  .out-meta b { color: #4ade80; font-weight: 500; }
+  .out {
+    color: var(--fg-2);
+    line-height: 1.65;
+    padding-left: 0;
+  }
+  .out .hd { color: var(--fg); font-weight: 500; }
+  .out .acc { color: var(--accent); }
+  .out .dim { color: var(--fg-4); }
+  .demo-footer {
+    border-top: 1px solid var(--rule);
+    padding: 12px 24px;
+    display: flex; justify-content: space-between;
+    font-size: 12px;
+    color: var(--fg-4);
+    background: rgba(255,255,255,0.01);
+  }
+
+  /* ─── Section grid ───────────────────────────────────────────── */
+  .sect {
+    border-top: 1px solid var(--rule);
+    padding: clamp(64px, 9vw, 110px) var(--shell);
+    max-width: var(--maxw); margin: 0 auto;
+  }
+  .sect-grid {
     display: grid;
-    grid-template-columns: 1fr 6fr;
-    gap: clamp(28px, 5vw, 84px);
+    grid-template-columns: minmax(220px, 1fr) 3fr;
+    gap: clamp(24px, 4vw, 64px);
     align-items: start;
   }
-  .caveats-label {
-    font-family: "Fraunces", Georgia, serif;
-    font-variation-settings: "opsz" 144, "wght" 320, "SOFT" 0;
-    font-style: italic;
-    font-size: clamp(40px, 5.5vw, 64px);
-    line-height: 0.9;
-    color: var(--ink-soft);
-    letter-spacing: -0.03em;
+  .sect-tag {
+    font-size: 12.5px;
+    color: var(--fg-3);
+    letter-spacing: 0.02em;
+    font-weight: 500;
+    line-height: 1.5;
   }
-  .caveats ul {
+  .sect-tag .num {
+    display: block;
+    color: var(--fg-4);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 4px;
+    letter-spacing: -0.01em;
+    font-size: 13px;
+  }
+  .sect h2 {
+    margin: 0 0 18px;
+    font-size: clamp(24px, 2.2vw + 14px, 38px);
+    line-height: 1.12;
+    letter-spacing: -0.025em;
+    font-weight: 500;
+    color: var(--fg);
+    max-width: 22ch;
+  }
+  .sect h2 .ac { color: var(--accent); font-weight: 500; }
+  .sect p {
+    margin: 0 0 14px;
+    max-width: 62ch;
+    color: var(--fg-2);
+    font-size: 15.5px;
+    line-height: 1.65;
+  }
+  .sect p:last-child { margin-bottom: 0; }
+  .sect p b { color: var(--fg); font-weight: 500; }
+  .sect p .lit {
+    background: var(--code-bg);
+    color: var(--fg);
+    padding: 1.5px 7px;
+    border-radius: 4px;
+    font-size: 0.92em;
+    font-weight: 500;
+    border: 1px solid var(--rule);
+    letter-spacing: -0.005em;
+    font-feature-settings: "tnum";
+    white-space: nowrap;
+  }
+  .sect p .lit em { font-style: normal; color: var(--accent); }
+
+  /* Code block — non-monospace, sans with tinted block. */
+  .code {
+    margin: 22px 0 4px;
+    padding: 18px 20px;
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    font-size: 13.5px;
+    font-weight: 400;
+    line-height: 1.72;
+    color: var(--fg);
+    font-feature-settings: "tnum", "cv11", "ss03";
+    letter-spacing: -0.005em;
+    overflow-x: auto;
+    max-width: 76ch;
+    white-space: pre;
+    position: relative;
+  }
+  .code::before {
+    content: attr(data-lang);
+    position: absolute;
+    top: 12px; right: 16px;
+    font-size: 10.5px;
+    color: var(--fg-4);
+    letter-spacing: 0.06em;
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+  .code .k  { color: #e08540; font-weight: 500; }     /* keyword */
+  .code .s  { color: #82c887; font-weight: 400; }     /* string */
+  .code .v  { color: var(--fg); font-weight: 500; }   /* ident */
+  .code .p  { color: var(--accent); font-weight: 500; } /* punctuation accent */
+  .code .c  { color: var(--fg-4); font-style: italic; } /* comment */
+  .code .n  { color: #c69ad6; }                       /* number */
+
+  .quote {
+    margin: 22px 0 4px;
+    padding: 16px 20px 16px 22px;
+    border-left: 2px solid var(--accent);
+    background: var(--code-bg);
+    border-radius: 0 8px 8px 0;
+    font-size: 14.5px;
+    line-height: 1.6;
+    color: var(--fg);
+    max-width: 62ch;
+    position: relative;
+  }
+  .quote::before {
+    content: "paste prompt";
+    display: block;
+    font-size: 10.5px;
+    letter-spacing: 0.16em;
+    font-weight: 500;
+    text-transform: uppercase;
+    color: var(--fg-4);
+    margin-bottom: 6px;
+  }
+  .quote em { color: var(--accent); font-style: normal; font-weight: 500; }
+
+  /* ─── Caveats ────────────────────────────────────────────────── */
+  .caveats {
+    border-top: 1px solid var(--rule);
+    background: rgba(255,255,255,0.012);
+    padding: clamp(60px, 9vw, 100px) var(--shell);
+  }
+  .caveats-inner {
+    max-width: var(--maxw); margin: 0 auto;
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) 3fr;
+    gap: clamp(24px, 4vw, 64px);
+  }
+  .caveats h3 {
+    margin: 0;
+    font-size: 13px;
+    color: var(--fg-3);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+  }
+  .caveats-list {
     list-style: none; padding: 0; margin: 0;
-    display: grid; gap: 24px;
-    max-width: 60ch;
+    display: grid; gap: 18px;
+    max-width: 62ch;
   }
-  .caveats li {
-    display: grid; grid-template-columns: auto 1fr; gap: 16px;
-    font-size: clamp(16px, 0.6vw + 13px, 18px);
-    color: var(--ink);
-    line-height: 1.55;
+  .caveats-list li {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 12px;
+    font-size: 15px;
+    color: var(--fg-2);
+    line-height: 1.6;
   }
-  .caveats li b {
-    font-family: "Fraunces", Georgia, serif;
-    font-variation-settings: "opsz" 24, "wght" 600, "SOFT" 0;
-    font-weight: 600;
-    font-size: 1.15em;
+  .caveats-list li::before {
+    content: "—";
     color: var(--accent);
-    display: inline-block; min-width: 1.6em;
+    font-weight: 500;
   }
-  .caveats li p { margin: 0; color: var(--ink-soft); font-size: 0.95em; }
+  .caveats-list b { color: var(--fg); font-weight: 500; }
 
   /* ─── Footer ─────────────────────────────────────────────────── */
   footer {
-    padding: 50px var(--shell);
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 24px; flex-wrap: wrap;
-    font-size: 13.5px;
-    color: var(--ink-soft);
     border-top: 1px solid var(--rule);
-    max-width: 1280px;
-    margin: 0 auto;
+    padding: 28px var(--shell);
+    color: var(--fg-3);
   }
-  footer .mark {
-    font-family: "Fraunces", Georgia, serif;
-    font-variation-settings: "opsz" 40, "wght" 460, "SOFT" 50;
-    font-size: 18px;
-    color: var(--ink);
-  }
-  footer .mark b { color: var(--accent); font-style: italic; font-weight: 500; }
-  footer ul {
-    list-style: none; padding: 0; margin: 0;
-    display: flex; gap: 22px; flex-wrap: wrap;
-  }
-  footer .meta {
-    display: flex; gap: 18px; flex-wrap: wrap;
-    color: var(--ink-faint);
+  .footer-inner {
+    max-width: var(--maxw); margin: 0 auto;
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 18px; flex-wrap: wrap;
     font-size: 12.5px;
-    letter-spacing: 0.04em;
   }
+  .footer-inner .wordmark { font-size: 13.5px; }
+  .footer-inner .wordmark::before { width: 9px; height: 9px; }
+  .footer-meta {
+    display: flex; gap: 18px; flex-wrap: wrap;
+    color: var(--fg-4);
+  }
+  .footer-meta a { color: var(--fg-3); }
 
   /* ─── Responsive ─────────────────────────────────────────────── */
   @media (max-width: 760px) {
-    .top-nav .hide-sm { display: none; }
-    .path-grid, .caveats .inner { grid-template-columns: 1fr; gap: 20px; }
-    .num-meta { display: none; }
-    .num { font-size: 64px; }
-    h1.headline { font-size: clamp(48px, 13vw, 96px); }
+    .hide-sm { display: none; }
+    .sect-grid, .caveats-inner { grid-template-columns: 1fr; gap: 14px; }
+    .top-links { gap: 14px; }
+    .demo-body { font-size: 13px; padding: 16px 18px 22px; }
+    .code { font-size: 12.5px; padding: 14px 16px; }
   }
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
-    .eyebrow, .lead, .cta-row, .wire, h1.headline span { opacity: 1 !important; }
   }
 </style>
 </head>
 <body>
 
-<header>
-  <a class="brand" href="/">agent-<b><i>socket</i></b></a>
-  <nav class="top-nav">
-    <a href="https://github.com/teenybase/agentsocket" class="hide-sm">github</a>
-    <a href="/privacy" class="hide-sm">privacy</a>
-    <span class="status">live · agentsocket.dev</span>
-  </nav>
-</header>
+<div class="topbar">
+  <div class="topbar-inner">
+    <a href="/" class="wordmark">agent-socket</a>
+    <div class="top-links">
+      <a href="https://github.com/teenybase/agentsocket" class="gh hide-sm">GitHub</a>
+      <a href="/privacy" class="hide-sm">Privacy</a>
+      <span class="status"><span class="dot"></span><b>agentsocket.dev</b></span>
+    </div>
+  </div>
+</div>
 
 <section class="hero">
-  <div class="eyebrow">a relay · v0 · apache 2</div>
-
-  <h1 class="headline">
-    <span>Any AI.</span>
-    <span>Any app.</span>
-    <span>One <em>URL.</em></span>
-  </h1>
-
-  <p class="lead">
-    A relay between AI chats and web apps. Paste one link into
-    <b>Claude</b>, <b>ChatGPT</b>, <b>Gemini</b>, or <b>Claude&nbsp;Code</b>,
-    and the AI calls your endpoints as tools. <i>Plain HTTP.</i> No&nbsp;MCP. No&nbsp;OAuth. No SDK on the AI side.
-  </p>
-
-  <div class="cta-row">
-    <a class="btn primary" href="#wire-it-up">See it in 3 minutes <span class="ar">→</span></a>
-    <a class="btn ghost" href="https://github.com/teenybase/agentsocket">github.com/teenybase/agentsocket</a>
+  <div class="kicker">
+    <span>v0 · open source · Apache 2</span>
   </div>
 
-  <figure class="wire" aria-hidden="true">
-    <div class="frame">
-      <div class="wire-meta">
-        <span>FIG. 01 · THE FLOW</span>
-        <span><strong>· live</strong> on agentsocket.dev</span>
-      </div>
-      <svg viewBox="0 0 1100 260" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
-        <defs>
-          <linearGradient id="wireL" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stop-color="#16120d" stop-opacity="0.18"/>
-            <stop offset="100%" stop-color="#ff0066" stop-opacity="0.8"/>
-          </linearGradient>
-          <linearGradient id="wireR" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stop-color="#ff0066" stop-opacity="0.8"/>
-            <stop offset="100%" stop-color="#16120d" stop-opacity="0.18"/>
-          </linearGradient>
-          <radialGradient id="halo" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stop-color="#ff0066" stop-opacity="0.32"/>
-            <stop offset="55%" stop-color="#ff0066" stop-opacity="0.05"/>
-            <stop offset="100%" stop-color="#ff0066" stop-opacity="0"/>
-          </radialGradient>
-          <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
-            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#16120d" stroke-width="0.4" opacity="0.05"/>
-          </pattern>
-        </defs>
+  <h1 class="h">A relay between AI chats <span class="ac">and web apps.</span></h1>
 
-        <rect width="1100" height="260" fill="url(#grid)"/>
+  <p class="lead">
+    Paste one URL into <b>Claude</b>, <b>ChatGPT</b>, <b>Gemini</b>, or <b>Claude&nbsp;Code</b>. The AI calls your endpoints over plain HTTPS as tool calls — discoverable through a single <span class="lit">GET /tools.json</span>. No&nbsp;MCP. No&nbsp;OAuth. No SDK on the AI side.
+  </p>
 
-        <!-- Halo behind the relay -->
-        <circle cx="550" cy="130" r="170" fill="url(#halo)"/>
-
-        <!-- Long wires across, with subtle underlay -->
-        <path d="M 240 130 L 470 130" stroke="#cfc0a0" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.6"/>
-        <path d="M 630 130 L 860 130" stroke="#cfc0a0" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.6"/>
-        <path d="M 240 130 L 470 130" stroke="url(#wireL)" stroke-width="3.5" fill="none" stroke-linecap="round"/>
-        <path d="M 630 130 L 860 130" stroke="url(#wireR)" stroke-width="3.5" fill="none" stroke-linecap="round"/>
-
-        <!-- Stations along the wires (visible without animation) -->
-        <g fill="#16120d" opacity="0.35">
-          <circle cx="295" cy="130" r="2"/><circle cx="350" cy="130" r="2"/>
-          <circle cx="405" cy="130" r="2"/>
-          <circle cx="695" cy="130" r="2"/><circle cx="750" cy="130" r="2"/>
-          <circle cx="805" cy="130" r="2"/>
-        </g>
-
-        <!-- LEFT card: your app -->
-        <g transform="translate(60, 70)">
-          <rect x="0" y="0" width="180" height="120" rx="10" fill="#f3eadb" stroke="#16120d" stroke-width="1.6"/>
-          <rect x="0" y="0" width="180" height="26" rx="10" fill="#16120d"/>
-          <rect x="0" y="16" width="180" height="10" fill="#16120d"/>
-          <circle cx="13" cy="13" r="3.5" fill="#ff0066"/>
-          <circle cx="25" cy="13" r="3.5" fill="#f3eadb" opacity="0.55"/>
-          <circle cx="37" cy="13" r="3.5" fill="#f3eadb" opacity="0.55"/>
-          <text x="160" y="17.5" font-family="Plus Jakarta Sans, sans-serif" font-weight="500" font-size="8.5" letter-spacing="2" fill="#9f917b" text-anchor="end">YOUR.APP</text>
-
-          <line x1="20" y1="50" x2="160" y2="50" stroke="#16120d" stroke-width="1" opacity="0.18"/>
-          <line x1="20" y1="62" x2="120" y2="62" stroke="#16120d" stroke-width="1" opacity="0.18"/>
-          <line x1="20" y1="74" x2="140" y2="74" stroke="#16120d" stroke-width="1" opacity="0.18"/>
-
-          <text x="90" y="103" font-family="Fraunces, Georgia, serif" font-style="italic" font-weight="400" font-size="22" fill="#16120d" text-anchor="middle">your app</text>
-        </g>
-
-        <text x="150" y="220" font-family="Plus Jakarta Sans, sans-serif" font-weight="600" font-size="11" letter-spacing="2.5" fill="#9f917b" text-anchor="middle">SDK ON WEBSOCKET</text>
-
-        <!-- RELAY (center) -->
-        <g transform="translate(550, 130)">
-          <circle r="74" fill="none" stroke="#16120d" stroke-width="0.8" stroke-dasharray="2 6" opacity="0.5">
-            <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="40s" repeatCount="indefinite"/>
-          </circle>
-          <circle r="48" fill="#16120d"/>
-          <circle r="48" fill="none" stroke="#ff0066" stroke-width="1.5" opacity="0.5">
-            <animate attributeName="r" values="48;54;48" dur="2.6s" repeatCount="indefinite"/>
-            <animate attributeName="opacity" values="0.5;0;0.5" dur="2.6s" repeatCount="indefinite"/>
-          </circle>
-          <circle r="9" fill="#ff0066"/>
-          <text y="86" font-family="Fraunces, Georgia, serif" font-style="italic" font-weight="400" font-size="22" fill="#16120d" text-anchor="middle">relay</text>
-          <text y="106" font-family="Plus Jakarta Sans, sans-serif" font-weight="600" font-size="10" fill="#9f917b" text-anchor="middle" letter-spacing="2.5">AGENTSOCKET.DEV</text>
-        </g>
-
-        <!-- RIGHT speech bubble: AI chat -->
-        <g transform="translate(860, 56)">
-          <path d="M 14 0 H 174 a 14 14 0 0 1 14 14 V 116 a 14 14 0 0 1 -14 14 H 72 l -16 18 v -18 H 14 a 14 14 0 0 1 -14 -14 V 14 a 14 14 0 0 1 14 -14 z"
-                fill="#f3eadb" stroke="#16120d" stroke-width="1.6"/>
-          <circle cx="20" cy="20" r="3.5" fill="#ff0066"/>
-          <text x="32" y="24" font-family="Plus Jakarta Sans, sans-serif" font-weight="600" font-size="9" letter-spacing="2" fill="#9f917b">AI CHAT</text>
-
-          <line x1="20" y1="42" x2="170" y2="42" stroke="#16120d" stroke-width="1" opacity="0.16"/>
-          <line x1="20" y1="54" x2="140" y2="54" stroke="#16120d" stroke-width="1" opacity="0.16"/>
-
-          <text x="94" y="86" font-family="Fraunces, Georgia, serif" font-style="italic" font-weight="400" font-size="22" fill="#16120d" text-anchor="middle">any AI chat</text>
-          <text x="94" y="106" font-family="Plus Jakarta Sans, sans-serif" font-weight="600" font-size="10" fill="#ff0066" text-anchor="middle" letter-spacing="1">claude · chatgpt · gemini</text>
-        </g>
-
-        <text x="950" y="220" font-family="Plus Jakarta Sans, sans-serif" font-weight="600" font-size="11" letter-spacing="2.5" fill="#9f917b" text-anchor="middle">PLAIN HTTPS</text>
-
-        <!-- Pulses traveling along the wires (left → relay, then relay → right) -->
-        <circle r="8" fill="#ff0066">
-          <animateMotion dur="2.6s" repeatCount="indefinite" path="M 240 130 L 470 130"/>
-          <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.06;0.94;1" dur="2.6s" repeatCount="indefinite"/>
-        </circle>
-        <circle r="6" fill="#16120d">
-          <animateMotion dur="2.6s" begin="1.3s" repeatCount="indefinite" path="M 860 130 L 630 130"/>
-          <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.06;0.94;1" dur="2.6s" begin="1.3s" repeatCount="indefinite"/>
-        </circle>
-        <circle r="6" fill="#ff0066" opacity="0.65">
-          <animateMotion dur="2.6s" begin="0.65s" repeatCount="indefinite" path="M 630 130 L 860 130"/>
-          <animate attributeName="opacity" values="0;0.7;0.7;0" keyTimes="0;0.06;0.94;1" dur="2.6s" begin="0.65s" repeatCount="indefinite"/>
-        </circle>
-
-        <!-- Tiny annotation under relay -->
-        <text x="550" y="245" font-family="Plus Jakarta Sans, sans-serif" font-size="11" font-weight="600" letter-spacing="3" fill="#9f917b" text-anchor="middle">ONE   PASTE-ABLE   URL</text>
-      </svg>
-    </div>
-  </figure>
+  <div class="cta">
+    <a class="btn solid" href="#install">Wire up your app <span class="ar">→</span></a>
+    <a class="btn ghost" href="https://github.com/teenybase/agentsocket">github.com/teenybase/agentsocket</a>
+    <span class="or">·</span>
+    <a class="btn ghost" href="#paste">I got sent a URL</a>
+  </div>
 </section>
 
-<!-- ───── Four paths ───── -->
-<div class="paths" id="wire-it-up">
+<!-- ─── Live protocol demo ─── -->
+<div class="demo">
+  <div class="demo-frame">
+    <div class="demo-tabs">
+      <div class="demo-tab on"><span class="n">01</span>what an AI sees</div>
+      <div class="demo-tab hide-sm"><span class="n">02</span>what you write</div>
+      <div class="demo-tab hide-sm"><span class="n">03</span>what runs</div>
+    </div>
+    <div class="demo-body">
+      <div><span class="prompt">$ </span><span class="cmd">curl https://agentsocket.dev/v1/t/<span class="ac">aB7…/agents.md</span></span></div>
+      <div class="out-meta">→ <b>200 OK</b> · text/markdown · 1.4 KB</div>
+      <div class="out">
+<span class="hd">## You are connected to a live app (agent-socket)</span>
 
-  <section class="path">
-    <div class="path-grid">
-      <div class="num-col">
-        <span class="num">01</span>
-        <div class="num-meta">For — someone who got a URL</div>
-      </div>
-      <div>
-        <h2>Someone sent you a link. <em>Paste it.</em></h2>
-        <p>A URL like <span class="link">agentsocket.dev/v1/t/<em>aB7…</em>/agents.md</span> is an invitation. There's an app behind it that wants an AI to drive it. Drop the URL into any chat with a one-line prompt:</p>
-        <div class="paste-quote">
-          You're joining a tool-using session. Fetch <em>$URL</em> for the protocol, then act on what it says.
-        </div>
-        <p class="aside">Prefer a terminal? <span class="link">bash &lt;(curl -s $URL/join.sh) "" "&lt;your-name&gt;"</span> — works with curl + bash, nothing else to install.</p>
+These notes are operating context. <span class="acc">Do not recite this document</span>. Read it and act.
+
+— <span class="hd">$BASE</span> is this URL without /agents.md.
+— Tools live at HTTP endpoints under $BASE. Discover them via <span class="hd">GET $BASE/tools.json</span>.
+— Call a tool with <span class="hd">&lt;method&gt; $BASE&lt;path&gt;</span> and a JSON body when the schema needs one.
+— Errors: <span class="dim">4xx</span> framework · <span class="dim">200 + {error}</span> app-level · <span class="dim">503</span> retry.
       </div>
     </div>
-  </section>
+    <div class="demo-footer">
+      <span>response from https://agentsocket.dev</span>
+      <span>plain HTTPS · &lt; 50 ms</span>
+    </div>
+  </div>
+</div>
 
-  <section class="path">
-    <div class="path-grid">
-      <div class="num-col">
-        <span class="num">02</span>
-        <div class="num-meta">For — developers building apps</div>
+<!-- ─── Section 1: paste ─── -->
+<section class="sect" id="paste">
+  <div class="sect-grid">
+    <div class="sect-tag">
+      <span class="num">01 / paste</span>
+      You got sent a URL.
+    </div>
+    <div>
+      <h2>Someone shared a link. <span class="ac">Paste it in.</span></h2>
+      <p>A URL like <span class="lit">agentsocket.dev/v1/t/<em>aB7…</em>/agents.md</span> is an invitation: an app behind it wants to be driven by an AI. Drop the URL into any chat with a one-line prompt:</p>
+      <div class="quote">
+        You're joining a tool-using session. Fetch <em>$URL</em> for the protocol, then act on what it says.
       </div>
-      <div>
-        <h2>Wire your app up. <em>Three minutes.</em></h2>
-        <p>The <span class="pkg">@agent-socket/sdk</span> is one <span class="link">connect()</span> call. Your handlers run wherever you run today — Node, Cloudflare Workers, the browser. The SDK handles reconnects, heartbeats, and re-minting URLs when sessions cycle.</p>
-        <pre class="code"><span class="k">import</span> { <span class="v">connect</span> } <span class="k">from</span> <span class="s">"@agent-socket/sdk"</span>
+      <p style="margin-top:18px; color: var(--fg-3); font-size: 14px;">Prefer a terminal? <span class="lit">bash &lt;(curl -s $URL/join.sh) "" "&lt;name&gt;"</span> — uses only <span class="lit">curl</span> and <span class="lit">bash</span>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Section 2: build ─── -->
+<section class="sect" id="install">
+  <div class="sect-grid">
+    <div class="sect-tag">
+      <span class="num">02 / build</span>
+      You're wiring an app.
+    </div>
+    <div>
+      <h2>One <span class="ac">connect()</span> call. Your handlers stay yours.</h2>
+      <p><span class="lit">@agent-socket/sdk</span> opens a WebSocket to the relay, registers your tool list, and mints a paste-able URL. Runs in Node, Cloudflare Workers, and the browser. Reconnect, heartbeats, and remint-on-drop are handled.</p>
+      <pre class="code" data-lang="ts"><span class="k">import</span> { <span class="v">connect</span> } <span class="k">from</span> <span class="s">"@agent-socket/sdk"</span>
 
 <span class="k">const</span> session = <span class="k">await</span> <span class="v">connect</span>({
   appId: <span class="s">"as_app_anon"</span>,
@@ -851,75 +705,65 @@ const LANDING_HTML = `
 
 <span class="k">const</span> link = <span class="k">await</span> session.<span class="v">mintAgentToken</span>({ label: <span class="s">"user-42"</span> })
 console.<span class="v">log</span>(<span class="s">"Paste in any AI chat:"</span>, link.url)</pre>
-        <p class="aside">See <span class="link">examples/pixel-art-canvas</span> for the smallest possible end-to-end app (~120 lines).</p>
-      </div>
+      <p style="margin-top:16px; color: var(--fg-3); font-size: 14px;">Smallest end-to-end demo: <a href="https://github.com/teenybase/agentsocket/tree/master/examples/pixel-art-canvas" style="color:var(--fg-2); text-decoration:underline; text-decoration-color: var(--rule-hi); text-underline-offset: 3px;">examples/pixel-art-canvas</a> — single HTML file, ~120 lines.</p>
     </div>
-  </section>
+  </div>
+</section>
 
-  <section class="path">
-    <div class="path-grid">
-      <div class="num-col">
-        <span class="num">03</span>
-        <div class="num-meta">For — hosts of multi-AI chats</div>
-      </div>
-      <div>
-        <h2>A room. <em>Many AIs.</em> One URL.</h2>
-        <p>Spin up a chat channel and share its URL. Other AIs join by pasting; humans join from a terminal with one line of bash. Persistent within the host's session — scrollback, awaiting-flag semantics, the usual.</p>
-        <pre class="code"><span class="v">node</span> cli/bin/agent-socket.mjs channel host \
+<!-- ─── Section 3: channel ─── -->
+<section class="sect">
+  <div class="sect-grid">
+    <div class="sect-tag">
+      <span class="num">03 / channel</span>
+      You want a chat room.
+    </div>
+    <div>
+      <h2>A room. Many AIs. <span class="ac">One URL.</span></h2>
+      <p>Spin up a chat channel and share its URL. Other AIs join by pasting; humans join from a terminal with one line of bash. Persistent for the host's session — scrollback, peer list, await-flag semantics.</p>
+      <pre class="code" data-lang="sh"><span class="v">node</span> cli/bin/agent-socket.mjs channel host \
   <span class="p">--relay</span> https://agentsocket.dev \
   <span class="p">--name</span> claude-code</pre>
-        <p class="aside">Prints a URL. Share it. Local commands: <span class="link">send · recv · watch · peers · stop</span>.</p>
-      </div>
+      <p style="margin-top:16px; color: var(--fg-3); font-size: 14px;">Local commands: <span class="lit">send</span> · <span class="lit">recv</span> · <span class="lit">watch</span> · <span class="lit">peers</span> · <span class="lit">stop</span>.</p>
     </div>
-  </section>
+  </div>
+</section>
 
-  <section class="path">
-    <div class="path-grid">
-      <div class="num-col">
-        <span class="num">04</span>
-        <div class="num-meta">For — driving your browser</div>
-      </div>
-      <div>
-        <h2>Let an AI drive <em>the tab</em> you're looking at.</h2>
-        <p>Load the chrome extension. Click <b>"Connect this tab"</b>. Paste the link into your AI. The AI can now click, fill, scroll, screenshot, navigate, and evaluate on the page in front of you — with per-site profiles already shipping for github, x, reddit, hacker news, and google docs.</p>
-        <p class="aside">Clone the repo, <span class="link">chrome://extensions/</span> → Developer mode → Load unpacked → select <span class="link">chrome-extension/</span>. Per-tab activation gate; nothing runs until you press the button.</p>
-      </div>
+<!-- ─── Section 4: chrome ─── -->
+<section class="sect">
+  <div class="sect-grid">
+    <div class="sect-tag">
+      <span class="num">04 / browser</span>
+      You want AI inside the page you're on.
     </div>
-  </section>
+    <div>
+      <h2>Let an AI drive the <span class="ac">active tab</span>.</h2>
+      <p>Load the chrome extension. Click <b>Connect this tab</b>. Paste the link into your AI. It can now click, fill, scroll, screenshot, navigate, and evaluate JS on whatever page you're looking at — with per-site profiles already shipping for github, x, reddit, hacker news, and google docs.</p>
+      <p style="color: var(--fg-3); font-size: 14px;">Clone the repo, open <span class="lit">chrome://extensions/</span> → Developer mode → Load unpacked → select <span class="lit">chrome-extension/</span>. Per-tab activation gate; nothing runs until you press the button.</p>
+    </div>
+  </div>
+</section>
 
-</div>
-
-<!-- ───── Caveats ───── -->
+<!-- ─── Caveats ─── -->
 <section class="caveats">
-  <div class="inner">
-    <div class="caveats-label">what it<br>isn't.</div>
-    <ul>
-      <li><b>×</b>
-        <div>
-          <p><b style="font-family:'Plus Jakarta Sans',sans-serif; font-size:1em; color:var(--ink)">Not a SaaS.</b> No accounts, no quotas, no analytics dashboards. The relay stores nothing beyond a host's in-memory state; everything dies on disconnect.</p>
-        </div>
-      </li>
-      <li><b>×</b>
-        <div>
-          <p><b style="font-family:'Plus Jakarta Sans',sans-serif; font-size:1em; color:var(--ink)">Not authenticated.</b> The URL is the only secret. Treat it as DM-grade — anyone with it can drive what's behind it. There's a CSRF gate against browser-mounted attacks, but the URL is the credential.</p>
-        </div>
-      </li>
-      <li><b>×</b>
-        <div>
-          <p><b style="font-family:'Plus Jakarta Sans',sans-serif; font-size:1em; color:var(--ink)">Not production-grade.</b> v0. Real and live, but the protocol may evolve; nothing is locked. Open issues at <a href="https://github.com/teenybase/agentsocket" style="color:var(--accent)">teenybase/agentsocket</a>.</p>
-        </div>
-      </li>
+  <div class="caveats-inner">
+    <h3>What it isn't</h3>
+    <ul class="caveats-list">
+      <li><div><b>Not a SaaS.</b> No accounts, no quotas, no analytics. The relay stores nothing beyond a host's in-memory state; everything dies on disconnect.</div></li>
+      <li><div><b>Not authenticated.</b> The URL is the only credential. Treat it as DM-grade. There's a CSRF gate against browser-mounted attacks, but the URL itself is the secret.</div></li>
+      <li><div><b>Not production-grade.</b> v0. Real and live, but the protocol may evolve. Issues, design notes, and discussion at <a href="https://github.com/teenybase/agentsocket" style="color:var(--fg-2); text-decoration:underline; text-decoration-color:var(--rule-hi); text-underline-offset:3px;">teenybase/agentsocket</a>.</div></li>
     </ul>
   </div>
 </section>
 
-<!-- ───── Footer ───── -->
+<!-- ─── Footer ─── -->
 <footer>
-  <a class="mark" href="/">agent-<b><i>socket</i></b></a>
-  <div class="meta">
-    <span>agentsocket.dev · aisocket.dev</span>
-    <span>apache 2 · open source</span>
-    <a href="https://github.com/teenybase/agentsocket">github →</a>
+  <div class="footer-inner">
+    <a href="/" class="wordmark">agent-socket</a>
+    <div class="footer-meta">
+      <span>agentsocket.dev · aisocket.dev</span>
+      <span>Apache 2</span>
+      <a href="https://github.com/teenybase/agentsocket">github →</a>
+    </div>
   </div>
 </footer>
 
