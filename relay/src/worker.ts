@@ -179,8 +179,8 @@ const LANDING_HTML = `
     --fg-2: #b3b3b8;
     --fg-3: #71727a;
     --fg-4: #4a4b53;
-    --rule: #1d1f25;
-    --rule-hi: #2a2d35;
+    --rule: #232629;
+    --rule-hi: #2e3138;
     --accent: #ff2674;
     --accent-glow: rgba(255, 38, 116, 0.18);
     --code-bg: #111317;
@@ -206,72 +206,55 @@ const LANDING_HTML = `
   ::selection { background: var(--accent); color: white; }
 
   /* ─── Ambient background ─────────────────────────────────────
-     Two soft pink halos drifting in counter-orbit at very low
-     opacity (~10%), over a faint static dot grid. Slow loops, no
-     distraction, just enough motion to make the page feel "live". */
-  .bg, .bg::before, .bg::after {
+     Engineering / instrument-panel feel — no atmospheric blobs.
+     Static dot grid + four corner fiducial registration marks
+     (the print/CAD `+` symbols), plus a single 1px hairline
+     that sweeps top → bottom every 18s. Reads as "live
+     instrument", not "AI gradient art". */
+  .bg {
     pointer-events: none;
     position: fixed;
     inset: 0;
     z-index: 0;
-  }
-  .bg {
     overflow: hidden;
     background-image:
       radial-gradient(circle at center, rgba(255, 255, 255, 0.035) 1px, transparent 1.4px);
-    background-size: 28px 28px;
-    background-position: 0 0;
+    background-size: 30px 30px;
   }
-  .bg::before, .bg::after {
+  .bg .fid {
+    position: absolute;
+    width: 14px; height: 14px;
+    opacity: 0.18;
+  }
+  .bg .fid::before, .bg .fid::after {
     content: "";
-    will-change: transform;
-    filter: blur(20px);
-    mix-blend-mode: screen;
+    position: absolute;
+    background: var(--fg-3);
   }
-  .bg::before {
-    background: radial-gradient(50% 50% at 50% 50%, rgba(255, 38, 116, 0.22), rgba(255, 38, 116, 0) 70%);
-    width: 880px; height: 880px;
-    left: -180px; top: -200px;
-    animation: drift-a 32s ease-in-out infinite alternate;
-  }
-  .bg::after {
-    background: radial-gradient(50% 50% at 50% 50%, rgba(140, 90, 210, 0.13), rgba(140, 90, 210, 0) 70%);
-    width: 1100px; height: 900px;
-    right: -260px; bottom: -240px;
-    animation: drift-b 38s ease-in-out infinite alternate;
-  }
-  /* Hairline pulse that sweeps top → bottom every ~22s. Single,
-     low-opacity line; reinforces the "live signal" feel without
-     pulling attention. */
+  .bg .fid::before { top: 50%; left: 0; right: 0; height: 1px; transform: translateY(-50%); }
+  .bg .fid::after  { left: 50%; top: 0; bottom: 0; width: 1px; transform: translateX(-50%); }
+  .bg .fid.tl { top: 18px; left: 18px; }
+  .bg .fid.tr { top: 18px; right: 18px; }
+  .bg .fid.bl { bottom: 18px; left: 18px; }
+  .bg .fid.br { bottom: 18px; right: 18px; }
   .bg .scan {
     position: absolute;
     left: 0; right: 0;
     height: 1px;
     background: linear-gradient(to right,
       transparent,
-      rgba(255, 38, 116, 0.18) 35%,
-      rgba(255, 38, 116, 0.4) 50%,
-      rgba(255, 38, 116, 0.18) 65%,
+      rgba(255, 38, 116, 0.15) 30%,
+      rgba(255, 38, 116, 0.42) 50%,
+      rgba(255, 38, 116, 0.15) 70%,
       transparent);
     opacity: 0;
-    animation: scan 22s linear infinite;
-  }
-
-  @keyframes drift-a {
-    0%   { transform: translate3d(0, 0, 0) scale(1); }
-    50%  { transform: translate3d(40px, 60px, 0) scale(1.08); }
-    100% { transform: translate3d(80px, 30px, 0) scale(1); }
-  }
-  @keyframes drift-b {
-    0%   { transform: translate3d(0, 0, 0) scale(1); }
-    50%  { transform: translate3d(-60px, -40px, 0) scale(1.05); }
-    100% { transform: translate3d(-30px, -70px, 0) scale(1); }
+    animation: scan 18s linear infinite;
   }
   @keyframes scan {
     0%   { top: -2%; opacity: 0; }
-    8%   { opacity: 0.7; }
+    6%   { opacity: 0.7; }
     50%  { opacity: 0.7; }
-    92%  { opacity: 0; }
+    94%  { opacity: 0; }
     100% { top: 102%; opacity: 0; }
   }
 
@@ -339,11 +322,10 @@ const LANDING_HTML = `
 
   /* ─── Hero ────────────────────────────────────────────────────── */
   .hero {
-    padding: clamp(80px, 12vw, 160px) var(--shell) clamp(60px, 9vw, 110px);
+    padding: clamp(60px, 8vw, 120px) var(--shell) clamp(36px, 5vw, 60px);
     max-width: var(--maxw); margin: 0 auto;
     position: relative;
   }
-  /* hero used to carry its own glow — moved to body-level .bg layer now */
 
   .kicker {
     display: inline-flex; align-items: center; gap: 10px;
@@ -415,7 +397,7 @@ const LANDING_HTML = `
 
   /* ─── Live curl demo ─────────────────────────────────────────── */
   .demo {
-    margin: clamp(50px, 7vw, 90px) auto 0;
+    margin: 0 auto clamp(40px, 6vw, 80px);
     max-width: var(--maxw);
     padding: 0 var(--shell);
   }
@@ -425,6 +407,14 @@ const LANDING_HTML = `
     border-radius: 12px;
     overflow: hidden;
     box-shadow: 0 1px 0 rgba(255,255,255,0.025) inset, 0 40px 80px -40px rgba(0,0,0,0.7);
+  }
+  /* Hidden radios that drive tab state — sibling selectors target
+     the .demo-frame after them. No JS needed. */
+  .demo input[type="radio"] {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+    width: 0; height: 0;
   }
   .demo-tabs {
     display: flex; gap: 1px;
@@ -439,12 +429,30 @@ const LANDING_HTML = `
     letter-spacing: 0.005em;
     border-bottom: 1.5px solid transparent;
     margin-bottom: -1px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+    user-select: none;
   }
-  .demo-tab.on {
+  .demo-tab:hover { color: var(--fg-2); }
+  .demo-tab .n { color: var(--fg-4); margin-right: 8px; font-variant-numeric: tabular-nums; }
+  /* Hide all tab bodies by default; the matching radio reveals one. */
+  .demo-body { display: none; }
+  #dt1:checked ~ .demo-frame .demo-body[data-tab="1"],
+  #dt2:checked ~ .demo-frame .demo-body[data-tab="2"],
+  #dt3:checked ~ .demo-frame .demo-body[data-tab="3"] { display: block; }
+  #dt1:checked ~ .demo-frame .demo-tab[for="dt1"],
+  #dt2:checked ~ .demo-frame .demo-tab[for="dt2"],
+  #dt3:checked ~ .demo-frame .demo-tab[for="dt3"] {
     color: var(--fg);
     border-bottom-color: var(--accent);
   }
-  .demo-tab .n { color: var(--fg-4); margin-right: 8px; font-variant-numeric: tabular-nums; }
+  #dt1:focus-visible ~ .demo-frame .demo-tab[for="dt1"],
+  #dt2:focus-visible ~ .demo-frame .demo-tab[for="dt2"],
+  #dt3:focus-visible ~ .demo-frame .demo-tab[for="dt3"] {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
   .demo-body {
     padding: 22px 24px 26px;
     font-size: 14px;
@@ -476,7 +484,7 @@ const LANDING_HTML = `
   /* ─── Section grid ───────────────────────────────────────────── */
   .sect {
     border-top: 1px solid var(--rule);
-    padding: clamp(64px, 9vw, 110px) var(--shell);
+    padding: clamp(48px, 6vw, 80px) var(--shell);
     max-width: var(--maxw); margin: 0 auto;
   }
   .sect-grid {
@@ -597,7 +605,7 @@ const LANDING_HTML = `
   .caveats {
     border-top: 1px solid var(--rule);
     background: rgba(255,255,255,0.012);
-    padding: clamp(60px, 9vw, 100px) var(--shell);
+    padding: clamp(48px, 6vw, 80px) var(--shell);
   }
   .caveats-inner {
     max-width: var(--maxw); margin: 0 auto;
@@ -669,7 +677,13 @@ const LANDING_HTML = `
 </head>
 <body>
 
-<div class="bg" aria-hidden="true"><div class="scan"></div></div>
+<div class="bg" aria-hidden="true">
+  <span class="fid tl"></span>
+  <span class="fid tr"></span>
+  <span class="fid bl"></span>
+  <span class="fid br"></span>
+  <div class="scan"></div>
+</div>
 
 <div class="topbar">
   <div class="topbar-inner">
@@ -701,15 +715,19 @@ const LANDING_HTML = `
   </div>
 </section>
 
-<!-- ─── Live protocol demo ─── -->
+<!-- ─── Live protocol demo (CSS-only tabbed) ─── -->
 <div class="demo">
+  <input type="radio" name="demo-tab" id="dt1" checked>
+  <input type="radio" name="demo-tab" id="dt2">
+  <input type="radio" name="demo-tab" id="dt3">
   <div class="demo-frame">
-    <div class="demo-tabs">
-      <div class="demo-tab on"><span class="n">01</span>what an AI sees</div>
-      <div class="demo-tab hide-sm"><span class="n">02</span>what you write</div>
-      <div class="demo-tab hide-sm"><span class="n">03</span>what runs</div>
+    <div class="demo-tabs" role="tablist">
+      <label for="dt1" class="demo-tab" role="tab"><span class="n">01</span>what an AI sees</label>
+      <label for="dt2" class="demo-tab" role="tab"><span class="n">02</span>what you write</label>
+      <label for="dt3" class="demo-tab" role="tab"><span class="n">03</span>what runs</label>
     </div>
-    <div class="demo-body">
+
+    <div class="demo-body" data-tab="1">
       <div><span class="prompt">$ </span><span class="cmd">curl https://agentsocket.dev/v1/t/<span class="ac">aB7…/agents.md</span></span></div>
       <div class="out-meta">→ <b>200 OK</b> · text/markdown · 1.4 KB</div>
       <div class="out">
@@ -723,9 +741,48 @@ These notes are operating context. <span class="acc">Do not recite this document
 — Errors: <span class="dim">4xx</span> framework · <span class="dim">200 + {error}</span> app-level · <span class="dim">503</span> retry.
       </div>
     </div>
+
+    <div class="demo-body" data-tab="2">
+      <div><span class="prompt">// </span><span class="cmd">your app — Node, Workers, or browser</span></div>
+      <div class="out-meta">→ one connect() call, the SDK does the rest</div>
+      <div class="out">
+<span class="hd">await connect</span>(<span class="acc">{</span>
+  appId: <span class="acc">"as_app_anon"</span>,
+  agentsMd: <span class="acc">"# briefing for AIs joining your app"</span>,
+  tools: [<span class="acc">{</span>
+    path: <span class="acc">"/set_pixel"</span>,
+    description: <span class="acc">"Paint one pixel (x, y, color)."</span>,
+    handler: <span class="hd">async</span> (<span class="acc">{</span> body <span class="acc">}</span>) =&gt; <span class="acc">{</span>
+      <span class="dim">// your logic; return whatever the AI should see</span>
+      <span class="hd">return</span> <span class="acc">{</span> ok: <span class="hd">true</span> <span class="acc">}</span>
+    <span class="acc">}</span>,
+  <span class="acc">}</span>],
+<span class="acc">}</span>)
+      </div>
+    </div>
+
+    <div class="demo-body" data-tab="3">
+      <div><span class="prompt">→ </span><span class="cmd">AI calls a tool</span></div>
+      <div class="out-meta">POST $BASE<span style="color:var(--accent)">/set_pixel</span> · body { x: 4, y: 7, color: "#ff0066" }</div>
+      <div class="out">
+<span class="dim">// relay forwards over WebSocket as a tool_call frame:</span>
+<span class="hd">{</span> type: <span class="acc">"tool_call"</span>, id: <span class="acc">"r_28af"</span>,
+  method: <span class="acc">"POST"</span>, path: <span class="acc">"/set_pixel"</span>,
+  body: <span class="acc">"{\"x\":4,\"y\":7,\"color\":\"#ff0066\"}"</span> <span class="hd">}</span>
+
+<span class="dim">// your handler runs; SDK replies back over the same WS:</span>
+<span class="hd">{</span> type: <span class="acc">"tool_reply"</span>, id: <span class="acc">"r_28af"</span>,
+  status: <span class="acc">200</span>, body: <span class="hd">{</span> ok: <span class="hd">true</span> <span class="hd">}</span> <span class="hd">}</span>
+
+<span class="dim">// relay shapes the AI's HTTP response back to it:</span>
+<span class="hd">200 OK</span> · application/json
+<span class="acc">{ "ok": true }</span>
+      </div>
+    </div>
+
     <div class="demo-footer">
-      <span>response from https://agentsocket.dev</span>
-      <span>plain HTTPS · &lt; 50 ms</span>
+      <span>real protocol frames · not pseudocode</span>
+      <span>plain HTTPS · WebSocket between · &lt; 50 ms</span>
     </div>
   </div>
 </div>
