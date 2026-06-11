@@ -200,9 +200,86 @@ const LANDING_HTML = `
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
+    position: relative;
   }
 
   ::selection { background: var(--accent); color: white; }
+
+  /* ─── Ambient background ─────────────────────────────────────
+     Two soft pink halos drifting in counter-orbit at very low
+     opacity (~10%), over a faint static dot grid. Slow loops, no
+     distraction, just enough motion to make the page feel "live". */
+  .bg, .bg::before, .bg::after {
+    pointer-events: none;
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+  }
+  .bg {
+    overflow: hidden;
+    background-image:
+      radial-gradient(circle at center, rgba(255, 255, 255, 0.035) 1px, transparent 1.4px);
+    background-size: 28px 28px;
+    background-position: 0 0;
+  }
+  .bg::before, .bg::after {
+    content: "";
+    will-change: transform;
+    filter: blur(20px);
+    mix-blend-mode: screen;
+  }
+  .bg::before {
+    background: radial-gradient(50% 50% at 50% 50%, rgba(255, 38, 116, 0.22), rgba(255, 38, 116, 0) 70%);
+    width: 880px; height: 880px;
+    left: -180px; top: -200px;
+    animation: drift-a 32s ease-in-out infinite alternate;
+  }
+  .bg::after {
+    background: radial-gradient(50% 50% at 50% 50%, rgba(140, 90, 210, 0.13), rgba(140, 90, 210, 0) 70%);
+    width: 1100px; height: 900px;
+    right: -260px; bottom: -240px;
+    animation: drift-b 38s ease-in-out infinite alternate;
+  }
+  /* Hairline pulse that sweeps top → bottom every ~22s. Single,
+     low-opacity line; reinforces the "live signal" feel without
+     pulling attention. */
+  .bg .scan {
+    position: absolute;
+    left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(to right,
+      transparent,
+      rgba(255, 38, 116, 0.18) 35%,
+      rgba(255, 38, 116, 0.4) 50%,
+      rgba(255, 38, 116, 0.18) 65%,
+      transparent);
+    opacity: 0;
+    animation: scan 22s linear infinite;
+  }
+
+  @keyframes drift-a {
+    0%   { transform: translate3d(0, 0, 0) scale(1); }
+    50%  { transform: translate3d(40px, 60px, 0) scale(1.08); }
+    100% { transform: translate3d(80px, 30px, 0) scale(1); }
+  }
+  @keyframes drift-b {
+    0%   { transform: translate3d(0, 0, 0) scale(1); }
+    50%  { transform: translate3d(-60px, -40px, 0) scale(1.05); }
+    100% { transform: translate3d(-30px, -70px, 0) scale(1); }
+  }
+  @keyframes scan {
+    0%   { top: -2%; opacity: 0; }
+    8%   { opacity: 0.7; }
+    50%  { opacity: 0.7; }
+    92%  { opacity: 0; }
+    100% { top: 102%; opacity: 0; }
+  }
+
+  /* Make sure all real content sits above the bg layer. */
+  .topbar, .hero, .demo, .sect, .caveats, footer {
+    position: relative;
+    z-index: 1;
+  }
 
   a { color: inherit; text-decoration: none; transition: color 0.15s; }
   a:hover { color: var(--accent); }
@@ -266,15 +343,7 @@ const LANDING_HTML = `
     max-width: var(--maxw); margin: 0 auto;
     position: relative;
   }
-  .hero::before {
-    content: "";
-    position: absolute;
-    top: 0; right: -10%;
-    width: 70%; height: 100%;
-    background: radial-gradient(60% 50% at 100% 30%, var(--accent-glow), transparent 70%);
-    pointer-events: none;
-    z-index: -1;
-  }
+  /* hero used to carry its own glow — moved to body-level .bg layer now */
 
   .kicker {
     display: inline-flex; align-items: center; gap: 10px;
@@ -594,10 +663,13 @@ const LANDING_HTML = `
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
+    .bg .scan { display: none; }
   }
 </style>
 </head>
 <body>
+
+<div class="bg" aria-hidden="true"><div class="scan"></div></div>
 
 <div class="topbar">
   <div class="topbar-inner">
