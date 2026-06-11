@@ -191,6 +191,7 @@ const LANDING_HTML = `
   *, *::before, *::after { box-sizing: border-box; }
   html { color-scheme: dark; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+  html { max-width: 100vw; overflow-x: hidden; }
 
   body {
     font-family: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -201,7 +202,20 @@ const LANDING_HTML = `
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
     position: relative;
+    max-width: 100vw;
   }
+
+  /* Critical: long unbreakable strings (URLs, code) propagate
+     min-content-width up the DOM and make the page wider than the
+     viewport on mobile. Force min-width: 0 on layout containers
+     and let inner code blocks scroll horizontally on their own. */
+  .topbar-inner, .hero, .demo, .demo-frame, .sect, .sect-grid > *,
+  .caveats, .caveats-inner, footer, .footer-inner {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .demo, .sect, .caveats, footer { max-width: var(--maxw); }
+  .demo-body, .code, .quote { min-width: 0; }
 
   ::selection { background: var(--accent); color: white; }
 
@@ -376,6 +390,10 @@ const LANDING_HTML = `
     letter-spacing: -0.005em;
     border: 1px solid transparent;
     transition: background 0.16s, border-color 0.16s, color 0.16s, transform 0.16s;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
   .btn.solid {
     background: var(--fg);
@@ -389,6 +407,7 @@ const LANDING_HTML = `
   .btn.ghost:hover { color: var(--fg); border-color: var(--fg-3); }
   .btn .ar { transition: transform 0.18s; opacity: 0.7; }
   .btn:hover .ar { transform: translateX(2px); opacity: 1; }
+  .label-short { display: none; }
   .or {
     color: var(--fg-4);
     font-size: 13px;
@@ -460,14 +479,16 @@ const LANDING_HTML = `
     font-feature-settings: "tnum", "ss01";
   }
   .prompt { color: var(--fg-4); user-select: none; }
-  .cmd { color: var(--fg); font-weight: 500; }
+  .cmd { color: var(--fg); font-weight: 500; word-break: break-all; overflow-wrap: anywhere; }
   .cmd .ac { color: var(--accent); }
-  .out-meta { color: var(--fg-3); font-size: 12.5px; margin: 16px 0 12px; }
+  .out-meta { color: var(--fg-3); font-size: 12.5px; margin: 16px 0 12px; word-break: break-all; overflow-wrap: anywhere; }
   .out-meta b { color: #4ade80; font-weight: 500; }
   .out {
     color: var(--fg-2);
     line-height: 1.65;
     padding-left: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
   .out .hd { color: var(--fg); font-weight: 500; }
   .out .acc { color: var(--accent); }
@@ -489,7 +510,7 @@ const LANDING_HTML = `
   }
   .sect-grid {
     display: grid;
-    grid-template-columns: minmax(220px, 1fr) 3fr;
+    grid-template-columns: minmax(220px, 1fr) minmax(0, 3fr);
     gap: clamp(24px, 4vw, 64px);
     align-items: start;
   }
@@ -610,7 +631,7 @@ const LANDING_HTML = `
   .caveats-inner {
     max-width: var(--maxw); margin: 0 auto;
     display: grid;
-    grid-template-columns: minmax(220px, 1fr) 3fr;
+    grid-template-columns: minmax(220px, 1fr) minmax(0, 3fr);
     gap: clamp(24px, 4vw, 64px);
   }
   .caveats h3 {
@@ -662,11 +683,71 @@ const LANDING_HTML = `
 
   /* ─── Responsive ─────────────────────────────────────────────── */
   @media (max-width: 760px) {
+    :root { --shell: 22px; }
     .hide-sm { display: none; }
-    .sect-grid, .caveats-inner { grid-template-columns: 1fr; gap: 14px; }
-    .top-links { gap: 14px; }
-    .demo-body { font-size: 13px; padding: 16px 18px 22px; }
-    .code { font-size: 12.5px; padding: 14px 16px; }
+    .sect-grid, .caveats-inner { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+    .top-links { gap: 12px; font-size: 12.5px; }
+    .topbar-inner { padding: 12px var(--shell); }
+    .wordmark { font-size: 13.5px; }
+
+    .hero { padding: 36px var(--shell) 28px; }
+    h1.h {
+      font-size: 30px;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      max-width: 100%;
+      overflow-wrap: break-word;
+    }
+    .lead { font-size: 15px; }
+    .kicker { font-size: 11.5px; margin-bottom: 18px; }
+    .cta { margin-top: 24px; gap: 8px; flex-direction: column; align-items: stretch; }
+    .cta .btn { padding: 11px 14px; font-size: 13.5px; justify-content: center; text-align: center; }
+    .cta .or { display: none; }
+    .label-full { display: none; }
+    .label-short { display: inline; }
+
+    .demo { margin-bottom: 36px; }
+    .demo-tab { padding: 11px 11px; font-size: 12px; }
+    .demo-tab .n { margin-right: 5px; opacity: 0.6; }
+    .demo-tabs { padding: 0 6px; overflow-x: auto; }
+    .demo-body { font-size: 12.5px; padding: 16px 16px 22px; }
+    .demo-footer { padding: 10px 16px; font-size: 11px; flex-direction: column; gap: 4px; }
+    .out { font-size: 12.5px; line-height: 1.6; }
+
+    .sect { padding: 36px var(--shell); }
+    .sect-tag { font-size: 11.5px; color: var(--fg-4); }
+    .sect-tag .num { display: inline; margin-right: 6px; margin-bottom: 0; }
+    .sect h2 { font-size: clamp(22px, 5vw, 28px); margin-bottom: 12px; max-width: 100%; }
+    .sect p { font-size: 14.5px; line-height: 1.6; max-width: 100%; }
+
+    .code { font-size: 12px; padding: 14px 14px; line-height: 1.65; }
+    .code::before { display: none; }
+    .quote { font-size: 13.5px; padding: 14px 16px; }
+    .quote::before { font-size: 10px; }
+    .lit { font-size: 0.92em; }
+
+    .caveats { padding: 36px var(--shell); }
+    .caveats h3 { margin-bottom: 8px; }
+    .caveats-list { gap: 14px; }
+    .caveats-list li { font-size: 14px; }
+
+    footer { padding: 22px var(--shell); }
+    .footer-inner { font-size: 11.5px; gap: 14px; flex-direction: column; align-items: flex-start; }
+    .footer-meta { gap: 10px; }
+
+    /* Smaller fiducials at narrow widths, pulled tighter to corners */
+    .bg .fid { width: 10px; height: 10px; }
+    .bg .fid.tl, .bg .fid.tr { top: 10px; }
+    .bg .fid.bl, .bg .fid.br { bottom: 10px; }
+    .bg .fid.tl, .bg .fid.bl { left: 10px; }
+    .bg .fid.tr, .bg .fid.br { right: 10px; }
+  }
+
+  @media (max-width: 420px) {
+    h1.h { font-size: 26px; }
+    .demo-tab .n { display: none; }
+    .demo-tabs { gap: 0; }
+    .demo-tab { padding: 11px 9px; }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -709,7 +790,7 @@ const LANDING_HTML = `
 
   <div class="cta">
     <a class="btn solid" href="#install">Wire up your app <span class="ar">→</span></a>
-    <a class="btn ghost" href="https://github.com/teenybase/agentsocket">github.com/teenybase/agentsocket</a>
+    <a class="btn ghost" href="https://github.com/teenybase/agentsocket"><span class="label-full">github.com/teenybase/agentsocket</span><span class="label-short">GitHub repo</span></a>
     <span class="or">·</span>
     <a class="btn ghost" href="#paste">I got sent a URL</a>
   </div>
