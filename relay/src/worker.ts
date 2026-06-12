@@ -375,6 +375,14 @@ const LANDING_HTML = `
     color: var(--fg-2);
   }
   .lead b { color: var(--fg); font-weight: 500; }
+  .lead i {
+    font-style: normal;
+    color: var(--fg);
+    font-weight: 500;
+    background: linear-gradient(to bottom, transparent 62%, var(--accent-glow) 62%, var(--accent-glow) 92%, transparent 92%);
+    padding: 0 2px;
+  }
+  .lead-2 { margin-top: 14px; max-width: 60ch; }
 
   .cta {
     margin-top: 36px;
@@ -785,7 +793,10 @@ const LANDING_HTML = `
   <h1 class="h">A relay between AI chats <span class="ac">and web apps.</span></h1>
 
   <p class="lead">
-    Paste one URL into <b>Claude</b>, <b>ChatGPT</b>, <b>Gemini</b>, or <b>Claude&nbsp;Code</b>. The AI calls your endpoints over plain HTTPS as tool calls — discoverable through a single <span class="lit">GET /tools.json</span>. No&nbsp;MCP. No&nbsp;OAuth. No SDK on the AI side.
+    Paste one URL into <b>Claude</b>, <b>ChatGPT</b>, <b>Gemini</b>, or <b>Claude&nbsp;Code</b>. The AI calls your endpoints over plain HTTPS as tool calls, discovered through a single <span class="lit">GET /tools.json</span>.
+  </p>
+  <p class="lead lead-2">
+    <i>Same shape as MCP, none of the install.</i> No client config to edit, no runtime to ship, no OAuth dance — agent-socket works in any chat that can <span class="lit">fetch()</span>, which is all of them.
   </p>
 
   <div class="cta">
