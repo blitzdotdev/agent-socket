@@ -54,6 +54,7 @@ A longer hold means one long-poll can block for minutes instead of 25s, cutting 
 ### Proposed direction
 - Document the cap and its source of truth (`MAX_SYNC_TOOL_MS`, `relay-do.ts:556`).
 - Expose a longer and/or per-request-configurable hold (e.g. a `wait`/hold parameter clamped to a higher max), so a blocking-recv long-poll can legitimately hold for minutes within the DO. Confirm the safe upper bound against Cloudflare DO/edge limits before raising the default. TBD: confirm any edge/CDN-imposed ceiling on how long an in-flight HTTPS request can be held end-to-end (independent of the DO).
+- **This is exactly what the CHANNEL model already did** — `issues/closed/channel-dynamic-wait-cap.md` raised the channel `/recv` cap from 25s to a **dynamic up-to-300s when quiet** (default 25s while active or while a peer is `awaiting`), with the verbatim rationale: *"neither side has native sleep … an idle peer burns one tool call per 25s of silence."* The ask here is to bring that same dynamic-cap behavior to the **tool-relay** hold (`MAX_SYNC_TOOL_MS`), which never got it.
 
 ---
 
@@ -125,7 +126,10 @@ Make reconnection **sticky**: preserve the session-id (and therefore the DO inst
 - Have the SDK persist its session-id and send it back on reconnect (`x-as-session-id`) so `idFromName` resolves the **same** DO, with the existing `4409 already connected` guard relaxed to allow takeover by the same client after the old WS is gone.
 - Keep tokens valid across reconnects by anchoring them to a stable session identity rather than a per-connection random id.
 
-Related: `sdk-reconnect-remint-race.md` (the remint loop itself can race mid-drop). Sticky reconnection would make most of that remint loop unnecessary.
+Related issues — all of which work *within* the re-mint-on-reconnect model rather than eliminating it, so sticky reconnection would make most of them unnecessary:
+- `issues/open/sdk-reconnect-remint-race.md` — the remint loop can race mid-drop, dropping entries from `tokensRemapped`.
+- `issues/closed/chrome-ext-ws-drops-no-reconnect.md` — documents that the SDK's *design* IS "reconnect → re-mint under a NEW session-id → report via `onSessionChanged`" (i.e. exactly the behavior this finding proposes to change at the root).
+- `issues/open/chrome-ext-multi-mint-onsession-changed.md` — a consumer-side consequence of re-minting: only the one stored URL gets a `url_changed`, so other minted URLs silently break on reconnect.
 
 ---
 
@@ -141,6 +145,12 @@ The **channel** model already implements the exact blocking-recv primitive the t
 
 The tool-relay model should get the same shape: either reuse `createResilientWatcher` for a co-located agent (Finding 3) or generalize `LogStore.wait()` into the SDK tool path (Finding 1).
 
+And the team already **accepted the premise** for channels in two CLOSED issues — so this issue is "do the same for tool-relay," not a new argument:
+- `issues/closed/channel-dynamic-wait-cap.md` — raised the channel long-poll cap to a dynamic 300s-when-quiet on exactly the "no native sleep / a tool call per 25s of silence" reasoning. **The precedent for Findings 1 + 2.**
+- `issues/closed/channel-spec-awaiting-semantics.md` — pinned the channel long-poll's *delivery-time* `awaiting` semantics (is the counterpart still waiting *right now*). A tool-relay blocking-recv would want the same clarity.
+
+The gap is simply that **all of this exists for the `channel` model and none of it for the `tool-relay` model** — which is what apps like BlitzOS actually use.
+
 ## Workaround in the wild
 
 BlitzOS reinvented the missing primitive per-app as a shell script — a `wait.sh` that loops the 25s long-poll in bash and returns only on a real event (keeping `wait` under the 30s relay cap from Finding 2). It also runs a relay-url-file self-heal + agent re-exec to survive the stale-URL churn from Finding 5. Every app that wants event-driven agents currently has to build its own version of this. A first-class blocking-recv + sticky reconnection would obviate the per-app reinvention.
@@ -151,7 +161,7 @@ BlitzOS reinvented the missing primitive per-app as a shell script — a `wait.s
 
 - [ ] **P0 — Blocking-recv primitive (Finding 1).** Generalize the channel `LogStore.wait()` waiter into the SDK tool model and/or ship a canonical "wait for event" helper so apps stop hand-rolling poll loops. TBD: confirm final API surface.
 - [ ] **P0 — Sticky reconnection (Finding 5).** Preserve session-id + tokens + URL across transient WS drops so the agent's baked URL doesn't go stale. Coordinate with `sdk-reconnect-remint-race.md`.
-- [ ] **P1 — Longer/configurable hold cap (Finding 2).** Document `MAX_SYNC_TOOL_MS` (`relay-do.ts:556`, default 30000) and expose a longer, per-request-configurable hold so one long-poll can block minutes. Confirm the edge ceiling on held HTTPS requests.
+- [ ] **P1 — Longer/configurable hold cap (Finding 2).** Document `MAX_SYNC_TOOL_MS` (`relay-do.ts:556`, default 30000) and expose a longer, per-request-configurable hold so one long-poll can block minutes — **mirroring the channel fix in `channel-dynamic-wait-cap.md` (dynamic up-to-300s when quiet)**. Confirm the edge ceiling on held HTTPS requests.
 - [ ] **P1 — True push to the agent (Finding 3).** Add an agent-side SSE/WS subscription, or expose the channel local-log path for co-located agents.
 - [ ] **P2 — Neutral framing guidance (Finding 4).** Keep the SDK default neutral (already is) and document that aggressive "stay reachable / poll forever" framing is unnecessary and risks cyber-classifier flags. Audit shipped templates for reachability framing to soften.
 
