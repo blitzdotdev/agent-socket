@@ -96,7 +96,13 @@ function escapeApplescript(s) {
  * to SIGKILL after 2 seconds.
  */
 function spawnCapture(bin, args, { timeout_ms, log, harness }) {
-  const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], env: process.env })
+  // detached:true puts the child in its OWN process group so we can signal the
+  // whole tree (the harness CLI spawns model clients, bash tool-call children,
+  // MCP servers, etc.). Without it, child.kill() reaches only the top CLI pid
+  // and grandchildren keep running orphaned after cancel/timeout — and the
+  // harness runs with --dangerously-skip-permissions, so an orphaned child can
+  // keep mutating the machine after the operator believed the run was killed.
+  const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], env: process.env, detached: true })
   let stdout = ""
   let stderr = ""
   let killed = false
@@ -126,11 +132,20 @@ function spawnCapture(bin, args, { timeout_ms, log, harness }) {
     })
   })
 
+  // Signal the whole process group (negative pid) so grandchildren die too.
+  // Fall back to signalling just the child if the group send fails (e.g. the
+  // child already exited and its pid was reaped).
+  function killTree(signal) {
+    if (child.pid == null) return
+    try { process.kill(-child.pid, signal) }
+    catch { try { child.kill(signal) } catch {} }
+  }
+
   function cancel() {
     if (killed) return
     killed = true
-    try { child.kill("SIGTERM") } catch {}
-    setTimeout(() => { try { child.kill("SIGKILL") } catch {} }, 2000)
+    killTree("SIGTERM")
+    setTimeout(() => killTree("SIGKILL"), 2000)
   }
 
   return { pid: child.pid, promise, cancel }

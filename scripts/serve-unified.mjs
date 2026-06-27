@@ -53,7 +53,12 @@ function serveStatic(req, res) {
     return
   }
   let filePath = path.join(PKG_ROOT, urlPath.replace(/^\/+/, ""))
-  if (!filePath.startsWith(PKG_ROOT)) {
+  // Boundary check MUST include the path separator: a bare `startsWith(PKG_ROOT)`
+  // also matches sibling dirs that share the prefix (e.g. `…/agent-socket-secrets`),
+  // and `%2f`-encoded `..` survives `new URL().pathname` into `path.join`. This
+  // server binds 0.0.0.0 and is meant to be public-tunnel-fronted, so traversal
+  // here is internet-reachable.
+  if (filePath !== PKG_ROOT && !filePath.startsWith(PKG_ROOT + path.sep)) {
     res.writeHead(403); res.end("forbidden"); return
   }
   try {

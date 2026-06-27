@@ -6,13 +6,17 @@
 //
 // Behavioral contract (v0):
 //  - handler returns { status, body: <string>, headers: { "content-type": X } }
-//    → relay serves the string verbatim with Content-Type: X
+//    → relay serves the string verbatim with Content-Type: X, EXCEPT
+//      script-capable types (text/html, image/svg+xml, *xml) which are
+//      downgraded to text/plain (the body is still returned, just inert) so
+//      an app can't serve executable HTML on the relay's own origin.
 //  - handler returns { status, body, headers: { "Content-Type": X } } (any case)
 //    → same — case-insensitive lookup
 //  - handler returns { status, body: <object>, headers: {...} }
 //    → falls back to JSON.stringify with application/json (string-body only in v0)
 //  - handler returns the legacy `{ status, body: <object> }` (no headers)
 //    → unchanged: JSON.stringify with application/json
+//  - ALL tool/task responses carry X-Content-Type-Options: nosniff.
 //
 // Covers /agents.md + /tools.json being unaffected (they're served by the
 // relay directly, not via tool calls).
@@ -86,17 +90,19 @@ export default async function () {
   const link = await session.mintAgentToken({ label: "ct-test" })
   const tokenBase = `/v1/t/${link.token}`
 
-  // ── A) text/html passthrough ─────────────────────────────────────────
+  // ── A) text/html is DOWNGRADED to text/plain (XSS-on-our-origin guard) ──
   const rA = await httpGet(`${tokenBase}/page.html`)
   a.equal(rA.status, 200, "html: status 200")
-  a.ok((rA.headers.get("content-type") ?? "").startsWith("text/html"), `html: content-type is text/html (got ${rA.headers.get("content-type")})`)
-  a.equal(rA.body, "<h1>hi</h1>", "html: body verbatim, NOT JSON-stringified")
+  a.ok((rA.headers.get("content-type") ?? "").startsWith("text/plain"), `html: text/html downgraded to text/plain (got ${rA.headers.get("content-type")})`)
+  a.equal(rA.body, "<h1>hi</h1>", "html: body still returned verbatim, just inert")
+  a.equal(rA.headers.get("x-content-type-options"), "nosniff", "html: nosniff present")
 
   // ── B) text/plain passthrough, case-insensitive header lookup ────────
   const rB = await httpGet(`${tokenBase}/plain.txt`)
   a.equal(rB.status, 200, "plain: status 200")
   a.equal(rB.headers.get("content-type"), "text/plain", "plain: content-type passed through")
   a.equal(rB.body, "hello, world\n", "plain: body verbatim")
+  a.equal(rB.headers.get("x-content-type-options"), "nosniff", "plain: nosniff present")
 
   // ── C) legacy (no headers, object body) → JSON, unchanged ───────────
   const rC = await httpGet(`${tokenBase}/legacy`)

@@ -83,15 +83,26 @@ export class LogStore {
     if (since < this.firstRetainedSeq - 1) {
       missed = (this.firstRetainedSeq - 1) - since
     }
+    let capped = false
     for (const m of this.log) {
       if (m.seq <= since) continue
       if (m.from === senderName) continue       // skip own messages
       result.push({ ...m, awaiting: this.hasOpenWaiter(m.from) })
-      if (result.length >= RECV_BATCH) break
+      if (result.length >= RECV_BATCH) { capped = true; break }
     }
+    // latest_seq must reflect what we actually delivered, never the global
+    // high-water mark — otherwise a client that advances its `since` to
+    // latest_seq skips any message we didn't return. Two ways that happens:
+    //  (a) more than RECV_BATCH messages were waiting (we capped), and
+    //  (b) messages arrived concurrently while a long-poll waiter resolved.
+    // Reporting the last delivered seq guarantees the next poll resumes
+    // exactly where this one stopped, with no gap.
+    const latestSeq = result.length > 0
+      ? (capped ? result[result.length - 1].seq : this.nextSeq - 1)
+      : this.nextSeq - 1
     return {
       messages: result,
-      latest_seq: this.nextSeq - 1,
+      latest_seq: latestSeq,
       ...(missed > 0 ? { missed_messages: missed } : {}),
     }
   }

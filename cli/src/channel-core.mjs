@@ -94,8 +94,22 @@ export function createChannelTools(opts = {}) {
           return drained
         }
 
+        // Block until woken (or timeout). Return the woken payload as-is —
+        // its `awaiting` flag is the delivery-time snapshot baked in by
+        // wakeWaiters, which must be preserved. The fix for the
+        // concurrent-sender gap is the `latest_seq`: report the seq of the
+        // LAST delivered message, not the global high-water mark. wakeWaiters
+        // only delivers the single message that woke us, so any message that
+        // arrived concurrently (after the waiter resolved) has a higher seq
+        // and is NOT in `messages`. Reporting nextSeq-1 there would make the
+        // client advance its cursor past that concurrent message and skip it
+        // forever; reporting the last delivered seq makes the next poll resume
+        // exactly after it (drain picks it up).
         const messages = await waitHandle.promise
-        return { messages, latest_seq: store.nextSeq - 1 }
+        const latest_seq = messages.length > 0
+          ? messages[messages.length - 1].seq
+          : since
+        return { messages, latest_seq }
       },
     },
     {

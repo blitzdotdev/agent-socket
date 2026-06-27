@@ -50,7 +50,9 @@ export async function startStaticServer(port = 0) {
   const server = http.createServer((req, res) => {
     const urlPath = decodeURIComponent(new URL(req.url, "http://x").pathname)
     let filePath = path.join(PKG_ROOT, urlPath.replace(/^\/+/, ""))
-    if (!filePath.startsWith(PKG_ROOT)) {
+    // Boundary check must include the separator so sibling dirs sharing the
+    // prefix (e.g. `…/agent-socket-secrets`) aren't served via `%2f`-encoded `..`.
+    if (filePath !== PKG_ROOT && !filePath.startsWith(PKG_ROOT + path.sep)) {
       res.writeHead(403); res.end("forbidden"); return
     }
     try {

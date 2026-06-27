@@ -213,6 +213,24 @@ class SessionImpl {
         }
     }
     async _handleToolCall(msg) {
+        // Validate the frame BEFORE building the route. A malformed tool_call
+        // (missing/non-string method or path) used to throw here on
+        // `.toUpperCase()` — outside the try below — producing an unhandled
+        // rejection (the call site is `void this._handleToolCall(msg)`) AND no
+        // tool_reply, so the agent's HTTP request hung until the relay's
+        // tool_timeout. Reply with an error instead so the agent gets a prompt
+        // response for any frame carrying an id.
+        if (typeof msg.method !== "string" || typeof msg.path !== "string") {
+            if (typeof msg.id === "string") {
+                this._sendFrame({
+                    type: "tool_reply",
+                    id: msg.id,
+                    status: 400,
+                    body: { error: { code: "bad_tool_call", message: "tool_call requires string method and path" } },
+                });
+            }
+            return;
+        }
         const route = `${msg.method.toUpperCase()} ${msg.path}`;
         const handler = this.toolsByRoute.get(route);
         if (!handler) {

@@ -20,6 +20,41 @@ function runtimeError(e) {
   return { status: 500, body: { error: { code: "runtime_error", message: e?.message ?? String(e) } } }
 }
 
+// SSRF / local-resource guard for AI-driven navigation. The driver is a
+// remote party (the AI, via the relay), so the bound tab must not be pointed
+// at the local machine, the LAN, cloud metadata, or local files — otherwise
+// the browser becomes an SSRF proxy and `file://` exfiltrates local files.
+// Only http(s) to a public host is allowed.
+function isPrivateHost(host) {
+  const h = (host || "").toLowerCase().replace(/^\[|\]$/g, "")  // strip IPv6 brackets
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local")) return true
+  if (h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80")) return true  // IPv6 loopback/ULA/link-local
+  if (h === "metadata.google.internal") return true
+  // IPv4 ranges: loopback, private, link-local (incl. 169.254.169.254 metadata)
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])]
+    if (a === 127 || a === 10 || a === 0) return true
+    if (a === 169 && b === 254) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 192 && b === 168) return true
+  }
+  return false
+}
+
+// Returns null if safe, or an error message string if the URL must be rejected.
+function navUrlError(url) {
+  let u
+  try { u = new URL(url) } catch { return "invalid url" }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    return `scheme ${u.protocol} not allowed (only http/https)`
+  }
+  if (isPrivateHost(u.hostname)) {
+    return `host ${u.hostname} is local/private and not allowed`
+  }
+  return null
+}
+
 /**
  * Build a JS source string for chrome.userScripts.execute.
  * Inlines safeSerialize so the script is self-contained, wraps the user's
@@ -483,6 +518,8 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
       handler: async ({ body }) => {
         const args = parseBody(body)
         if (typeof args.url !== "string") return bad("expected { url: string }")
+        const urlErr = navUrlError(args.url)
+        if (urlErr) return bad(urlErr)
         const wait = args.wait_load !== false
         const timeoutMs = Math.min(Math.max(args.timeout_ms ?? 15000, 100), 60000)
         const tabId = await getActiveTabId()

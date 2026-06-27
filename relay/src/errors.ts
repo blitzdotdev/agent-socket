@@ -23,7 +23,10 @@ export function errorResponse(code: ErrorCode, message: string, status: number):
     JSON.stringify({ error: { code, message } }),
     {
       status,
-      headers: { "content-type": "application/json; charset=utf-8" },
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "x-content-type-options": "nosniff",
+      },
     },
   )
 }

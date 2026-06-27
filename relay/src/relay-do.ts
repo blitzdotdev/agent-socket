@@ -112,6 +112,10 @@ export class RelayServer extends Server<Env> {
       p.resolve(errorResponse("app_offline", "App's WebSocket dropped", 503))
     }
     this.pending.clear()
+    // The app is gone; its async tasks can never be completed or polled
+    // meaningfully again, so free them rather than pinning up to
+    // MAX_TASKS_PER_SESSION × MAX_TASK_BODY_BYTES until CF evicts the DO.
+    this.tasks.clear()
     this.appWs = null
     // Don't clear validTokens here — orphan agent-token requests will
     // still get routed to this DO (until CF evicts) and we want them to
@@ -468,7 +472,10 @@ export class RelayServer extends Server<Env> {
       const body = hasFrameworkContract(appMd) ? appMd : FRAMEWORK_PREAMBLE + appMd
       return new Response(body, {
         status: 200,
-        headers: { "content-type": "text/markdown; charset=utf-8" },
+        headers: {
+          "content-type": "text/markdown; charset=utf-8",
+          "x-content-type-options": "nosniff",
+        },
       })
     }
     if (userPath === "/tools.json") {
@@ -488,7 +495,10 @@ export class RelayServer extends Server<Env> {
       }
       return new Response(JSON.stringify(body), {
         status: 200,
-        headers: { "content-type": "application/json; charset=utf-8" },
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "x-content-type-options": "nosniff",
+        },
       })
     }
     if (userPath.startsWith("/_as_tasks/")) {
@@ -498,16 +508,25 @@ export class RelayServer extends Server<Env> {
       if (!task.completed) {
         return new Response(JSON.stringify({ taskId, completed: false }), {
           status: 202,
-          headers: { "content-type": "application/json; charset=utf-8" },
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "x-content-type-options": "nosniff",
+          },
         })
       }
       // Honor the content-type the app set when it called task_complete
       // (carried through PendingTask.contentType), same as the sync path.
-      return buildToolResponse(
+      const resp = buildToolResponse(
         task.status,
         task.body ?? null,
         task.contentType ? { "content-type": task.contentType } : undefined,
       )
+      // Single-read consumption: free the slot once a completed task has been
+      // delivered. Without this the `tasks` Map grows for the DO's lifetime
+      // and, once MAX_TASKS_PER_SESSION completed tasks accumulate, the cap
+      // check on the 202 path permanently bricks the session's async path.
+      this.tasks.delete(taskId)
+      return resp
     }
     if (userPath.startsWith("/_as_")) {
       return errorResponse("not_found", "unknown internal path", 404)
@@ -622,17 +641,42 @@ function extractContentType(headers: Record<string, string> | undefined): string
   return undefined
 }
 
+// Content-types a browser will execute script in. An app's tool/task response
+// is served from the relay's own origin (agentsocket.dev) and the meta/task
+// surfaces are reachable by a plain browser GET, so we must never hand back
+// app-controlled markup that runs as HTML/SVG-script on our origin. These get
+// downgraded to text/plain (the body is still returned, just inert).
+const SCRIPT_CAPABLE_TYPES = new Set([
+  "text/html",
+  "application/xhtml+xml",
+  "image/svg+xml",
+  "application/xml",
+  "text/xml",
+])
+
 function buildToolResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
   const contentType = extractContentType(headers)
-  // Handler opted into a custom content-type AND gave us a string body —
-  // pass it through verbatim. (Non-string bodies with a declared
-  // content-type fall through to JSON; cheaper than guessing at
-  // serialization.)
+  // Handler opted into a custom content-type AND gave us a string body — pass
+  // it through, but neutralize script-capable types (XSS on our origin) and
+  // always send nosniff so the browser can't sniff a safe type into HTML.
   if (contentType && typeof body === "string") {
-    return new Response(body, { status, headers: { "content-type": contentType } })
+    const essence = contentType.split(";")[0]!.trim().toLowerCase()
+    const safeType = SCRIPT_CAPABLE_TYPES.has(essence)
+      ? "text/plain; charset=utf-8"
+      : contentType
+    return new Response(body, {
+      status,
+      headers: { "content-type": safeType, "x-content-type-options": "nosniff" },
+    })
   }
   return new Response(
     body !== undefined ? JSON.stringify(body) : "",
-    { status, headers: { "content-type": "application/json; charset=utf-8" } },
+    {
+      status,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "x-content-type-options": "nosniff",
+      },
+    },
   )
 }

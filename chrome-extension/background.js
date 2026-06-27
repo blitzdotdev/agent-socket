@@ -36,15 +36,21 @@ const DEFAULT_BASE = "https://agentsocket.dev"
 // ── helpers ────────────────────────────────────────────────────────
 
 async function getActiveTabId() {
-  // If we have a bound tab and it's still alive, use it. Otherwise fall back
-  // to the current active tab. This keeps long-running agent sessions stable
-  // even if the user clicks around.
+  // SECURITY: once a session is bound to a tab, tool calls must ONLY ever
+  // touch that tab. If the bound tab is gone, return null and let the caller
+  // fail the tool call — we must NOT silently fall back to whatever tab the
+  // user is currently looking at (that would let a remote AI drive the user's
+  // banking/email/etc. tab the moment the bound tab closes, defeating the
+  // per-tab activation gate that is the extension's core containment).
   if (boundTabId != null) {
     try {
       const t = await chrome.tabs.get(boundTabId)
       if (t) return t.id
-    } catch { /* tab gone */ }
+    } catch { /* bound tab gone */ }
+    return null  // bound but dead → fail closed, never substitute the active tab
   }
+  // No session bound yet (e.g. the initial popup "Connect this tab" flow):
+  // the active tab is the legitimate target to bind.
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
   return tab?.id ?? null
 }
