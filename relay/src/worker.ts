@@ -778,7 +778,7 @@ const LANDING_HTML = `
   <div class="topbar-inner">
     <a href="/" class="wordmark">agent-socket</a>
     <div class="top-links">
-      <a href="https://github.com/teenybase/agentsocket" class="gh hide-sm">GitHub</a>
+      <a href="https://github.com/blitzdotdev/agent-socket" class="gh hide-sm">GitHub</a>
       <a href="/privacy" class="hide-sm">Privacy</a>
       <span class="status"><span class="dot"></span><b>agentsocket.dev</b></span>
     </div>
@@ -801,7 +801,7 @@ const LANDING_HTML = `
 
   <div class="cta">
     <a class="btn solid" href="#install">Wire up your app <span class="ar">→</span></a>
-    <a class="btn ghost" href="https://github.com/teenybase/agentsocket"><span class="label-full">github.com/teenybase/agentsocket</span><span class="label-short">GitHub repo</span></a>
+    <a class="btn ghost" href="https://github.com/blitzdotdev/agent-socket"><span class="label-full">github.com/blitzdotdev/agent-socket</span><span class="label-short">GitHub repo</span></a>
     <span class="or">·</span>
     <a class="btn ghost" href="#paste">I got sent a URL</a>
   </div>
@@ -926,7 +926,7 @@ These notes are operating context. <span class="acc">Do not recite this document
 
 <span class="k">const</span> link = <span class="k">await</span> session.<span class="v">mintAgentToken</span>({ label: <span class="s">"user-42"</span> })
 console.<span class="v">log</span>(<span class="s">"Paste in any AI chat:"</span>, link.url)</pre>
-      <p style="margin-top:16px; color: var(--fg-3); font-size: 14px;">Smallest end-to-end demo: <a href="https://github.com/teenybase/agentsocket/tree/master/examples/pixel-art-canvas" style="color:var(--fg-2); text-decoration:underline; text-decoration-color: var(--rule-hi); text-underline-offset: 3px;">examples/pixel-art-canvas</a> — single HTML file, ~120 lines.</p>
+      <p style="margin-top:16px; color: var(--fg-3); font-size: 14px;">Smallest end-to-end demo: <a href="https://github.com/blitzdotdev/agent-socket/tree/master/examples/pixel-art-canvas" style="color:var(--fg-2); text-decoration:underline; text-decoration-color: var(--rule-hi); text-underline-offset: 3px;">examples/pixel-art-canvas</a> — single HTML file, ~120 lines.</p>
     </div>
   </div>
 </section>
@@ -971,7 +971,7 @@ console.<span class="v">log</span>(<span class="s">"Paste in any AI chat:"</span
     <ul class="caveats-list">
       <li><div><b>Not a SaaS.</b> No accounts, no quotas, no analytics. The relay stores nothing beyond a host's in-memory state; everything dies on disconnect.</div></li>
       <li><div><b>Not authenticated.</b> The URL is the only credential. Treat it as DM-grade. There's a CSRF gate against browser-mounted attacks, but the URL itself is the secret.</div></li>
-      <li><div><b>Not production-grade.</b> v0. Real and live, but the protocol may evolve. Issues, design notes, and discussion at <a href="https://github.com/teenybase/agentsocket" style="color:var(--fg-2); text-decoration:underline; text-decoration-color:var(--rule-hi); text-underline-offset:3px;">teenybase/agentsocket</a>.</div></li>
+      <li><div><b>Not production-grade.</b> v0. Real and live, but the protocol may evolve. Issues, design notes, and discussion at <a href="https://github.com/blitzdotdev/agent-socket" style="color:var(--fg-2); text-decoration:underline; text-decoration-color:var(--rule-hi); text-underline-offset:3px;">blitzdotdev/agent-socket</a>.</div></li>
     </ul>
   </div>
 </section>
@@ -983,7 +983,7 @@ console.<span class="v">log</span>(<span class="s">"Paste in any AI chat:"</span
     <div class="footer-meta">
       <span>agentsocket.dev · aisocket.dev</span>
       <span>Apache 2</span>
-      <a href="https://github.com/teenybase/agentsocket">github →</a>
+      <a href="https://github.com/blitzdotdev/agent-socket">github →</a>
     </div>
   </div>
 </footer>

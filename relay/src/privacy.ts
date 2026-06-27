@@ -66,13 +66,13 @@ export const PRIVACY_HTML = `<!doctype html>
     <li>The session URL is the only authorization token. Disconnecting from the popup, closing the tab, or restarting Chrome terminates the session.</li>
     <li>The user can revoke the extension's access at any time from <code>chrome://extensions</code>.</li>
     <li>The <code>chrome.userScripts</code> API used by the <code>/eval</code> tool is additionally gated behind a per-extension "Allow User Scripts" toggle that the user must explicitly enable.</li>
-    <li>Source code for both the extension and the relay is open and auditable: <a href="https://github.com/pythonlearner1025/agent-socket">github.com/pythonlearner1025/agent-socket</a>.</li>
+    <li>Source code for both the extension and the relay is open and auditable: <a href="https://github.com/blitzdotdev/agent-socket">github.com/blitzdotdev/agent-socket</a>.</li>
   </ul>
 
   <h2>Changes to this policy</h2>
   <p>If we change this policy, we will update the Effective date above and publish the change in the same repository.</p>
 
   <h2>Contact</h2>
-  <p>Questions about this policy: open an issue at <a href="https://github.com/pythonlearner1025/agent-socket/issues">github.com/pythonlearner1025/agent-socket/issues</a> or email <a href="mailto:mjsong2021@gmail.com">mjsong2021@gmail.com</a>.</p>
+  <p>Questions about this policy: open an issue at <a href="https://github.com/blitzdotdev/agent-socket/issues">github.com/blitzdotdev/agent-socket/issues</a> or email <a href="mailto:mjsong2021@gmail.com">mjsong2021@gmail.com</a>.</p>
 </body>
 </html>`

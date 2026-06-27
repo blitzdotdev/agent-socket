@@ -18,4 +18,4 @@ The "paste a URL into your AI chat and the AI can drive your app" interaction pa
 
 ## Contributors
 
-See the [contributors page](https://github.com/teenybase/agentsocket/graphs/contributors) on GitHub.
+See the [contributors page](https://github.com/blitzdotdev/agent-socket/graphs/contributors) on GitHub.

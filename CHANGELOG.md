@@ -4,7 +4,7 @@ All notable changes to agent-socket are documented here. Format roughly follows 
 
 ## Unreleased
 
-Pre-launch polish toward the first public OSS release at `github.com/teenybase/agentsocket`. Not on npm or the Chrome Web Store yet.
+Pre-launch polish toward the first public OSS release at `github.com/blitzdotdev/agent-socket`. Not on npm or the Chrome Web Store yet.
 
 ### Added
 

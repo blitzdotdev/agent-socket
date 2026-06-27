@@ -18,7 +18,7 @@ Same risk profile applies to anything else under `agent-bridge/` that holds per-
 
 ## Why it matters
 
-- Anyone with read access to the repo (and the eventual `github.com/teenybase/agentsocket` public extraction) sees the token.
+- Anyone with read access to the repo (and the eventual `github.com/blitzdotdev/agent-socket` public extraction) sees the token.
 - Even if rotated, the token remains in git history forever unless rewritten.
 - Pre-launch repo hygiene is on the list — shipping a leaked credential at launch is the worst possible flag.
 

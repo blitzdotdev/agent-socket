@@ -1,6 +1,6 @@
 # `@agent-socket/sdk`
 
-JS/TS client for [agent-socket](https://github.com/teenybase/agentsocket) — connect any web app to AI chats via paste-able URLs.
+JS/TS client for [agent-socket](https://github.com/blitzdotdev/agent-socket) — connect any web app to AI chats via paste-able URLs.
 
 Works in Node, Cloudflare Workers, and the browser. No MCP, no OAuth, no server-side AI integration — the AI calls plain HTTP endpoints you define.
 
@@ -10,7 +10,7 @@ Works in Node, Cloudflare Workers, and the browser. No MCP, no OAuth, no server-
 npm install @agent-socket/sdk
 ```
 
-> v0 — not yet published. For now, vendor from the [repo](https://github.com/teenybase/agentsocket) or use a workspace dep.
+> v0 — not yet published. For now, vendor from the [repo](https://github.com/blitzdotdev/agent-socket) or use a workspace dep.
 
 ## Quick start
 

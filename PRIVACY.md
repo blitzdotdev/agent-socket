@@ -45,7 +45,7 @@ We do not sell, rent, or share user data with third parties for advertising, mar
 - The session URL is the only authorization token. Disconnecting from the popup, closing the tab, or restarting Chrome terminates the session.
 - The user can revoke the extension's access at any time from `chrome://extensions`.
 - The `chrome.userScripts` API used by the `/eval` tool is additionally gated behind a per-extension "Allow User Scripts" toggle that the user must explicitly enable.
-- Source code for both the extension and the relay is open and auditable: <https://github.com/pythonlearner1025/agent-socket>.
+- Source code for both the extension and the relay is open and auditable: <https://github.com/blitzdotdev/agent-socket>.
 
 ## Changes to this policy
 
@@ -53,4 +53,4 @@ If we change this policy, we will update the Effective date above and publish th
 
 ## Contact
 
-Questions about this policy: open an issue at <https://github.com/pythonlearner1025/agent-socket/issues> or email mjsong2021@gmail.com.
+Questions about this policy: open an issue at <https://github.com/blitzdotdev/agent-socket/issues> or email mjsong2021@gmail.com.

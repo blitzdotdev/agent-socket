@@ -5,7 +5,7 @@ Bug reports, feature ideas, and pull requests are welcome. The project is small 
 ## Setup
 
 ```bash
-git clone https://github.com/teenybase/agentsocket
+git clone https://github.com/blitzdotdev/agent-socket
 cd agentsocket
 npm install
 ```
