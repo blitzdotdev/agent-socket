@@ -1,6 +1,6 @@
-// 23-eleventh-inflight — 11th simultaneous tool call is rejected with 429
-// `too_many_inflight`. The first 10 sit pending; we drain by closing the WS
-// (which fails them with 503).
+// 23-eleventh-inflight — the (MAX_INFLIGHT+1)th simultaneous tool call is
+// rejected with 429 `too_many_inflight`. The first MAX_INFLIGHT sit pending;
+// we drain by closing the WS (which fails them with 503). MAX_INFLIGHT is 100.
 
 import { Assert } from "../lib/assert.mjs"
 import { openRawWs, httpPost } from "../lib/relay.mjs"
@@ -25,27 +25,29 @@ export default async function () {
   // The fake app deliberately ignores tool_calls — never replies.
   // (No listener installed, so frames pile up in c.inbox.)
 
-  // Fire 10 concurrent calls that won't be answered.
+  const MAX_INFLIGHT = 100
+
+  // Fire MAX_INFLIGHT concurrent calls that won't be answered.
   const stalled = []
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < MAX_INFLIGHT; i++) {
     stalled.push(httpPost(`/v1/t/${token}/stall`, { i }))
   }
 
-  // Wait until the relay has actually received 10 tool_call frames before
-  // firing the 11th — otherwise we race the relay's pending counter.
-  for (let attempt = 0; attempt < 50; attempt++) {
+  // Wait until the relay has actually received all MAX_INFLIGHT tool_call
+  // frames before firing the next one — otherwise we race the pending counter.
+  for (let attempt = 0; attempt < 100; attempt++) {
     const seen = c.inbox.filter((m) => m.type === "tool_call").length
-    if (seen >= 10) break
+    if (seen >= MAX_INFLIGHT) break
     await new Promise((r) => setTimeout(r, 50))
   }
-  a.equal(c.inbox.filter((m) => m.type === "tool_call").length, 10, "relay received 10 stalled tool_calls")
+  a.equal(c.inbox.filter((m) => m.type === "tool_call").length, MAX_INFLIGHT, `relay received ${MAX_INFLIGHT} stalled tool_calls`)
 
-  // 11th — should hit 429.
-  const eleventh = await httpPost(`/v1/t/${token}/stall`, { i: 11 })
-  a.equal(eleventh.status, 429, "11th call → 429")
-  a.equal(eleventh.json?.error?.code, "too_many_inflight", "code is too_many_inflight")
+  // (MAX_INFLIGHT+1)th — should hit 429.
+  const overflow = await httpPost(`/v1/t/${token}/stall`, { i: MAX_INFLIGHT + 1 })
+  a.equal(overflow.status, 429, `call ${MAX_INFLIGHT + 1} → 429`)
+  a.equal(overflow.json?.error?.code, "too_many_inflight", "code is too_many_inflight")
 
-  // Drain: close WS, the 10 stalled should resolve with 503 app_offline.
+  // Drain: close WS, the stalled calls should resolve with 503 app_offline.
   c.close()
   const results = await Promise.allSettled(stalled)
   for (const r of results) {

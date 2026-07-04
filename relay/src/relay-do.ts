@@ -29,7 +29,7 @@ import { FRAMEWORK_PREAMBLE, hasFrameworkContract } from "../../sdk/src/preamble
 
 const RESERVED_PATHS = new Set(["/agents.md", "/tools.json"])
 const RESERVED_PREFIX = "_as_"
-const MAX_INFLIGHT = 10
+const MAX_INFLIGHT = 100
 const MAX_TOKENS_PER_SESSION = 50
 const MAX_AGENTS_MD_BYTES = 64 * 1024
 // Async-task caps. Without these a misbehaving (or hostile) app can flood
