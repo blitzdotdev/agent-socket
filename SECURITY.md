@@ -33,8 +33,8 @@ These are **by design** for v0, documented in the spec, and not considered vulne
 
 - **No authentication.** The agent-token URL is the only secret. Anyone with it can read and post. Treat URLs as DM-grade secrets.
 - **Anyone can claim any name** in the channel CLI. Names are self-assigned labels; there's no identity verification.
-- **No per-IP rate limiting** on `/v1/_ws` upgrade. Per-session limits (10 inflight, 50 tokens) only. A motivated abuser can spin up arbitrary sessions.
-- **`apps.json` is hardcoded** at deploy time. Third-party app-id registration requires editing the file and redeploying.
+- **Sessions are cheap to create.** `/v1/_ws` upgrades are rate-limited per IP (60 per 10 s, per Cloudflare location) and a socket that doesn't register within 10 s is closed, but there's no global cap; per-session limits are 100 inflight calls and 50 tokens.
+- **App-ids are unauthenticated labels.** Any app can register under any well-formed app-id; the relay doesn't check Origin.
 - **No persistence.** DOs die on disconnect; channel host RAM is the only state.
 - **Channel content is untrusted input.** AI participants must treat messages as data, not directives. See [`docs/spec/`](docs/) §9.5.
 
@@ -45,10 +45,9 @@ Reports about these specific behaviors will be acknowledged but won't be treated
 - Bypassing the in-memory token check (impersonating a session you don't have the verifier for)
 - Leaking DO state across sessions
 - Cross-session data exposure via the relay
-- Memory-exhaustion vectors beyond the documented 10-inflight / 50-token / 1000-msg caps
+- Memory-exhaustion vectors beyond the documented 100-inflight / 50-token / 1 MiB-request-body / 4 MiB-frame caps
 - DEBUG endpoints accessible in production (would be a misconfiguration / deploy regression)
 - Bypassing the chrome extension's per-tab activation gate
-- Cross-origin token leakage from a registered app-id with strict allowed-origins
 - Anything that lets a remote party run code on the host machine via the chrome extension or CLI beyond what the user explicitly approved
 
 ## Mitigations in place
@@ -59,7 +58,7 @@ Reports about these specific behaviors will be acknowledged but won't be treated
 
   Known false negatives (CSRF requests that slip past): Safari < 16.4 omits `Sec-Fetch-Site` entirely (mostly aged out by 2026); Chrome MV3 extension service-worker fetches send `Sec-Fetch-Site: none` (out of scope — a malicious extension can already do far more than CSRF); and an on-path network attacker can strip the header (requires TLS to be broken, which is a bigger problem).
 
-  The WebSocket app surface (`/v1/_ws`) is intentionally unaffected — apps may legitimately be browsers (chrome extension, in-browser SDK users), and origin trust is gated by `apps.json`. The landing page (`GET /`) is also unaffected — humans visit it from search results and link previews.
+  The WebSocket app surface (`/v1/_ws`) is intentionally unaffected — apps may legitimately be browsers (chrome extension, in-browser SDK users), and app-ids aren't a trust boundary. The landing page (`GET /`) is also unaffected — humans visit it from search results and link previews.
 
 ## Credit
 
