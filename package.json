@@ -27,6 +27,7 @@
     "ext:test:unit": "node chrome-extension/test/reconnect.unit.mjs && node chrome-extension/test/nav-guard.unit.mjs",
     "ext:test:reconnect": "node chrome-extension/test/reconnect.e2e.mjs",
     "test": "npm run check && npm test -w sdk && npm run harness && npm run ext:test:unit",
-    "deploy": "bash scripts/deploy.sh deploy"
+    "deploy": "bash scripts/deploy.sh deploy",
+    "privacy:html": "bash scripts/privacy-html.sh"
   }
 }
