@@ -68,7 +68,7 @@ Tests generate migrations straight from `teenybase.ts`, so they never depend on 
 
 ## Deploy (owner)
 
-Nothing here has been deployed. Steps:
+Deployed at https://registry.agentsocket.dev (Access team `blitz-dev-box`). To deploy your own:
 
 1. **Login**: `npx wrangler login` (no `account_id` in `wrangler.jsonc`; set `CLOUDFLARE_ACCOUNT_ID` if you have several accounts).
 2. **Rate-limit namespace**: `ratelimits[0].namespace_id` (`47001`) must be unique in the account; change it if it collides.
