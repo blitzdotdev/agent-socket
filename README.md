@@ -114,7 +114,7 @@ cd relay
 npx wrangler deploy
 ```
 
-`appId` is a free-form label (`[A-Za-z0-9_.-]{1,64}`); there's no app registry. `TOKEN_PREFIX` (default `as`) is configurable via `wrangler.jsonc` `vars` for self-hosters who want a branded prefix.
+`appId` is a free-form label (`[A-Za-z0-9_.-]{1,64}`); there's no app registry.
 
 ## Testing
 

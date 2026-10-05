@@ -3,7 +3,6 @@
 export interface Env {
   RELAY: DurableObjectNamespace
   WS_RATE_LIMIT: RateLimit
-  TOKEN_PREFIX: string
   MAX_SYNC_TOOL_MS: string
   HEARTBEAT_TIMEOUT_MS: string
   DEBUG?: string

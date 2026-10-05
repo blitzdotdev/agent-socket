@@ -326,7 +326,7 @@ export class RelayServer extends Server<Env> {
       return
     }
     const verifier = generateVerifier()
-    const token = makeAgentToken(this.env.TOKEN_PREFIX, this.sessionId, verifier)
+    const token = makeAgentToken(this.sessionId, verifier)
     const url = `__BASE__/v1/t/${token}/agents.md`  // SDK rewrites __BASE__ to actual host
     const label = typeof msg.label === "string" ? msg.label.slice(0, 256) : ""
     const minted: MintedToken = {
@@ -349,7 +349,7 @@ export class RelayServer extends Server<Env> {
   }
 
   private handleRevoke(msg: { id: string; token: string }): void {
-    const parsed = parseAgentToken(this.env.TOKEN_PREFIX, msg.token)
+    const parsed = parseAgentToken(msg.token)
     let revoked = false
     if (parsed && parsed.sessionId === this.sessionId) {
       revoked = this.validTokens.delete(parsed.verifier)
@@ -470,7 +470,7 @@ export class RelayServer extends Server<Env> {
     const tokenMatch = pathname.match(/^\/v1\/t\/([^/]+)\//)
     if (!tokenMatch) return errorResponse("not_found", "malformed url", 404)
     const tokenStr = tokenMatch[1]!
-    const parsed = parseAgentToken(this.env.TOKEN_PREFIX, tokenStr)
+    const parsed = parseAgentToken(tokenStr)
     if (!parsed || parsed.sessionId !== this.sessionId) {
       return errorResponse("token_invalid", "token format or session mismatch", 401)
     }

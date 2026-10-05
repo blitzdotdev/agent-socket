@@ -12,7 +12,7 @@
 
 import { RelayServer } from "./relay-do"
 import type { Env } from "./types"
-import { generateSessionId, parseAgentToken, validateTokenPrefix } from "./tokens"
+import { generateSessionId, parseAgentToken } from "./tokens"
 import { errorResponse } from "./errors"
 import { PRIVACY_HTML } from "./privacy"
 
@@ -20,20 +20,8 @@ export { RelayServer }
 
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024
 
-// Validate TOKEN_PREFIX at module-top-level so a misconfigured deploy
-// fails fast rather than returning 500 to the first user request.
-// (Validated again per-isolate; cheap and reads from `env` which isn't
-// available at module scope, hence the lazy first-call check too.)
-let prefixValidated = false
-function ensurePrefixValid(env: Env): void {
-  if (prefixValidated) return
-  validateTokenPrefix(env.TOKEN_PREFIX)
-  prefixValidated = true
-}
-
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
-    ensurePrefixValid(env)
     const url = new URL(req.url)
     const pathname = url.pathname
 
@@ -97,7 +85,7 @@ export default {
     const tokenMatch = pathname.match(/^\/v1\/t\/([^/]+)(?:\/|$)/)
     if (tokenMatch) {
       const tokenStr = tokenMatch[1]!
-      const parsed = parseAgentToken(env.TOKEN_PREFIX, tokenStr)
+      const parsed = parseAgentToken(tokenStr)
       if (!parsed) return errorResponse("not_found", "bad token format", 404)
       // Only /v1/_ws may open a session's WebSocket. An upgrade here would let
       // anyone holding an agent URL attach to the session as the app.

@@ -1,7 +1,7 @@
 // Token + session-id generation. Format defined in design doc §6:
 //   session-id: 8 chars Crockford base32 (no I/L/O/U)
 //   verifier:   16 random bytes encoded as 22 chars base64url
-//   agent-token: <prefix>_<sessionId>_<verifier>
+//   agent-token: as_<sessionId>_<verifier>
 
 const CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  // 32 chars, no I/L/O/U
 
@@ -22,20 +22,15 @@ export function generateVerifier(): string {
 }
 
 /** Compose a full agent-token. */
-export function makeAgentToken(prefix: string, sessionId: string, verifier: string): string {
-  return `${prefix}_${sessionId}_${verifier}`
+export function makeAgentToken(sessionId: string, verifier: string): string {
+  return `as_${sessionId}_${verifier}`
 }
 
-/**
- * Parse a token. Returns null if malformed. Validates prefix matches
- * (caller passes expected prefix); session-id length 8; verifier length 22.
- */
-export function parseAgentToken(prefix: string, token: string): { sessionId: string; verifier: string } | null {
-  // Validate prefix is regex-safe (caller's responsibility, but double-check).
-  if (!/^[a-z0-9]{2,8}$/.test(prefix)) return null
+const TOKEN_RE = /^as_([0-9A-HJKMNP-TV-Z]{8})_([A-Za-z0-9_-]{22})$/
 
-  const re = new RegExp(`^${prefix}_([0-9A-HJKMNP-TV-Z]{8})_([A-Za-z0-9_-]{22})$`)
-  const m = re.exec(token)
+/** Parse a token. Returns null if malformed (session-id 8 chars, verifier 22). */
+export function parseAgentToken(token: string): { sessionId: string; verifier: string } | null {
+  const m = TOKEN_RE.exec(token)
   if (!m) return null
   return { sessionId: m[1]!, verifier: m[2]! }
 }
@@ -45,11 +40,4 @@ function base64url(bytes: Uint8Array): string {
   let s = ""
   for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]!)
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
-}
-
-/** Validate the TOKEN_PREFIX env var; throws on invalid. */
-export function validateTokenPrefix(prefix: string): void {
-  if (!/^[a-z0-9]{2,8}$/.test(prefix)) {
-    throw new Error(`TOKEN_PREFIX must match /^[a-z0-9]{2,8}$/, got: ${JSON.stringify(prefix)}`)
-  }
 }

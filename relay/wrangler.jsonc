@@ -32,7 +32,6 @@
   ],
 
   "vars": {
-    "TOKEN_PREFIX": "as",
     "MAX_SYNC_TOOL_MS": "30000",
     // App socket silent this long ⇒ closed as dead. The SDK pings every 25 s.
     "HEARTBEAT_TIMEOUT_MS": "50000"
