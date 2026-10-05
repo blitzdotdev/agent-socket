@@ -33,8 +33,6 @@ for f in "${files[@]}"; do
   cp "$SDK_DIST/$f" "$DEST/$f"
 done
 
-# Record provenance.
-src_sha="$(git -C "$HERE/.." rev-parse --short HEAD 2>/dev/null || echo unknown)"
 cat > "$DEST/VENDORED.md" <<EOF
 # Vendored SDK
 
@@ -51,8 +49,6 @@ bash chrome-extension/scripts/vendor-sdk.sh
 \`\`\`
 
 CI fails if the vendored files drift from \`sdk/dist/\`.
-
-Last vendored from repo SHA \`$src_sha\`.
 EOF
 
 echo "vendor-sdk: copied ${#files[@]} files into $DEST/"
