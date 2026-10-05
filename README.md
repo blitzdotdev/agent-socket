@@ -14,7 +14,7 @@ v0 — actively in development. 42 end-to-end scenarios passing across relay + S
 
 **Deployed at https://agentsocket.dev** (canonical) and https://aisocket.dev (alias) — both routes hit the same Worker.
 
-**Deploys go through one script.** All wrangler operations (deploy, tail, rollback, status, dev) route through `scripts/deploy.sh`. Do not run `wrangler` ad-hoc — the script loads CF credentials from `.env` at the repo root (copy `.env.example` to `.env` and fill in `CLOUDFLARE_API_TOKEN`) so deployment is non-interactive and reproducible. The `account_id` is read from `relay/wrangler.jsonc` as the single source of truth.
+**Deploys go through one script.** `bash scripts/deploy.sh deploy` loads CF credentials from `.env` at the repo root (copy `.env.example` to `.env` and fill in `CLOUDFLARE_API_TOKEN`) so deployment is non-interactive and reproducible. The `account_id` is read from `relay/wrangler.jsonc` as the single source of truth.
 
 ## Quick start
 

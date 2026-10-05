@@ -26,7 +26,6 @@
     "ext:test:unit": "node chrome-extension/test/reconnect.unit.mjs",
     "ext:test:reconnect": "node chrome-extension/test/reconnect.e2e.mjs",
     "test": "npm run check && npm run harness && npm run ext:test:unit",
-    "deploy": "bash scripts/deploy.sh deploy",
-    "deploy:test": "bash scripts/test-deploy.sh"
+    "deploy": "bash scripts/deploy.sh deploy"
   }
 }

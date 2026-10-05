@@ -16,7 +16,6 @@
 ## Checklist
 
 - [ ] `npm test` passes locally
-- [ ] No new ad-hoc `wrangler` invocations — everything goes through `scripts/deploy.sh`
 - [ ] No new TOML files — used `wrangler.jsonc` if needed
 - [ ] No secrets / API tokens in the diff
 - [ ] Updated relevant README / CHANGELOG / docs

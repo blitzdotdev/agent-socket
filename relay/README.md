@@ -59,7 +59,7 @@ node harness/run.mjs all
 bash scripts/deploy.sh deploy
 ```
 
-All wrangler operations go through `scripts/deploy.sh`. **Do not run `npx wrangler ...` directly.** See `scripts/deploy.sh --help` for subcommands.
+`scripts/deploy.sh` loads `CLOUDFLARE_API_TOKEN` from `.env`, runs `wrangler deploy`, then smoke-tests both production domains.
 
 ## App-ids
 
