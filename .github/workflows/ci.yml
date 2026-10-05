@@ -23,6 +23,7 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test -w sdk
+      - run: npm test -w registry
 
   harness:
     name: Integration harness
