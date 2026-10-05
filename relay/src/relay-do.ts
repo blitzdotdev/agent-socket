@@ -650,7 +650,9 @@ function extractContentType(headers: Record<string, string> | undefined): string
 // is served from the relay's own origin (agentsocket.dev) and the meta/task
 // surfaces are reachable by a plain browser GET, so we must never hand back
 // app-controlled markup that runs as HTML/SVG-script on our origin. These get
-// downgraded to text/plain (the body is still returned, just inert).
+// downgraded to text/plain (the body is still returned, just inert), as is
+// any *+xml type. APP_RESPONSE_CSP is the backstop for anything that slips by.
+const APP_RESPONSE_CSP = "sandbox; default-src 'none'"
 const SCRIPT_CAPABLE_TYPES = new Set([
   "text/html",
   "application/xhtml+xml",
@@ -672,12 +674,16 @@ function buildToolResponse(status: number, body: unknown, headers?: Record<strin
     // always send nosniff so the browser can't sniff a safe type into HTML.
     if (contentType && typeof body === "string") {
       const essence = contentType.split(";")[0]!.trim().toLowerCase()
-      const safeType = SCRIPT_CAPABLE_TYPES.has(essence)
+      const safeType = SCRIPT_CAPABLE_TYPES.has(essence) || essence.endsWith("+xml")
         ? "text/plain; charset=utf-8"
         : contentType
       return new Response(body, {
         status,
-        headers: { "content-type": safeType, "x-content-type-options": "nosniff" },
+        headers: {
+          "content-type": safeType,
+          "x-content-type-options": "nosniff",
+          "content-security-policy": APP_RESPONSE_CSP,
+        },
       })
     }
     return new Response(
@@ -687,6 +693,7 @@ function buildToolResponse(status: number, body: unknown, headers?: Record<strin
         headers: {
           "content-type": "application/json; charset=utf-8",
           "x-content-type-options": "nosniff",
+          "content-security-policy": APP_RESPONSE_CSP,
         },
       },
     )
