@@ -6,7 +6,7 @@
 // tokens revoked in the resume frame are gone.
 
 import { Assert } from "../lib/assert.mjs"
-import { openRawWs, httpGet, httpPost, killWs } from "../lib/relay.mjs"
+import { openRawWs, httpGet, httpPost, killWs, needsDebug } from "../lib/relay.mjs"
 
 function answerTools(c, tag) {
   c.ws.on("message", (data) => {
@@ -16,6 +16,8 @@ function answerTools(c, tag) {
 }
 
 export default async function () {
+  const skip = await needsDebug()
+  if (skip) return skip
   const a = new Assert("52-resume-raw")
   const c1 = openRawWs()
   await c1.waitOpen()

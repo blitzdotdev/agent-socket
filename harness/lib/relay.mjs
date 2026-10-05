@@ -6,6 +6,13 @@ import { WebSocket } from "ws"
 
 export const RELAY_HTTP = process.env.RELAY_URL ?? "http://localhost:8787"
 export const RELAY_WS = RELAY_HTTP.replace(/^http/, "ws")
+export const RELAY_IS_LOCAL = /^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(RELAY_HTTP)
+
+/** Scenarios that drive /_debug/* or ?force_session= return this against a relay without DEBUG=1. */
+export async function needsDebug() {
+  const r = await fetch(`${RELAY_HTTP}/_debug/health`).catch(() => null)
+  return r?.ok ? null : { skip: "needs a DEBUG=1 relay" }
+}
 
 /** GET against the relay. Returns { status, body } where body is text. */
 export async function httpGet(path) {

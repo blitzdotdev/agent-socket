@@ -3,7 +3,7 @@
 // we drain by closing the WS (which fails them with 503). MAX_INFLIGHT is 100.
 
 import { Assert } from "../lib/assert.mjs"
-import { openRawWs, httpPost } from "../lib/relay.mjs"
+import { openRawWs, httpPost, RELAY_IS_LOCAL } from "../lib/relay.mjs"
 
 export default async function () {
   const a = new Assert("23-eleventh-inflight")
@@ -35,7 +35,9 @@ export default async function () {
 
   // Wait until the relay has actually received all MAX_INFLIGHT tool_call
   // frames before firing the next one — otherwise we race the pending counter.
-  for (let attempt = 0; attempt < 100; attempt++) {
+  // Over the internet, 100 fresh connections take several seconds to land.
+  const attempts = RELAY_IS_LOCAL ? 100 : 400
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const seen = c.inbox.filter((m) => m.type === "tool_call").length
     if (seen >= MAX_INFLIGHT) break
     await new Promise((r) => setTimeout(r, 50))

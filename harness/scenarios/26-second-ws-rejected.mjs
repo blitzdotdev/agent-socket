@@ -3,7 +3,7 @@
 // so both clients land in the same DO.
 
 import { Assert } from "../lib/assert.mjs"
-import { openRawWs } from "../lib/relay.mjs"
+import { openRawWs, needsDebug } from "../lib/relay.mjs"
 
 // Generate an 8-char Crockford base32 session-id unique to this run so we
 // don't collide with a still-alive DO from a previous harness invocation.
@@ -15,6 +15,8 @@ function freshSession() {
 }
 
 export default async function () {
+  const skip = await needsDebug()
+  if (skip) return skip
   const a = new Assert("26-second-ws-rejected")
   const SESSION = freshSession()
 

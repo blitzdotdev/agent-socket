@@ -1,9 +1,11 @@
 // 01-relay-boots — relay process is up and responding.
 
 import { Assert } from "../lib/assert.mjs"
-import { httpGet } from "../lib/relay.mjs"
+import { httpGet, needsDebug } from "../lib/relay.mjs"
 
 export default async function () {
+  const skip = await needsDebug()
+  if (skip) return skip
   const a = new Assert("01-relay-boots")
   const r = await httpGet("/_debug/health")
   a.equal(r.status, 200, "GET /_debug/health → 200")

@@ -5,7 +5,7 @@
 
 import WebSocket from "ws"
 import { Assert } from "../lib/assert.mjs"
-import { RELAY_WS } from "../lib/relay.mjs"
+import { RELAY_WS, RELAY_IS_LOCAL } from "../lib/relay.mjs"
 
 function upgrade() {
   return new Promise((resolve) => {
@@ -21,6 +21,8 @@ function upgrade() {
 }
 
 export default async function () {
+  // Deployed rate limits are per location and eventually consistent; only the local simulator counts exactly.
+  if (!RELAY_IS_LOCAL) return { skip: "exact rate-limit check needs a local relay" }
   const a = new Assert("90-ws-rate-limit")
   const results = await Promise.all(Array.from({ length: 150 }, upgrade))
   const limited = results.filter((r) => r.status === 429)

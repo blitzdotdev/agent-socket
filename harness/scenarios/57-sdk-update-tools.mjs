@@ -5,12 +5,14 @@
 // and leaves the live tools alone.
 
 import { Assert } from "../lib/assert.mjs"
-import { RELAY_HTTP, httpGet, httpPost, killWs } from "../lib/relay.mjs"
+import { RELAY_HTTP, httpGet, httpPost, killWs, needsDebug } from "../lib/relay.mjs"
 import { connect, noBackoff } from "@agent-socket/sdk"
 
 const until = async (cond) => { for (let i = 0; i < 50 && !cond(); i++) await new Promise((r) => setTimeout(r, 100)) }
 
 export default async function () {
+  const skip = await needsDebug()
+  if (skip) return skip
   const a = new Assert("57-sdk-update-tools")
   const reconnects = []
   const session = await connect({

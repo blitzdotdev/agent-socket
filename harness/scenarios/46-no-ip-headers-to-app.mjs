@@ -4,7 +4,7 @@
 // x-forwarded-for that Cloudflare adds.
 
 import { Assert } from "../lib/assert.mjs"
-import { openRawWs, RELAY_HTTP } from "../lib/relay.mjs"
+import { openRawWs, RELAY_HTTP, RELAY_IS_LOCAL } from "../lib/relay.mjs"
 
 export default async function () {
   const a = new Assert("46-no-ip-headers-to-app")
@@ -24,7 +24,8 @@ export default async function () {
       "x-real-ip": "203.0.113.7",
       "x-forwarded-for": "203.0.113.7",
       "x-forwarded-proto": "https",
-      "cf-connecting-ip": "203.0.113.7",
+      // Cloudflare's edge refuses client-sent cf-* headers before the Worker runs.
+      ...(RELAY_IS_LOCAL ? { "cf-connecting-ip": "203.0.113.7" } : {}),
     },
     body: "{}",
   })

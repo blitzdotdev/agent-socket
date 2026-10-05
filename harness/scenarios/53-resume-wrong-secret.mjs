@@ -6,7 +6,7 @@
 // saved secret, falls back to a fresh session.
 
 import { Assert } from "../lib/assert.mjs"
-import { openRawWs, httpPost, killWs, RELAY_HTTP } from "../lib/relay.mjs"
+import { openRawWs, httpPost, killWs, RELAY_HTTP, needsDebug } from "../lib/relay.mjs"
 import { connect } from "@agent-socket/sdk"
 
 async function attempt(sessionId, frame) {
@@ -20,6 +20,8 @@ async function attempt(sessionId, frame) {
 }
 
 export default async function () {
+  const skip = await needsDebug()
+  if (skip) return skip
   const a = new Assert("53-resume-wrong-secret")
   const c = openRawWs()
   await c.waitOpen()

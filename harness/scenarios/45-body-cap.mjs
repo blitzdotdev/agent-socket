@@ -5,7 +5,7 @@
 
 import net from "node:net"
 import { Assert } from "../lib/assert.mjs"
-import { openRawWs, RELAY_HTTP } from "../lib/relay.mjs"
+import { openRawWs, RELAY_HTTP, RELAY_IS_LOCAL } from "../lib/relay.mjs"
 
 // Send headers promising a 100 MB body plus `sent` bytes of it, then wait for the
 // status line. Raw socket because fetch() holds the response until the request
@@ -32,6 +32,8 @@ async function post(path, body) {
 }
 
 export default async function () {
+  // Cloudflare's edge buffers request bodies, so an unfinished body never reaches a deployed relay.
+  if (!RELAY_IS_LOCAL) return { skip: "streaming-body check needs a local relay" }
   const a = new Assert("45-body-cap")
   const c = openRawWs()
   await c.waitOpen()

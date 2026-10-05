@@ -6,12 +6,14 @@
 // URL → 200.
 
 import { Assert } from "../lib/assert.mjs"
-import { RELAY_HTTP, httpPost, killWs } from "../lib/relay.mjs"
+import { RELAY_HTTP, httpPost, killWs, needsDebug } from "../lib/relay.mjs"
 import { connect, noBackoff } from "@agent-socket/sdk"
 
 const until = async (cond) => { for (let i = 0; i < 50 && !cond(); i++) await new Promise((r) => setTimeout(r, 100)) }
 
 export default async function () {
+  const skip = await needsDebug()
+  if (skip) return skip
   const a = new Assert("41-sdk-reconnect-remint")
 
   let sessionChangeCount = 0

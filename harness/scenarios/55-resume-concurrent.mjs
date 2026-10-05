@@ -6,9 +6,11 @@
 // Tool calls in flight on the replaced socket fail with 503.
 
 import { Assert } from "../lib/assert.mjs"
-import { openRawWs, httpPost } from "../lib/relay.mjs"
+import { openRawWs, httpPost, needsDebug } from "../lib/relay.mjs"
 
 export default async function () {
+  const skip = await needsDebug()
+  if (skip) return skip
   const a = new Assert("55-resume-concurrent")
   const reg = { appId: "as_app_anon", agentsMd: "# t", tools: [{ path: "/echo", description: "e" }, { path: "/stall", description: "never answers" }] }
   const live = openRawWs()
