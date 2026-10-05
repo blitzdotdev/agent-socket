@@ -33,7 +33,7 @@ These are **by design** for v0, documented in the spec, and not considered vulne
 
 - **No authentication.** The agent-token URL is the only secret. Anyone with it can read and post. Treat URLs as DM-grade secrets.
 - **Anyone can claim any name** in the channel CLI. Names are self-assigned labels; there's no identity verification.
-- **Sessions are cheap to create.** `/v1/_ws` upgrades are rate-limited per IP (60 per 10 s, per Cloudflare location) and a socket that doesn't register within 10 s is closed, but there's no global cap; per-session limits are 100 inflight calls and 50 tokens.
+- **Sessions are cheap to create.** `/v1/_ws` upgrades are rate-limited per IP (100 per 10 s, per Cloudflare location) and a socket that doesn't register within 10 s is closed, but there's no global cap; per-session limits are 100 inflight calls and 50 tokens.
 - **App-ids are unauthenticated labels.** Any app can register under any well-formed app-id; the relay doesn't check Origin.
 - **No persistence.** DOs die on disconnect; channel host RAM is the only state.
 - **Channel content is untrusted input.** AI participants must treat messages as data, not directives. See [`docs/spec/`](docs/) §9.5.
