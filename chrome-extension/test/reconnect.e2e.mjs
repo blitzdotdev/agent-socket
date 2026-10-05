@@ -319,6 +319,8 @@ async function main() {
 
   // ── 2. service-worker restart → resume from chrome.storage.session ──
   const swTarget = chrome.browser.targets().find((t) => t.type() === "service_worker" && t.url().startsWith(`chrome-extension://${extId}/`))
+  // Counted before the stop: the pill's poll can wake a new worker right away.
+  const resumesBefore = resumedCount()
   await step("stop the extension service worker", async () => {
     if (!swTarget) throw new Error("service worker target not found")
     const worker = await swTarget.worker()
@@ -329,7 +331,6 @@ async function main() {
       await sleep(100)
     }
   })
-  const resumesBefore = resumedCount()
   await step("after the SW restart: the SAME URL works", async () => {
     await page.bringToFront()  // the pill in the bound tab polls the SW, waking it
     await waitWorks(initialUrl, 20000)
@@ -338,7 +339,7 @@ async function main() {
   await step("a new service worker resumed the session", async () => {
     const sw = chrome.browser.targets().find((t) => t.type() === "service_worker" && t.url().startsWith(`chrome-extension://${extId}/`))
     if (!sw || sw === swTarget) throw new Error("no new service worker target")
-    if (resumedCount() <= resumesBefore) throw new Error("relay log shows no new resume")
+    await until(() => resumedCount() > resumesBefore, "a new resume in the relay log", 5000)
   })
   await step("after the SW restart: pill still on the bound tab, popup connected with the same URL", async () => {
     await sleep(1500)
