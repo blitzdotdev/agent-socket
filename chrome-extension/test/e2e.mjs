@@ -35,6 +35,7 @@ const REGISTRY_BASE = `http://127.0.0.1:${STATIC_PORT}/registry`
 // opened under these names; Chromium resolves them to 127.0.0.1.
 const SITE_HOST = "e2e-site.test"
 const GENERIC_SITE_HOST = "no-profile.test"
+const EXT_VERSION = JSON.parse(fs.readFileSync(path.join(EXT_DIR, "manifest.json"), "utf8")).version
 
 // ── runner ────────────────────────────────────────────────────────────
 let passed = 0, failed = 0
@@ -492,7 +493,7 @@ async function main() {
       })
       if (status !== 200 || !json.submitted || json.status !== "pending" || json.id !== "sub_1" || json.host !== SITE_HOST) throw new Error(`${status} ${JSON.stringify(json)}`)
       const sub = registry.submissions[0]
-      if (sub.body.host !== SITE_HOST || sub.body.ext_version !== "0.3.0" || sub.body.tools[0].method !== "POST" || sub.body.notes !== "Counter page.") throw new Error(JSON.stringify(sub.body))
+      if (sub.body.host !== SITE_HOST || sub.body.ext_version !== EXT_VERSION || sub.body.tools[0].method !== "POST" || sub.body.notes !== "Counter page.") throw new Error(JSON.stringify(sub.body))
       if (!/Chrome/.test(sub.userAgent ?? "")) throw new Error(`user agent: ${sub.userAgent}`)
     })
 
