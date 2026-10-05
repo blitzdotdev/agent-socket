@@ -9,12 +9,15 @@
 // scenarioId can be the leading number ("01"), the full filename
 // ("01-relay-boots"), or a range "10-29".
 //
-// Without RELAY_URL, boots its own `wrangler dev` on a free port (with the
-// vars below) and tears it down at the end. With RELAY_URL, uses that relay.
+// Without RELAY_URL, boots its own `wrangler dev` (with the vars below) on
+// HARNESS_PORT, or a free port, with Durable Object storage in a fresh temp
+// dir, and tears it down at the end. HARNESS_INSPECTOR_PORT pins wrangler's
+// inspector port. With RELAY_URL, uses that relay.
 // A scenario can return { skip: "reason" } to report SKIP.
 
-import { readdirSync, openSync } from "node:fs"
+import { readdirSync, openSync, mkdtempSync, rmSync } from "node:fs"
 import { join, dirname } from "node:path"
+import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { spawn } from "node:child_process"
 import net from "node:net"
@@ -26,8 +29,10 @@ const SCENARIOS_DIR = join(__dirname, "scenarios")
 const RELAY_DIR = join(__dirname, "..", "relay")
 const WRANGLER_BIN = join(__dirname, "..", "node_modules", ".bin", "wrangler")
 // Short timeouts so 28-tool-timeout, 51-app-liveness and the resume-expiry
-// scenarios run fast.
-const BOOT_VARS = { DEBUG: "1", MAX_SYNC_TOOL_MS: "3000", HEARTBEAT_TIMEOUT_MS: "6000", RESUME_GRACE_MS: "3000" }
+// scenarios run fast. HEARTBEAT_TIMEOUT_MS stays above workerd's ~10 s idle
+// time before it hibernates an object, so 61 can see a liveness alarm wake a
+// hibernated session.
+const BOOT_VARS = { DEBUG: "1", MAX_SYNC_TOOL_MS: "3000", HEARTBEAT_TIMEOUT_MS: "15000", RESUME_GRACE_MS: "3000" }
 
 function freePort() {
   return new Promise((resolve) => {
@@ -39,18 +44,24 @@ function freePort() {
 }
 
 async function bootRelay() {
-  const port = await freePort()
+  const port = process.env.HARNESS_PORT ? parseInt(process.env.HARNESS_PORT, 10) : await freePort()
   const log = process.env.WRANGLER_LOG ?? `/tmp/as-harness-wrangler-${port}.log`
   const out = openSync(log, "w")
   const vars = Object.entries(BOOT_VARS).flatMap(([k, v]) => ["--var", `${k}:${v}`])
-  const child = spawn(WRANGLER_BIN, ["dev", "--port", String(port), "--ip", "127.0.0.1", ...vars], {
+  // Sessions persist in DO storage; a fresh dir keeps runs independent.
+  const state = mkdtempSync(join(tmpdir(), "as-harness-state-"))
+  const inspector = process.env.HARNESS_INSPECTOR_PORT ? ["--inspector-port", process.env.HARNESS_INSPECTOR_PORT] : []
+  const child = spawn(WRANGLER_BIN, ["dev", "--port", String(port), "--ip", "127.0.0.1", "--persist-to", state, ...inspector, ...vars], {
     cwd: RELAY_DIR,
     stdio: ["ignore", out, out],
     detached: true,  // own process group, so teardown also kills workerd
     env: { ...process.env, FORCE_COLOR: "0" },
   })
   const url = `http://127.0.0.1:${port}`
-  const stop = () => { try { process.kill(-child.pid, "SIGTERM") } catch {} }
+  const stop = () => {
+    try { process.kill(-child.pid, "SIGTERM") } catch {}
+    try { rmSync(state, { recursive: true, force: true }) } catch {}
+  }
   process.on("exit", stop)
   process.on("SIGINT", () => process.exit(130))
   const deadline = Date.now() + 60_000

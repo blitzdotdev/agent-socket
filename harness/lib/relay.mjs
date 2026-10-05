@@ -112,9 +112,23 @@ export function openRawWs(opts = {}) {
   return { ws, send, waitFor, waitOpen, close, inbox, closed }
 }
 
-/** Force-close a session's app WS (DEBUG relay). end: also end the session. */
-export async function killWs(sessionId, { end = false } = {}) {
-  return fetch(`${RELAY_HTTP}/_debug/kill-ws/${sessionId}${end ? "?end=1" : ""}`, { method: "POST" })
+/**
+ * Force-close a session's app WS (DEBUG relay). end: also end the session.
+ * holdMs: hold the session this long instead of the relay's RESUME_GRACE_MS.
+ */
+export async function killWs(sessionId, { end = false, holdMs } = {}) {
+  const qs = end ? "?end=1" : holdMs !== undefined ? `?hold=${holdMs}` : ""
+  return fetch(`${RELAY_HTTP}/_debug/kill-ws/${sessionId}${qs}`, { method: "POST" })
+}
+
+/** What a session's DO holds (DEBUG relay): { session, appConnected, heldUntil, alarm, tokens, tasks, storageKeys }. */
+export async function debugState(sessionId) {
+  return (await fetch(`${RELAY_HTTP}/_debug/state/${sessionId}`)).json()
+}
+
+/** Reset a session's DO as an eviction would: memory and sockets gone, storage kept (DEBUG relay). */
+export async function evict(sessionId) {
+  return fetch(`${RELAY_HTTP}/_debug/evict/${sessionId}`, { method: "POST" })
 }
 
 /** HEARTBEAT_TIMEOUT_MS of the relay under test (run.mjs exports it when it boots one). */

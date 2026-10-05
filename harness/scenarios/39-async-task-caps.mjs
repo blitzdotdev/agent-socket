@@ -9,7 +9,10 @@
 //   B) MAX_TASKS_PER_SESSION cap → 101st pending task → 503 too_many_tasks
 //   C) task_complete for an unknown taskId → silently dropped (poll stays "pending")
 //   D) task_complete with invalid status code → silently dropped
-//   E) task_complete with oversized body (> MAX_TASK_BODY_BYTES) → silently dropped
+//   E) task_complete with oversized body (> MAX_TASK_BODY_BYTES of UTF-8
+//      JSON, so also a multi-byte body under 64 Ki characters) or a
+//      content-type over 256 chars → silently dropped (tasks are stored, and
+//      a key-value-backed Durable Object caps a value at 128 KiB)
 //   F) happy-path round-trip still works (sanity)
 
 import { Assert } from "../lib/assert.mjs"
@@ -92,6 +95,13 @@ export default async function () {
   await new Promise((r) => setTimeout(r, 100))
   const pollAfterBig = await httpGet(`/v1/t/${token}/_as_tasks/${firstTaskId}`)
   a.equal(pollAfterBig.status, 202, "oversized body dropped → task stays pending")
+  // 30 Ki three-byte characters: 90 KiB of UTF-8, under 64 Ki characters.
+  c.send({ type: "task_complete", taskId: firstTaskId, status: 200, body: "€".repeat(30 * 1024) })
+  await new Promise((r) => setTimeout(r, 100))
+  a.equal((await httpGet(`/v1/t/${token}/_as_tasks/${firstTaskId}`)).status, 202, "body counted in UTF-8 bytes → dropped")
+  c.send({ type: "task_complete", taskId: firstTaskId, status: 200, body: "x", headers: { "content-type": `text/plain; x=${"y".repeat(300)}` } })
+  await new Promise((r) => setTimeout(r, 100))
+  a.equal((await httpGet(`/v1/t/${token}/_as_tasks/${firstTaskId}`)).status, 202, "over-long content-type → dropped")
 
   // F) Valid completion still works.
   c.send({ type: "task_complete", taskId: firstTaskId, status: 200, body: { ok: true } })
