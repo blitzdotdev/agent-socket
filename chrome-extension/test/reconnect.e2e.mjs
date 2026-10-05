@@ -6,11 +6,14 @@
 //   3. Find the extension ID, open the popup, click Connect (programmatically).
 //   4. Grab the minted URL; hit a tool endpoint (/page_info) — should 200.
 //   5. Force the relay to drop the WS via POST /_debug/kill-ws/<sessionId>.
-//   6. Wait for the reconnect (exp backoff: 1s base + jitter).
-//   7. Verify either:
-//        (a) original URL still works (rare — relay drops the in-memory
-//            session entirely, so we expect (b)), OR
-//        (b) popup's linkInput reflects the new URL, and the new URL works.
+//      The extension resumes the session: the SAME URL works again and the
+//      popup still shows it.
+//   6. Stop the extension's service worker (as Chrome does when it idles one
+//      out). The restarted worker resumes from chrome.storage.session: the
+//      SAME URL works, the in-page pill stays up.
+//   7. Kill the WS with ?end=1 (session gone, as if the grace window ran
+//      out): the resume is refused, the extension re-mints, the popup shows
+//      the new URL, the new URL works and the old one is dead.
 //
 // Run: node chrome-extension/test/reconnect.e2e.mjs
 //
@@ -51,8 +54,9 @@ async function waitForRelay(deadline = Date.now() + 30000) {
   }
   throw new Error("relay never became ready")
 }
+const RELAY_LOG = `/tmp/as-ext-reconnect-wrangler-${RELAY_PORT}.log`
 function startRelay() {
-  const logFile = "/tmp/as-ext-reconnect-wrangler.log"
+  const logFile = RELAY_LOG
   try { fs.unlinkSync(logFile) } catch {}
   const out = fs.openSync(logFile, "w")
   const child = spawn(
@@ -198,44 +202,95 @@ async function main() {
     if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${await r.text()}`)
   })
 
-  // FORCE the WS to drop (relay-side). This simulates exactly the production
-  // bug: WS closes from the server, extension's _onClose fires.
+  const toolUrl = (u) => `${u.replace(/\/agents\.md$/, "")}/page_info`
+  const callTool = (u) => fetch(toolUrl(u), { method: "POST", headers: {"content-type":"application/json"}, body: "{}" })
+  // Poll until the URL answers 200 (the extension reconnects with backoff).
+  async function waitWorks(u, ms = 15000) {
+    const end = Date.now() + ms
+    let last
+    while (Date.now() < end) {
+      const r = await callTool(u)
+      last = `${r.status} ${await r.text()}`
+      if (r.status === 200) return
+      await sleep(250)
+    }
+    throw new Error(`URL never worked again; last: ${last}`)
+  }
+  const popupUrl = () => popup.evaluate(() => document.querySelector("#link-input")?.value ?? "")
+  const resumedCount = () => (fs.readFileSync(RELAY_LOG, "utf8").match(new RegExp(`resumed sessionId=${initialSession}`, "g")) ?? []).length
+
+  // ── 1. relay-side WS drop → resume, same URL ──
   await step("force WS close via /_debug/kill-ws", async () => {
     const r = await fetch(`${RELAY_BASE}/_debug/kill-ws/${initialSession}`, { method: "POST" })
     if (!r.ok) throw new Error(`kill-ws returned ${r.status}: ${await r.text()}`)
   })
-
-  // Old URL should now 503 — the session is dead at the relay.
-  await step("post-kill, pre-reconnect: old URL returns 503 app_offline", async () => {
-    await sleep(300)  // let the relay tear down the session
-    const r = await fetch(`${initialUrl.replace(/\/agents\.md$/, "")}/page_info`, {
-      method: "POST", headers: {"content-type":"application/json"}, body: "{}",
-    })
-    if (r.status !== 503) throw new Error(`expected 503, got ${r.status}`)
+  await step("right after the drop: tool call → 503 app_offline + Retry-After", async () => {
+    const r = await callTool(initialUrl)
+    if (r.status === 200) return  // already resumed (fast machine) — fine
+    if (r.status !== 503 || r.headers.get("retry-after") !== "2") throw new Error(`expected 503 + Retry-After, got ${r.status} ${r.headers.get("retry-after")}`)
+  })
+  await step("after the drop: the SAME URL works again", () => waitWorks(initialUrl))
+  await step("relay log shows a resume", async () => {
+    if (resumedCount() < 1) throw new Error("no 'resumed sessionId=' line in the relay log")
+  })
+  await step("popup still shows the original URL", async () => {
+    await sleep(1200)  // popup polls once a second
+    const val = await popupUrl()
+    if (val !== initialUrl) throw new Error(`popup shows ${val}, want ${initialUrl}`)
   })
 
-  // Wait for the extension's reconnect logic to fire + remint.
-  // Backoff base 1s; allow up to ~4s for the connect+register+mint to land.
-  await sleep(4000)
+  // ── 2. service-worker restart → resume from chrome.storage.session ──
+  const swTarget = chrome.browser.targets().find((t) => t.type() === "service_worker" && t.url().startsWith(`chrome-extension://${extId}/`))
+  await step("stop the extension service worker", async () => {
+    if (!swTarget) throw new Error("service worker target not found")
+    const worker = await swTarget.worker()
+    await worker.close()
+    const end = Date.now() + 10000
+    while (chrome.browser.targets().includes(swTarget)) {
+      if (Date.now() > end) throw new Error("service worker target still alive")
+      await sleep(100)
+    }
+  })
+  const resumesBefore = resumedCount()
+  await step("after the SW restart: the SAME URL works", async () => {
+    await page.bringToFront()  // the pill in the bound tab polls the SW, waking it
+    await waitWorks(initialUrl, 20000)
+  })
+  await step("a new service worker resumed the session", async () => {
+    const sw = chrome.browser.targets().find((t) => t.type() === "service_worker" && t.url().startsWith(`chrome-extension://${extId}/`))
+    if (!sw || sw === swTarget) throw new Error("no new service worker target")
+    if (resumedCount() <= resumesBefore) throw new Error("relay log shows no new resume")
+  })
+  await step("after the SW restart: pill still on the bound tab, popup connected with the same URL", async () => {
+    await sleep(1500)
+    if (!(await page.$("agent-socket-indicator"))) throw new Error("pill gone from the bound tab")
+    const snap = await sendToSW(popup, { type: "snapshot" })
+    if (snap?.status?.status !== "connected" || snap.url !== initialUrl || snap.boundTab?.id == null) {
+      throw new Error(`bad snapshot: ${JSON.stringify({ status: snap?.status, url: snap?.url, bound: snap?.boundTab?.id })}`)
+    }
+  })
 
-  // The popup polls the SW and should now show the re-minted URL.
-  const newUrl = await step("popup reflects new URL after reconnect", async () => {
-    const val = await popup.evaluate(() => document.querySelector("#link-input")?.value ?? "")
-    if (!val) throw new Error("link-input empty after reconnect")
-    if (val === initialUrl) throw new Error(`link-input still shows the dead URL: ${val}`)
-    return val
+  // ── 3. session gone → resume refused → re-mint ──
+  await step("end the session via /_debug/kill-ws?end=1", async () => {
+    const r = await fetch(`${RELAY_BASE}/_debug/kill-ws/${initialSession}?end=1`, { method: "POST" })
+    if (!r.ok) throw new Error(`kill-ws returned ${r.status}: ${await r.text()}`)
+  })
+  const newUrl = await step("popup reflects a new URL after the refused resume", async () => {
+    const end = Date.now() + 15000
+    for (;;) {
+      const val = await popupUrl()
+      if (val && val !== initialUrl) return val
+      if (Date.now() > end) throw new Error(`link-input still shows ${val}`)
+      await sleep(250)
+    }
   })
   console.log(`  new paste URL:    ${newUrl}`)
   const newSession = parseSessionId(newUrl)
-  console.log(`  new sessionId:    ${newSession}`)
-  if (newSession === initialSession) throw new Error("sessionId did NOT change — reconnect didn't actually fire")
-
-  // Post-reconnect: the new URL should work.
-  await step("post-reconnect: new URL /page_info returns 200", async () => {
-    const r = await fetch(`${newUrl.replace(/\/agents\.md$/, "")}/page_info`, {
-      method: "POST", headers: {"content-type":"application/json"}, body: "{}",
-    })
-    if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${await r.text()}`)
+  if (newSession === initialSession) throw new Error("sessionId did NOT change after the session ended")
+  await step("new URL /page_info returns 200", () => waitWorks(newUrl))
+  await step("old URL is dead (503 app_offline)", async () => {
+    const r = await callTool(initialUrl)
+    if (r.status !== 503) throw new Error(`expected 503, got ${r.status}`)
   })
 
   console.log(`\n──  ${passed} passed, ${failed} failed`)

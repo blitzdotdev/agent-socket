@@ -3,7 +3,8 @@
 // Drives @agent-socket/sdk (vendored at chrome-extension/lib/sdk/) with a
 // mocked WebSocket so we don't need chromium, xvfb, or a real relay.
 // Verifies the behavior originally landed for chrome-ext-ws-drops-no-reconnect.md
-// and preserved after the consolidation (as-client.js → SDK).
+// and preserved after the consolidation (as-client.js → SDK): a drop resumes
+// the same session; only a refused resume re-mints.
 //
 // Run: node chrome-extension/test/reconnect.unit.mjs
 
@@ -15,6 +16,8 @@ import { connect } from "../lib/sdk/index.js"
 
 let mockSessionCounter = 0
 const allMocks = []
+// Sessions the mock relay is holding (like the relay's grace window), by id.
+const heldSessions = new Map()  // sessionId → secret
 
 class MockWebSocket {
   constructor(url) {
@@ -43,7 +46,17 @@ class MockWebSocket {
     // Auto-reply to register and mint_agent_token to drive the client through
     // its happy path.
     if (msg.type === "register") {
-      setTimeout(() => this._deliver({ type: "register_reply", ok: true, sessionId: this._mockSessionId }), 1)
+      const secret = `secret-${this._mockSessionId}`
+      heldSessions.set(this._mockSessionId, secret)
+      setTimeout(() => this._deliver({ type: "register_reply", ok: true, sessionId: this._mockSessionId, resumeSecret: secret }), 1)
+    } else if (msg.type === "resume") {
+      if (heldSessions.get(msg.sessionId) !== msg.secret) {
+        setTimeout(() => this._deliver({ type: "register_reply", ok: false, error: { code: "resume_failed" } }), 1)
+        setTimeout(() => this.close(4401, "resume rejected"), 2)
+        return
+      }
+      this._mockSessionId = msg.sessionId
+      setTimeout(() => this._deliver({ type: "register_reply", ok: true, sessionId: msg.sessionId, resumeSecret: msg.secret, resumed: true }), 1)
     } else if (msg.type === "mint_agent_token") {
       const token = `as_${this._mockSessionId}_${this._mintCounter++}xxxxxxxxxxxxxxxxxxxxxx`
       setTimeout(() => this._deliver({ type: "mint_agent_token_reply", id: msg.id, ok: true, token, url: `__BASE__/v1/t/${token}/agents.md`, label: msg.label }), 1)
@@ -119,12 +132,21 @@ async function run() {
   ok(!session.connected, "session knows it's disconnected")
 
   // 3. Wait for the reconnect (50-100ms delay scheduled in onDisconnect).
-  //    Then register_reply (~1ms) + remint (~1ms). 500ms is plenty.
+  //    The relay still holds the session, so the SDK resumes it.
   await sleep(500)
   ok(session.connected, "reconnected after WS close")
-  ok(session.sessionId !== initialSessionId, `sessionId changed after reconnect (${initialSessionId} → ${session.sessionId})`)
+  ok(allMocks[allMocks.length - 1].url.includes(`?session=${initialSessionId}`), "reconnect is a resume of the same session")
+  equal(session.sessionId, initialSessionId, "sessionId unchanged after a resume")
+  equal(sessionChanges.length, 0, "onSessionChanged not fired on a resume — the URL still works")
+  ok(session.myTokens.has(link1.token), "original token still tracked")
 
-  // 4. The previously-minted token was re-minted under the new session-id.
+  // 4. The relay forgot the session (grace window ran out): the resume is
+  //    refused and the token is re-minted under a new session-id.
+  heldSessions.clear()
+  allMocks[allMocks.length - 1].simulateClose(1006, "fake idle-kill 2")
+  await sleep(500)
+  ok(session.connected, "reconnected after a refused resume")
+  ok(session.sessionId !== initialSessionId, `sessionId changed after the refused resume (${initialSessionId} → ${session.sessionId})`)
   equal(sessionChanges.length, 1, "onSessionChanged fired exactly once")
   const change = sessionChanges[0]
   equal(change.priorSessionId, initialSessionId, "priorSessionId reported correctly")

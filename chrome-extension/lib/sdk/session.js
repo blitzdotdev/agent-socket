@@ -6,10 +6,23 @@ import { exponentialBackoff } from "./backoff.js";
 const DEFAULT_BASE_URL = "https://agentsocket.dev";
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 25_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 50_000;
+// The relay refused a resume: wrong secret, or the session already ended.
+class ResumeRejected extends Error {
+}
+const RESUME_REJECTED_CLOSE = 4401;
+// The relay closed this socket because a resume with our secret replaced it.
+const REPLACED_CLOSE = 4410;
+// Closing a socket whose handshake we abandoned. Not 1000, which tells the
+// relay the app is done and ends the session.
+const HANDSHAKE_ABORT_CLOSE = 4000;
 /** Open a session. Returns a Session object once register_reply { ok } is received. */
 export async function connect(opts) {
     const session = new SessionImpl(opts);
-    await session._connectAndRegister();
+    const { resumed } = await session._connectAndRegister();
+    // Resumed from a saved secret: adopt the session's live tokens so a later
+    // fallback to a fresh session can re-mint them.
+    if (resumed)
+        await session._adoptTokens().catch(() => { });
     return session;
 }
 class SessionImpl {
@@ -23,10 +36,14 @@ class SessionImpl {
     autoReconnect;
     onDisconnect;
     onSessionChanged;
+    onReconnect;
     heartbeatIntervalMs;
     heartbeatTimeoutMs;
     ws = null;
     _sessionId = "";
+    _resumeSecret = null;
+    // Tokens revoked while disconnected; the resume frame carries them.
+    pendingRevokes = new Set();
     registered = false;
     giveUpReconnect = false;
     attempt = 0;
@@ -52,41 +69,78 @@ class SessionImpl {
         this.autoReconnect = opts.autoReconnect ?? true;
         this.onDisconnect = opts.onDisconnect ?? (this.autoReconnect ? exponentialBackoff() : ({ giveUp }) => giveUp());
         this.onSessionChanged = opts.onSessionChanged;
+        this.onReconnect = opts.onReconnect;
+        if (opts.resume) {
+            this._sessionId = opts.resume.sessionId;
+            this._resumeSecret = opts.resume.secret;
+        }
         this.heartbeatIntervalMs = opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
         this.heartbeatTimeoutMs = opts.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
     }
     get sessionId() { return this._sessionId; }
-    get connected() { return this.ws !== null && this.ws.readyState === READY_STATE_OPEN; }
+    get resumeSecret() { return this._resumeSecret; }
+    get connected() { return this.registered && this.ws !== null && this.ws.readyState === READY_STATE_OPEN; }
+    // Resume the current session if we hold its secret; if the relay refuses
+    // (4401: bad secret or session ended), fall back to a fresh one at once.
+    // Other failures (network, timeout) throw so the caller backs off and the
+    // next attempt tries the resume again.
     async _connectAndRegister() {
-        const wsUrl = this.baseUrl.replace(/^http/, "ws") + "/v1/_ws";
+        if (this._resumeSecret && this._sessionId) {
+            try {
+                await this._handshake(true);
+                return { resumed: true };
+            }
+            catch (e) {
+                if (!(e instanceof ResumeRejected))
+                    throw e;
+                this._resumeSecret = null;
+                this.pendingRevokes.clear(); // those tokens died with the session
+            }
+        }
+        await this._handshake(false);
+        return { resumed: false };
+    }
+    async _handshake(resume) {
+        const wsUrl = this.baseUrl.replace(/^http/, "ws") + "/v1/_ws"
+            + (resume ? `?session=${encodeURIComponent(this._sessionId)}` : "");
         const ws = openWs(wsUrl);
         this.ws = ws;
         try {
             await this._waitOpen(ws);
-            const tools = this.toolDefs.map((t) => ({
-                method: t.method,
-                path: t.path,
-                description: t.description,
-                ...(t.input_schema !== undefined ? { input_schema: t.input_schema } : {}),
-            }));
-            this._sendFrame({
-                type: "register",
+            const registration = {
                 appId: this.appId,
                 agentsMd: this.agentsMd,
                 appDescription: this.appDescription,
-                tools,
-            });
+                tools: this.toolDefs.map((t) => ({
+                    method: t.method,
+                    path: t.path,
+                    description: t.description,
+                    ...(t.input_schema !== undefined ? { input_schema: t.input_schema } : {}),
+                })),
+            };
+            // The secret goes in the first frame, not the URL, so it stays out of logs.
+            this._sendFrame(resume
+                ? { type: "resume", sessionId: this._sessionId, secret: this._resumeSecret, ...registration, revokeTokens: [...this.pendingRevokes] }
+                : { type: "register", ...registration });
             const reply = await this._waitForRegisterReply(ws, 10_000);
-            if (!reply.ok)
+            if (!reply.ok) {
+                if (resume && reply.error?.code === "resume_failed")
+                    throw new ResumeRejected("resume rejected");
                 throw new Error(`register failed: ${reply.error?.code ?? "unknown"}`);
+            }
             if (this.giveUpReconnect)
                 throw new Error("session closed");
             this._sessionId = reply.sessionId;
+            this._resumeSecret = typeof reply.resumeSecret === "string" ? reply.resumeSecret : null;
+            if (resume)
+                this.pendingRevokes.clear();
         }
         catch (e) {
+            if (resume && e.closeCode === RESUME_REJECTED_CLOSE)
+                e = new ResumeRejected("resume rejected");
             // Handlers aren't installed yet, so this close can't trigger a reconnect.
             try {
-                ws.close(1000, "register failed");
+                ws.close(this.giveUpReconnect ? 1000 : HANDSHAKE_ABORT_CLOSE, "handshake failed");
             }
             catch { }
             if (this.ws === ws)
@@ -96,6 +150,14 @@ class SessionImpl {
         this._installHandlers(ws);
         this.registered = true;
         this._scheduleNextPing();
+    }
+    // Track the live session's tokens as ours (after resuming from a saved secret).
+    async _adoptTokens() {
+        for (const t of await this.listAgentTokens()) {
+            if (!this.myTokens.has(t.token)) {
+                this.myTokens.set(t.token, { token: t.token, url: t.url, label: t.label, mintedAt: t.mintedAt, sessionId: this._sessionId });
+            }
+        }
     }
     // ── Public methods ──────────────────────────────────────────────────
     async mintAgentToken(opts) {
@@ -113,16 +175,21 @@ class SessionImpl {
             url,
             label: reply.label ?? opts.label,
             mintedAt: Date.now(),
+            sessionId: this._sessionId,
         };
         this.myTokens.set(token, info);
         return { token, url, label: info.label, expiresAt: reply.expiresAt ?? null };
     }
     async revokeAgentToken(token) {
         // Forget it first so a reconnect can't re-mint it. While disconnected the
-        // relay has already dropped it along with the old socket.
+        // relay may be holding the session for a resume, so the resume frame
+        // revokes it before the app goes live again.
         const known = this.myTokens.delete(token);
-        if (!this.connected)
+        if (!this.connected) {
+            if (this._resumeSecret)
+                this.pendingRevokes.add(token);
             return { ok: known };
+        }
         const id = this._uid();
         this._sendFrame({ type: "revoke_agent_token", id, token });
         const reply = await this._awaitReply(id, 10_000);
@@ -145,7 +212,7 @@ class SessionImpl {
         if (typeof taskId !== "string" || taskId.length === 0) {
             throw new Error("completeTask: taskId must be a non-empty string");
         }
-        if (!this.ws || this.ws.readyState !== READY_STATE_OPEN) {
+        if (!this.connected) {
             throw new Error("completeTask: WS not open");
         }
         const status = result?.status ?? 200;
@@ -156,7 +223,7 @@ class SessionImpl {
         this._sendFrame(frame);
     }
     ping() {
-        if (!this.ws || this.ws.readyState !== READY_STATE_OPEN)
+        if (!this.connected)
             return;
         if (this.pendingPingId !== null)
             return;
@@ -303,11 +370,17 @@ class SessionImpl {
             });
         }
     }
-    _onClose(_code, reason) {
+    _onClose(code, reason) {
         this.registered = false;
         this._teardownHeartbeat();
         this._failPending();
         this.ws = null;
+        // Another connection resumed this session with our secret, so it's theirs
+        // now. Start a fresh session on reconnect rather than taking it back.
+        if (code === REPLACED_CLOSE) {
+            this._resumeSecret = null;
+            this.pendingRevokes.clear();
+        }
         this._disconnected(reason || "ws closed");
     }
     // The single reconnect path: after a drop and after each failed attempt.
@@ -338,21 +411,23 @@ class SessionImpl {
     }
     async _reconnectAndRemint() {
         const priorSessionId = this._sessionId;
+        let resumed;
         try {
-            await this._connectAndRegister();
+            ({ resumed } = await this._connectAndRegister());
         }
         catch (e) {
             this._disconnected(e instanceof Error ? e.message : "reconnect failed");
             return;
         }
         this.attempt = 0;
-        // The relay drops every token with the old socket. Re-mint the ones still
-        // in myTokens (revoke removes them) under the new session-id.
+        // A resume keeps every token. A fresh session doesn't: re-mint the ones
+        // still in myTokens (revoke removes them) under the new session-id. A
+        // resume can still find stale ones when an earlier re-mint was cut short.
         const tokensRemapped = new Map();
-        if (!this.autoReconnect)
+        if (!resumed && !this.autoReconnect)
             this.myTokens.clear();
         for (const old of Array.from(this.myTokens.values())) {
-            if (!this.myTokens.has(old.token))
+            if (old.sessionId === this._sessionId || !this.myTokens.has(old.token))
                 continue;
             let fresh;
             try {
@@ -370,13 +445,15 @@ class SessionImpl {
             }
             tokensRemapped.set(old.url, fresh.url);
         }
-        if (priorSessionId !== this._sessionId && this.onSessionChanged) {
+        if ((priorSessionId !== this._sessionId || tokensRemapped.size > 0) && this.onSessionChanged) {
             void this.onSessionChanged({
                 priorSessionId,
                 sessionId: this._sessionId,
                 tokensRemapped,
             });
         }
+        if (this.onReconnect)
+            void this.onReconnect({ sessionId: this._sessionId, resumed });
     }
     _failPending() {
         for (const p of this.pendingFrameReplies.values())
@@ -410,7 +487,10 @@ class SessionImpl {
                 if (msg.type === "register_reply")
                     done(null, msg);
             };
-            const onClose = (...args) => done(new Error(`ws closed before register_reply (${args[0] ?? 1006})`));
+            const onClose = (...args) => {
+                const closeCode = args[0] ?? 1006;
+                done(Object.assign(new Error(`ws closed before register_reply (${closeCode})`), { closeCode }));
+            };
             const timer = setTimeout(() => done(new Error(`register_reply timeout after ${timeoutMs}ms`)), timeoutMs);
             ws.addListener("message", onMessage);
             ws.addListener("close", onClose);
