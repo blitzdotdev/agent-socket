@@ -14,6 +14,20 @@ One Durable Object per active session (one app connected via WS). The DO owns:
 
 `register_reply` gives the app a resume secret. When the WS drops (anything but a clean 1000 close) the DO holds the registration, tokens and async tasks for `RESUME_GRACE_MS`; the app reattaches on `/v1/_ws?session=<id>` with a `resume` frame carrying the secret, and every agent URL keeps working. In that window agents still get `agents.md` / `tools.json`, tool calls get `503 app_offline` + `Retry-After: 2`. A clean close, a protocol violation or the window running out wipes the session. Close codes: `4401` resume refused (bad secret or session gone), `4409` session already attached, `4410` replaced by a resume with the secret. v0 has zero `ctx.storage` usage, so if Cloudflare evicts the DO the resume is refused and the SDK starts a fresh session.
 
+## Changing tools mid-session
+
+A second `register` is refused, but a registered app can replace its tool list with an `update_tools` frame; every agent URL stays the same:
+
+```jsonc
+// app → relay
+{ "type": "update_tools", "id": "u1", "tools": [{ "method": "POST", "path": "/b", "description": "…", "input_schema": {} }], "agentsMd": "# optional" }
+// relay → app
+{ "type": "update_tools_reply", "id": "u1", "ok": true }
+{ "type": "update_tools_reply", "id": "u1", "ok": false, "error": { "code": "reserved_path", "message": "path is reserved: /agents.md" } }
+```
+
+`tools` and `agentsMd` are validated exactly like `register`'s (path syntax, reserved `/agents.md` / `/tools.json` / `/_as_*` paths, duplicate `METHOD path`, 64 KB agents.md); error codes are the same (`reserved_path`, `protocol_error`, `agents_md_too_large`). On success the whole list is replaced (tools not in it stop being routed: `404`) and `agentsMd` too when the frame has it (omit it to keep the current one). On error nothing changes and, unlike a bad `register`, the session stays up. Calls already forwarded to the app aren't affected. Before `register` the frame gets `protocol_error` "register first". A later `resume` carries a full registration and replaces the tools again, so the app must resume with its current set (the SDK does: `session.updateTools(tools, agentsMd?)`).
+
 ## Tokens
 
 Format: `as_<sessionId>_<verifier>` (`as_<8>_<22>`). The 8-char Crockford-base32 session-id is what `idFromName()` routes by; the 22-char base64url verifier is checked against the DO's in-memory set on every agent request.
