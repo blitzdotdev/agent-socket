@@ -230,9 +230,21 @@ export class RelayServer extends Server<Env> {
     }
 
     // 4. Validate + index tools.
+    if (msg.tools !== undefined && !Array.isArray(msg.tools)) {
+      this.send({ type: "register_reply", ok: false, error: { code: "protocol_error", message: "tools must be an array" } })
+      this.appWs?.close(4400, "invalid tools")
+      return
+    }
     const validatedTools: ToolDef[] = []
     const seen = new Set<string>()
     for (const t of msg.tools ?? []) {
+      if (!t || typeof t !== "object"
+        || (t.method !== undefined && typeof t.method !== "string")
+        || (t.description !== undefined && typeof t.description !== "string")) {
+        this.send({ type: "register_reply", ok: false, error: { code: "protocol_error", message: "each tool needs a path and string method/description" } })
+        this.appWs?.close(4400, "invalid tool")
+        return
+      }
       const path = t.path
       const method = (t.method ?? "POST").toUpperCase()
 
