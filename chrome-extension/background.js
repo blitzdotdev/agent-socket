@@ -457,9 +457,7 @@ async function doConnect(tabId, saved) {
 async function stopConnect() {
   cancelResumeRetry()
   const s = session, token = lastToken, tabId = boundTabId
-  // Stopped while still waiting to resume a saved session: the relay is
-  // holding it, so end it there too.
-  const held = !s && tabId != null ? (await chrome.storage.session.get(SAVED_KEY).catch(() => ({})))[SAVED_KEY] : null
+  // Reset synchronously: a connect in flight checks boundTabId after each await.
   session = null
   lastUrl = lastToken = lastToolCallAt = null
   lastRegistry = lastSource = lastToolsKey = null
@@ -467,6 +465,9 @@ async function stopConnect() {
   boundTabId = null
   if (s) logEvent("stopped")
   emitStatus({ status: "idle" })
+  // Stopped while still waiting to resume a saved session: the relay is
+  // holding it, so end it there too.
+  const held = !s && tabId != null ? (await chrome.storage.session.get(SAVED_KEY).catch(() => ({})))[SAVED_KEY] : null
   await chrome.storage.session.remove(SAVED_KEY).catch(() => {})
   if (s) {
     // close() ends the session on the relay, killing every token; revoke first anyway.
