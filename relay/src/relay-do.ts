@@ -435,17 +435,6 @@ export class RelayServer extends Server<Env> {
       return new Response("ok", { status: 200 })
     }
 
-    // Drain the request body up front. workerd throws an uncaught
-    // "Can't read from request stream after response has been sent" error
-    // (which destabilizes the DO) if we return a Response without consuming
-    // the body. Reading once and reusing avoids that whole class of bugs.
-    let body = ""
-    try {
-      body = await req.text()
-    } catch {
-      // Body unreadable for some reason (already-consumed, etc) — treat as empty
-    }
-
     // Strip the routing prefix `/v1/t/<token>` to get the user-facing path.
     // Worker entry already validated the token format and routed here.
     const m = pathname.match(/^\/v1\/t\/[^/]+(\/.*)?$/)
@@ -469,6 +458,10 @@ export class RelayServer extends Server<Env> {
     if (!this.validTokens.has(parsed.verifier)) {
       return errorResponse("token_invalid", "agent-token unknown or revoked", 401)
     }
+
+    // The worker already buffered (and capped) the body, so returning above
+    // without reading it is safe; read it only once the token is known good.
+    const body = await req.text()
 
     // Reserved meta paths
     if (userPath === "/agents.md") {

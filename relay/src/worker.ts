@@ -19,6 +19,8 @@ import { PRIVACY_HTML } from "./privacy"
 
 export { RelayServer }
 
+const MAX_REQUEST_BODY_BYTES = 1024 * 1024
+
 // Validate TOKEN_PREFIX at module-top-level so a misconfigured deploy
 // fails fast rather than returning 500 to the first user request.
 // (Validated again per-isolate; cheap and reads from `env` which isn't
@@ -99,13 +101,42 @@ export default {
       if (req.headers.get("upgrade")) {
         return errorResponse("protocol_error", "websocket upgrade only on /v1/_ws", 400)
       }
+      // Buffer the body here, capped, so no DO ever holds an agent's request
+      // stream: an unread stream left open when the DO responds early (e.g. a
+      // junk verifier) throws in workerd and resets the session.
+      let body: ArrayBuffer | null = null
+      if (req.body) {
+        body = await readBodyCapped(req.body, MAX_REQUEST_BODY_BYTES)
+        if (!body) return errorResponse("body_too_large", `max ${MAX_REQUEST_BODY_BYTES} bytes`, 413)
+      }
       const id = env.RELAY.idFromName(parsed.sessionId)
-      return env.RELAY.get(id).fetch(req)
+      return env.RELAY.get(id).fetch(new Request(req, { body }))
     }
 
     return errorResponse("not_found", "no route", 404)
   },
 } satisfies ExportedHandler<Env>
+
+// Returns the body, or null once it exceeds `max` bytes.
+async function readBodyCapped(stream: ReadableStream<Uint8Array>, max: number): Promise<ArrayBuffer | null> {
+  const reader = stream.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > max) {
+      await reader.cancel().catch(() => {})
+      return null
+    }
+    chunks.push(value)
+  }
+  const buf = new Uint8Array(size)
+  let off = 0
+  for (const c of chunks) { buf.set(c, off); off += c.byteLength }
+  return buf.buffer
+}
 
 // ────────────────────────────────────────────────────────────────────
 // Debug endpoints — only when DEBUG=1. Never enabled in prod wrangler.jsonc.

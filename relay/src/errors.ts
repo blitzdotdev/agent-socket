@@ -17,6 +17,7 @@ export type ErrorCode =
   | "internal_error"
   | "csrf_denied"
   | "too_many_tasks"
+  | "body_too_large"
 
 export function errorResponse(code: ErrorCode, message: string, status: number): Response {
   return new Response(
