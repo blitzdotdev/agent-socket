@@ -25,9 +25,9 @@
         // Cloudflare Access (Zero Trust) settings for /admin. Fill these in from
         // the Access application before deploying (see README "Deploy").
         // Team domain, e.g. "myteam.cloudflareaccess.com".
-        "ACCESS_TEAM_DOMAIN": "",
+        "ACCESS_TEAM_DOMAIN": "blitz-dev-box.cloudflareaccess.com",
         // Application Audience (AUD) tag of the Access application.
-        "ACCESS_AUD": "",
+        "ACCESS_AUD": "31f4c734a781def43e4c0da6afc3d20737c16de1776f45c424d69ae125e463e6",
         // Abuse limits for anonymous POST /v1/submissions.
         "SUBMISSIONS_PER_IP_PER_DAY": "20",
         "MAX_PENDING_SUBMISSIONS": "500"
@@ -49,7 +49,7 @@
             "binding": "PRIMARY_DB",
             "database_name": "agent-socket-registry",
             // `teeny deploy --remote` creates the database and fills this in.
-            "database_id": "TEENY_AUTO_CREATE",
+            "database_id": "92421be5-0cd7-4568-85ee-396ec770fca6",
             "migrations_dir": "migrations"
         }
     ],
