@@ -41,8 +41,7 @@ See `wrangler.jsonc`. Production env vars:
 |---|---|
 | `TOKEN_PREFIX` | Token format prefix; `"as"` for the canonical deployment |
 | `MAX_SYNC_TOOL_MS` | How long the relay holds an HTTP request waiting for the app's WS reply before returning 504 `tool_timeout` |
-| `HEARTBEAT_INTERVAL_MS` | Ping cadence to the app's WS |
-| `HEARTBEAT_TIMEOUT_MS` | Pong-wait before tearing down a stale WS |
+| `HEARTBEAT_TIMEOUT_MS` | How long the app's WS may stay silent before the relay closes it as dead (the SDK pings every 25 s) |
 
 `DEBUG` is intentionally absent in production. Set it in `.dev.vars` (gitignored) only.
 

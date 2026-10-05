@@ -30,6 +30,7 @@ Without `RELAY_URL`, `run.mjs` boots its own `wrangler dev` on a free port (`DEB
   - **30–40** Origin/CSRF defenses, tool round-trip, ping-pong, async tasks (raw + SDK), content-type
   - **41–49** SDK reconnect, WS takeover, bad replies/registers, body cap, header passthrough, response sandbox, register timeout, frame cap
   - **50** Puppeteer pixel-art-canvas visual test (SKIP without chromium)
+  - **51** App liveness (SKIP unless `HEARTBEAT_TIMEOUT_MS` is short)
   - **90** `/v1/_ws` rate limit (last, so its burst can't starve the others)
 
 ## Adding a scenario

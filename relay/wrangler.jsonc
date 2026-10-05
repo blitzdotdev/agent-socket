@@ -34,7 +34,7 @@
   "vars": {
     "TOKEN_PREFIX": "as",
     "MAX_SYNC_TOOL_MS": "30000",
-    "HEARTBEAT_INTERVAL_MS": "25000",
+    // App socket silent this long ⇒ closed as dead. The SDK pings every 25 s.
     "HEARTBEAT_TIMEOUT_MS": "50000"
     // DEBUG is intentionally not set in default vars — production must NOT have it.
     // For local dev, set it in `.dev.vars` (gitignored) which wrangler picks up

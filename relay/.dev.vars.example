@@ -11,8 +11,3 @@ DEBUG=1
 # rely on a low value so they don't take 30s — change to 3000 if you want
 # the harness to run faster.
 MAX_SYNC_TOOL_MS=30000
-
-# Production defaults are 25000 / 50000. Lower values surface heartbeat
-# bugs faster during dev but make some scenarios noisy. Tune as needed.
-HEARTBEAT_INTERVAL_MS=2000
-HEARTBEAT_TIMEOUT_MS=5000

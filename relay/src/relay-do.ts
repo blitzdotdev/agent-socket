@@ -83,6 +83,9 @@ export class RelayServer extends Server<Env> {
   pending: Map<string, PendingRequest> = new Map()
   // For async / task polling
   tasks: Map<string, PendingTask> = new Map()
+  // Fires when the app has been silent for HEARTBEAT_TIMEOUT_MS (the SDK pings
+  // every 25 s), so a half-open socket doesn't keep the session "live".
+  livenessTimer: ReturnType<typeof setTimeout> | null = null
 
   // ── WS lifecycle ──────────────────────────────────────────────────
 
@@ -125,6 +128,7 @@ export class RelayServer extends Server<Env> {
     if (code !== undefined) {
       try { this.appWs?.close(code, reason) } catch {}
     }
+    clearTimeout(this.livenessTimer)
     if (this.env.DEBUG === "1") console.log("[DO] WS closed; failing", this.pending.size, "pending")
     for (const p of this.pending.values()) {
       clearTimeout(p.timer)
@@ -160,6 +164,11 @@ export class RelayServer extends Server<Env> {
       this.dropApp(1009, "frame too large")
       return
     }
+    clearTimeout(this.livenessTimer)
+    this.livenessTimer = setTimeout(
+      () => this.dropApp(4408, "heartbeat timeout"),
+      parseInt(this.env.HEARTBEAT_TIMEOUT_MS || "50000", 10),
+    )
     const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw)
     let msg: Frame
     try { msg = JSON.parse(text) as Frame } catch {
