@@ -56,7 +56,7 @@ cd registry
 cp .dev.vars.example .dev.vars
 npm run migrate                  # teeny deploy --local: generate + apply migrations from teenybase.ts
 npm run dev                      # teeny dev on 0.0.0.0:8795 (see wrangler.jsonc "dev")
-npm run seed                     # import chrome-extension/tools-lib/ as PENDING submissions
+npm run seed                     # import registry/seed/ as PENDING submissions
 npm run seed -- --approve-trusted   # …and publish github.com, news.ycombinator.com, docs.google.com, * directly
 npm test                         # vitest in workerd (@cloudflare/vitest-pool-workers)
 npm run check                    # tsc
@@ -94,6 +94,7 @@ src/store.ts         D1 access (rawSQL / one-batch approve)
 src/access.ts        Cloudflare Access JWT verification
 src/admin/           SSR admin (hono/jsx)
 src/diff.ts, compare.ts, risk.ts   review helpers
-scripts/seed.mjs     import chrome-extension/tools-lib/
+scripts/seed.mjs     import seed/ (the starter profiles)
+seed/                starter site profiles (_index.json maps hosts/aliases to files)
 test/                vitest-pool-workers tests
 ```

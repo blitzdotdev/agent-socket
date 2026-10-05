@@ -1,0 +1,5 @@
+{
+  "host": "*",
+  "notes": "No site-specific profile exists for this site yet. Use the universal tools: start with /page_info, then /dom_query or /eval to learn the page structure, then /click, /fill and /wait_for to drive it. Check /registry_search first in case a related profile exists. If you find stable interactions worth reusing, save them with /save_site_profile (the user approves them in the extension popup) and share them with /registry_submit.",
+  "tools": []
+}

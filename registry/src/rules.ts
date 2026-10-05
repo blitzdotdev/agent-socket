@@ -19,6 +19,7 @@ export const BASE_TOOL_PATHS = new Set([
     '/eval', '/page_info', '/dom_query', '/click', '/fill', '/wait_for', '/navigate', '/scroll',
     '/get_text', '/get_html', '/screenshot', '/tabs_list', '/tabs_switch', '/console_recent',
     '/configure_keybind', '/list_keybinds', '/save_site_profile',
+    '/registry_search', '/registry_get', '/registry_submit',
 ])
 
 export const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const

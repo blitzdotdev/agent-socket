@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Imports the bundled site profiles (chrome-extension/tools-lib/) into the
-// registry via POST /admin/api/import. Idempotent: re-running skips content
+// Imports the seed site profiles (registry/seed/) into the registry via
+// POST /admin/api/import. Idempotent: re-running skips content
 // that is already live and reuses identical pending submissions.
 //
 // By default everything lands as a PENDING submission for review (several
@@ -24,12 +24,12 @@ const opt = (name, def) => {
     return i >= 0 && args[i + 1] ? args[i + 1] : def
 }
 if (flag('--help') || flag('-h')) {
-    console.log('usage: node scripts/seed.mjs [--url <registry>] [--approve-trusted] [--dry-run] [--lib <tools-lib dir>]')
+    console.log('usage: node scripts/seed.mjs [--url <registry>] [--approve-trusted] [--dry-run] [--lib <seed dir>]')
     process.exit(0)
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
-const libDir = resolve(opt('--lib', join(here, '..', '..', 'chrome-extension', 'tools-lib')))
+const libDir = resolve(opt('--lib', join(here, '..', 'seed')))
 const url = opt('--url', 'http://localhost:8795').replace(/\/+$/, '')
 
 const index = JSON.parse(readFileSync(join(libDir, '_index.json'), 'utf8'))
@@ -48,7 +48,7 @@ for (const [file, hostMatches] of byFile) {
 }
 
 const approveHosts = flag('--approve-trusted') ? TRUSTED : []
-console.log(`tools-lib: ${libDir}`)
+console.log(`seed: ${libDir}`)
 for (const p of profiles) {
     console.log(`  ${p.host.padEnd(22)} ${String(p.tools.length).padStart(2)} tools${p.aliases.length ? `  aliases: ${p.aliases.join(', ')}` : ''}${approveHosts.includes(p.host) ? '  [approve]' : ''}`)
 }

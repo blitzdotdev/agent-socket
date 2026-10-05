@@ -41,7 +41,7 @@ export async function importProfiles(db: $Database<any>, items: ImportItem[], ap
         if (!created.ok) { out.push({host: profile.host, result: 'error', message: created.message}); continue }
         if (!approveHosts.has(profile.host)) { out.push({host: profile.host, result: 'pending', id: created.id, existing: created.duplicate}); continue }
 
-        const approved = await approveSubmission(db, created.id, reviewer, 'imported from bundled chrome-extension/tools-lib')
+        const approved = await approveSubmission(db, created.id, reviewer, 'imported from registry/seed')
         out.push(approved.ok
             ? {host: profile.host, result: 'approved', id: created.id, version: approved.version!}
             : {host: profile.host, result: 'error', message: approved.message})

@@ -16,6 +16,6 @@ bash "$HERE/scripts/vendor-sdk.sh"
 mkdir -p "$HERE/dist"
 rm -f "$OUT"
 cd "$HERE"
-zip -qr "$OUT" manifest.json background.js pill.js popup.html popup.css popup.js icons lib tools-lib \
+zip -qr "$OUT" manifest.json background.js pill.js popup.html popup.css popup.js icons lib \
   -x "lib/sdk/VENDORED.md" "*.DS_Store"
 echo "build-zip: $(unzip -Z1 "$OUT" | wc -l | tr -d ' ') files → $OUT"
