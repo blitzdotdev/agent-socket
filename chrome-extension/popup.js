@@ -1,10 +1,14 @@
-// Popup controller. Talks to background via chrome.runtime.sendMessage.
+// Popup controller. Talks to background via chrome.runtime.sendMessage and
+// polls its snapshot once a second while open.
 
 const $ = (s) => document.querySelector(s)
 const statusDot = $("#status-dot")
 const statusText = $("#status-text")
+const tabLabel = $("#tab-label")
+const tabRow = $("#tab-row")
+const tabIcon = $("#tab-icon")
+const tabTitle = $("#tab-title")
 const tabHost = $("#tab-host")
-const profileName = $("#profile-name")
 const connectBtn = $("#connect-btn")
 const disconnectBtn = $("#disconnect-btn")
 const linkCard = $("#link-card")
@@ -16,113 +20,104 @@ const saveRelay = $("#save-relay")
 const profilesList = $("#profiles-list")
 const errorMsg = $("#error-msg")
 const userScriptsWarn = $("#user-scripts-warn")
+const userScriptsHint = $("#user-scripts-hint")
 const openExtDetailsBtn = $("#open-ext-details")
 const recheckUserScriptsBtn = $("#recheck-user-scripts")
-const keybindsList = $("#keybinds-list")
-const openShortcutsBtn = $("#open-shortcuts")
 
-function setStatus(s) {
-  const code = s?.status ?? "idle"
-  statusDot.dataset.status = code
-  statusText.textContent = code + (s?.code ? ` (${s.code})` : "")
+let shownTab = null  // { id, windowId } of the tab the card shows
+
+const ago = (ms) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : ms < 3_600_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 3_600_000)}h`)
+
+function statusLabel(snap) {
+  switch (snap.status?.status) {
+    case "connecting": return "Connecting…"
+    case "connected":
+      return snap.lastToolCallAt ? `AI active — last tool call ${ago(Date.now() - snap.lastToolCallAt)} ago` : "Connected — waiting for AI"
+    case "disconnected":
+    case "reconnect-failed": return "Reconnecting…"
+    case "closed": return `Disconnected${snap.status.reason ? ` (${snap.status.reason})` : ""}`
+    default: return "Not connected"
+  }
 }
 
 function setError(msg) {
   errorMsg.textContent = msg || ""
 }
 
-async function activeTabHost() {
-  const [t] = await chrome.tabs.query({ active: true, currentWindow: true })
-  try { return new URL(t.url).host } catch { return t?.url ?? "—" }
+function showTab(tab, bound) {
+  shownTab = tab ? { id: tab.id, windowId: tab.windowId } : null
+  tabLabel.textContent = bound ? "Connected tab" : "This tab"
+  tabTitle.textContent = tab?.title || "Current tab"
+  let host = ""
+  try { host = new URL(tab.url).host } catch {}
+  tabHost.textContent = host
+  tabIcon.hidden = !tab?.favIconUrl
+  if (tab?.favIconUrl) tabIcon.src = tab.favIconUrl
 }
 
-async function refresh() {
+async function render() {
   const snap = await chrome.runtime.sendMessage({ type: "snapshot" })
   if (!snap?.ok) return
-  setStatus(snap.status)
-  tabHost.textContent = await activeTabHost()
-  profileName.textContent = snap.profileHost ?? "—"
-  if (snap.connected && snap.url) {
-    linkCard.hidden = false
-    linkInput.value = snap.url
-    connectBtn.hidden = true
-    disconnectBtn.hidden = false
-  } else {
-    linkCard.hidden = true
-    connectBtn.hidden = false
-    disconnectBtn.hidden = true
+  const code = snap.status?.status ?? "idle"
+  statusDot.dataset.status = code === "connected" && snap.lastToolCallAt ? "active" : code
+  statusText.textContent = statusLabel(snap)
+  if (snap.boundTab) showTab(snap.boundTab, true)
+  else showTab((await chrome.tabs.query({ active: true, currentWindow: true }))[0], false)
+  const bound = !!snap.boundTab
+  connectBtn.hidden = bound
+  disconnectBtn.hidden = !bound
+  linkCard.hidden = !(bound && snap.url)
+  if (snap.url && linkInput.value && linkInput.value !== snap.url) {
+    copyHint.textContent = "Link refreshed after a reconnect — re-paste it in your AI."
   }
-  // Profiles list
-  const list = await chrome.runtime.sendMessage({ type: "list_profiles" })
-  profilesList.innerHTML = ""
-  if (list?.ok) {
-    for (const h of list.saved) {
-      const li = document.createElement("li")
-      li.textContent = h + " "
-      const x = document.createElement("a")
-      x.href = "#"; x.textContent = "delete"; x.style.color = "var(--err)"
-      x.addEventListener("click", async (e) => {
-        e.preventDefault()
-        await chrome.runtime.sendMessage({ type: "delete_profile", host: h })
-        refresh()
-      })
-      li.appendChild(x)
-      profilesList.appendChild(li)
-    }
-  }
-  // Relay
+  linkInput.value = snap.url ?? ""
+}
+
+async function loadSettings() {
   const stored = await chrome.storage.local.get("relay_base")
   relayInput.value = stored.relay_base ?? ""
-
-  // userScripts toggle status — banner appears if disabled.
-  const us = await chrome.runtime.sendMessage({ type: "check_user_scripts" })
-  if (us?.ok && !us.available) {
-    userScriptsWarn.hidden = false
-  } else {
-    userScriptsWarn.hidden = true
-  }
-
-  // Keybinds — read-only display. Agents own this via /configure_keybind.
-  const kb = await chrome.runtime.sendMessage({ type: "get_keybinds" })
-  if (kb?.ok) {
-    keybindsList.innerHTML = ""
-    for (let n = 1; n <= 4; n++) {
-      const url = kb.slots?.[String(n)] ?? ""
-      const cmd = (kb.commands ?? []).find((c) => c.name === `connect-slot-${n}`)
-      const key = cmd?.shortcut || ""
-      const li = document.createElement("li")
-      const slot = document.createElement("span")
-      slot.className = "kb-slot"
-      slot.textContent = `${n}.`
-      const keyEl = document.createElement("span")
-      keyEl.className = "kb-key" + (key ? "" : " unset")
-      keyEl.textContent = key || "no key"
-      const urlEl = document.createElement("span")
-      urlEl.className = "kb-url" + (url ? "" : " unset")
-      urlEl.textContent = url || "unconfigured"
-      urlEl.title = url
-      li.appendChild(slot)
-      li.appendChild(keyEl)
-      li.appendChild(urlEl)
-      keybindsList.appendChild(li)
-    }
+  const list = await chrome.runtime.sendMessage({ type: "list_profiles" })
+  profilesList.innerHTML = ""
+  for (const h of list?.saved ?? []) {
+    const li = document.createElement("li")
+    li.textContent = h + " "
+    const x = document.createElement("a")
+    x.href = "#"; x.textContent = "delete"; x.style.color = "var(--err)"
+    x.addEventListener("click", async (e) => {
+      e.preventDefault()
+      await chrome.runtime.sendMessage({ type: "delete_profile", host: h })
+      loadSettings()
+    })
+    li.appendChild(x)
+    profilesList.appendChild(li)
   }
 }
 
-openShortcutsBtn?.addEventListener("click", async (e) => {
-  e.preventDefault()
-  await chrome.tabs.create({ url: "chrome://extensions/shortcuts" })
+async function checkUserScripts() {
+  const us = await chrome.runtime.sendMessage({ type: "check_user_scripts" })
+  userScriptsWarn.hidden = !us?.ok || us.available
+  const major = Number(navigator.userAgent.match(/Chrome\/(\d+)/)?.[1] ?? 0)
+  userScriptsHint.textContent = major >= 138
+    ? "The AI's /eval needs user scripts on sites like x.com, Google, GitHub. Open the extension's details page and turn on \"Allow User Scripts\"."
+    : major >= 135
+      ? "The AI's /eval needs user scripts on sites like x.com, Google, GitHub. Turn on \"Developer mode\" at the top right of chrome://extensions."
+      : "The AI's /eval needs chrome.userScripts on CSP-strict sites, which requires Chrome 135 or newer."
+}
+
+tabRow.addEventListener("click", async () => {
+  if (!shownTab) return
+  await chrome.tabs.update(shownTab.id, { active: true }).catch(() => {})
+  await chrome.windows.update(shownTab.windowId, { focused: true }).catch(() => {})
 })
 
-openExtDetailsBtn?.addEventListener("click", async () => {
+openExtDetailsBtn.addEventListener("click", async () => {
   // chrome:// URLs can't be opened from a popup directly; create a tab.
-  const id = chrome.runtime.id
-  await chrome.tabs.create({ url: `chrome://extensions/?id=${id}` })
+  await chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` })
 })
 
-recheckUserScriptsBtn?.addEventListener("click", async () => {
+recheckUserScriptsBtn.addEventListener("click", async () => {
   recheckUserScriptsBtn.disabled = true
-  try { await refresh() } finally { recheckUserScriptsBtn.disabled = false }
+  try { await checkUserScripts() } finally { recheckUserScriptsBtn.disabled = false }
 })
 
 async function copyLinkToClipboard() {
@@ -142,25 +137,24 @@ function flashCopied() {
 
 connectBtn.addEventListener("click", async () => {
   setError("")
-  setStatus({ status: "connecting" })
   connectBtn.disabled = true
   try {
-    const res = await chrome.runtime.sendMessage({ type: "connect" })
-    if (!res?.ok) { setError(res?.error ?? "connect failed"); setStatus({ status: "error" }); return }
-    setStatus({ status: "connected" })
-    linkCard.hidden = false
-    linkInput.value = res.url
-    connectBtn.hidden = true
-    disconnectBtn.hidden = false
-    profileName.textContent = res.profile ?? "—"
+    // Site access is optional and asked for here, on the user's click.
+    if (!(await chrome.permissions.request({ origins: ["<all_urls>"] }))) {
+      setError("Agent Socket needs site access to drive the tab.")
+      return
+    }
+    statusText.textContent = "Connecting…"
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const res = await chrome.runtime.sendMessage({ type: "connect", tabId: tab?.id })
+    if (!res?.ok) { setError(res?.error ?? "connect failed"); return }
+    await render()
     const copied = await copyLinkToClipboard()
     if (copied) flashCopied()
-    copyHint.textContent = copied
-      ? `${res.tool_count} tools registered. Link copied — paste into your AI.`
-      : `${res.tool_count} tools registered. Paste this in your AI.`
+    copyHint.textContent = (copied ? "Link copied — paste it into your AI. " : "Paste this into your AI. ") +
+      "Anyone with it can drive this tab until you stop."
   } catch (e) {
     setError(e?.message ?? String(e))
-    setStatus({ status: "error" })
   } finally {
     connectBtn.disabled = false
   }
@@ -168,7 +162,7 @@ connectBtn.addEventListener("click", async () => {
 
 disconnectBtn.addEventListener("click", async () => {
   await chrome.runtime.sendMessage({ type: "disconnect" })
-  refresh()
+  render()
 })
 
 copyBtn.addEventListener("click", async () => {
@@ -183,16 +177,7 @@ saveRelay.addEventListener("click", async () => {
   setTimeout(() => (saveRelay.textContent = "Save"), 1500)
 })
 
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg?.type === "status") setStatus(msg.status)
-  // After a reconnect under a new session-id, the previous paste URL is
-  // dead. The background SW remints under the same label and pushes the
-  // new URL here so a user with the popup open sees it update live.
-  if (msg?.type === "url_changed" && msg.url) {
-    linkCard.hidden = false
-    linkInput.value = msg.url
-    copyHint.textContent = "Link refreshed after a reconnect — re-paste in your AI."
-  }
-})
-
-refresh()
+render()
+loadSettings()
+checkUserScripts()
+setInterval(render, 1000)

@@ -1,9 +1,8 @@
 // Universal toolset — works on any website.
 //
 // Each tool defines a `path`, `description`, `input_schema`, and a `handler`.
-// Handlers receive { body } (string) and a `tabCtx` accessor for the active tab.
-// They run in the SERVICE WORKER and use chrome.scripting to execute code
-// in the page's MAIN world.
+// Handlers receive { body } (string) and run in the SERVICE WORKER; they act
+// only on the bound tab (via `getTabId`), executing code in its MAIN world.
 
 // ── helpers ─────────────────────────────────────────────────────────
 
@@ -22,28 +21,36 @@ function runtimeError(e) {
 
 // SSRF / local-resource guard for AI-driven navigation. The driver is a
 // remote party (the AI, via the relay), so the bound tab must not be pointed
-// at the local machine, the LAN, cloud metadata, or local files — otherwise
-// the browser becomes an SSRF proxy and `file://` exfiltrates local files.
-// Only http(s) to a public host is allowed.
-function isPrivateHost(host) {
-  const h = (host || "").toLowerCase().replace(/^\[|\]$/g, "")  // strip IPv6 brackets
-  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local")) return true
-  if (h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80")) return true  // IPv6 loopback/ULA/link-local
-  if (h === "metadata.google.internal") return true
-  // IPv4 ranges: loopback, private, link-local (incl. 169.254.169.254 metadata)
-  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
-  if (m) {
-    const [a, b] = [Number(m[1]), Number(m[2])]
-    if (a === 127 || a === 10 || a === 0) return true
-    if (a === 169 && b === 254) return true
-    if (a === 172 && b >= 16 && b <= 31) return true
-    if (a === 192 && b === 168) return true
+// at the local machine, the LAN, cloud metadata, or local files. Checks the
+// parsed URL's host literal only (no DNS), so it's a guardrail, not a sandbox.
+function isPrivateV4([a, b]) {
+  return a === 0 || a === 10 || a === 127 || a >= 224 ||
+    (a === 100 && b >= 64 && b <= 127) ||  // CGNAT
+    (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+}
+
+function isPrivateV6(h) {
+  // `new URL` has already normalized the address to hex groups.
+  const [head, tail] = h.split("::")
+  const hi = head ? head.split(":") : [], lo = tail ? tail.split(":") : []
+  const x = (tail === undefined ? hi : [...hi, ...Array(8 - hi.length - lo.length).fill("0"), ...lo]).map((g) => parseInt(g, 16))
+  const v4 = [x[6] >> 8, x[6] & 255, x[7] >> 8, x[7] & 255]
+  if (x.slice(0, 5).every((g) => g === 0) && (x[5] === 0 || x[5] === 0xffff)) {
+    return (x[5] === 0 && x[6] === 0) || isPrivateV4(v4)  // ::, ::1, IPv4-mapped/compatible
   }
-  return false
+  if (x[0] === 0x64 && x[1] === 0xff9b && x.slice(2, 6).every((g) => g === 0)) return isPrivateV4(v4)  // NAT64
+  return (x[0] & 0xfe00) === 0xfc00 || (x[0] & 0xffc0) === 0xfe80  // ULA, link-local
+}
+
+function isPrivateHost(hostname) {
+  const h = hostname.toLowerCase().replace(/\.$/, "")
+  if (h.startsWith("[")) return isPrivateV6(h.slice(1, -1))
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) return isPrivateV4(h.split(".").map(Number))
+  return !h.includes(".") || /\.(localhost|local|lan|internal|home\.arpa)$/.test(h)
 }
 
 // Returns null if safe, or an error message string if the URL must be rejected.
-function navUrlError(url) {
+export function navUrlError(url) {
   let u
   try { u = new URL(url) } catch { return "invalid url" }
   if (u.protocol !== "http:" && u.protocol !== "https:") {
@@ -55,15 +62,10 @@ function navUrlError(url) {
   return null
 }
 
-/**
- * Build a JS source string for chrome.userScripts.execute.
- * Inlines safeSerialize so the script is self-contained, wraps the user's
- * code in an async IIFE so `return` works, and races against a timeout.
- * The returned promise resolves to { ok, value } or { __err, __stack }.
- */
-function buildEvalScript(userCode, timeoutMs) {
-  // Note: userCode is inlined directly into the script source (no new Function()),
-  // which is the whole point — that's why this path bypasses page CSP.
+// Page-side wrapper for /eval and site-profile tools: runs `code` as an async
+// function body with `args` in scope, races a timeout, and serializes the
+// result. Resolves to { ok, value } or { __err, __stack }.
+function buildPageScript(code, args, timeoutMs) {
   return `(async () => {
   function safeSerialize(v, depth) {
     if (depth == null) depth = 0;
@@ -94,9 +96,10 @@ function buildEvalScript(userCode, timeoutMs) {
     }
     return String(v);
   }
-  const __timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("eval timeout")), ${timeoutMs}));
+  const args = ${JSON.stringify(args ?? {})};
+  const __timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("timeout after ${timeoutMs}ms")), ${timeoutMs}));
   const __work = (async () => {
-${userCode}
+${code}
   })();
   try {
     const value = await Promise.race([__work, __timeout]);
@@ -107,10 +110,56 @@ ${userCode}
 })()`
 }
 
-/** Execute a function in the page's main world on the active tab. */
-async function execInPage(getActiveTabId, fn, args, opts) {
-  const tabId = await getActiveTabId()
-  if (!tabId) throw new Error("no active tab")
+export function userScriptsAvailable() {
+  // Throws when the user hasn't allowed user scripts for this extension.
+  try { void chrome.userScripts.getScripts().catch(() => {}); return typeof chrome.userScripts.execute === "function" }
+  catch { return false }
+}
+
+const CSP_HINT = "This site's Content Security Policy blocks running code without chrome.userScripts. Ask the user to enable it: chrome://extensions → Agent Socket → Details → 'Allow User Scripts' (Chrome 138+; on Chrome 135–137 turn on Developer mode instead)."
+
+/**
+ * Run `code` (see buildPageScript) in the tab's MAIN world. Primary path:
+ * chrome.userScripts.execute injects the source directly, bypassing page CSP.
+ * Fallback: scripting.executeScript + new Function(), which works on pages
+ * that allow 'unsafe-eval'.
+ */
+async function runPageCode(tabId, code, args, timeoutMs) {
+  const src = buildPageScript(code, args, timeoutMs)
+  let r
+  if (userScriptsAvailable()) {
+    try {
+      ;[r] = await chrome.userScripts.execute({ target: { tabId }, world: "MAIN", js: [{ code: src }] })
+      if (r?.error) return runtimeError(new Error(typeof r.error === "string" ? r.error : (r.error.message ?? "user script error")))
+    } catch { r = null /* e.g. cross-origin frame — try the fallback */ }
+  }
+  if (!r) {
+    try {
+      ;[r] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        func: (src) => {
+          try { return new Function("return " + src)() }
+          catch (e) { return { __err: e?.message ?? String(e), __stack: e?.stack } }
+        },
+        args: [src],
+      })
+    } catch (e) { return runtimeError(e) }
+    if (/unsafe-eval|Content Security Policy/i.test(r?.result?.__err ?? "")) {
+      return { status: 400, body: { error: { code: "csp_blocked_enable_user_scripts", message: CSP_HINT, page_error: r.result.__err } } }
+    }
+  }
+  const v = r?.result
+  if (v && typeof v === "object" && v.__err) {
+    return { status: 500, body: { error: { code: "runtime_error", message: v.__err, stack: v.__stack } } }
+  }
+  return v
+}
+
+/** Execute a function in the page's main world on the bound tab. */
+async function execInPage(getTabId, fn, args, opts) {
+  const tabId = await getTabId()
+  if (!tabId) throw new Error("the connected tab is gone")
   const [result] = await chrome.scripting.executeScript({
     target: { tabId, allFrames: !!opts?.allFrames },
     world: "MAIN",
@@ -126,70 +175,15 @@ async function execInPage(getActiveTabId, fn, args, opts) {
   return result.result
 }
 
-/**
- * Build a JS source string for a site-profile tool. Mirrors `buildEvalScript`
- * but exposes an `args` const (the parsed body) inside the user code. Inlined
- * directly into a user-scripts execution so it bypasses page CSP — required
- * for strict-CSP sites like reddit.com that block scripting.executeScript's
- * `new Function()` path with the 'unsafe-eval' policy.
- */
-function buildSiteToolScript(userCode, args, timeoutMs) {
-  // args is the parsed JSON body — serialize it via JSON.stringify so it lands
-  // in the page as a plain object const. Same safeSerialize as /eval.
-  const argsLiteral = JSON.stringify(args ?? {})
-  return `(async () => {
-  function safeSerialize(v, depth) {
-    if (depth == null) depth = 0;
-    if (depth > 6) return "[max depth]";
-    if (v === null || v === undefined) return v;
-    const t = typeof v;
-    if (t === "string" || t === "number" || t === "boolean") return v;
-    if (t === "function") return "[Function " + (v.name || "anonymous") + "]";
-    if (t === "bigint") return v.toString() + "n";
-    if (typeof Element !== "undefined" && v instanceof Element) {
-      return { __type: "Element", tag: v.tagName.toLowerCase(),
-        id: v.id || undefined,
-        classes: (typeof v.className === "string") ? v.className : undefined,
-        text: (v.textContent || "").slice(0, 200) };
-    }
-    if ((typeof NodeList !== "undefined" && v instanceof NodeList) ||
-        (typeof HTMLCollection !== "undefined" && v instanceof HTMLCollection)) {
-      return Array.from(v).slice(0, 50).map(x => safeSerialize(x, depth + 1));
-    }
-    if (Array.isArray(v)) return v.slice(0, 200).map(x => safeSerialize(x, depth + 1));
-    if (t === "object") {
-      const out = {}; let i = 0;
-      for (const k of Object.keys(v)) {
-        if (i++ > 100) { out.__truncated = true; break; }
-        try { out[k] = safeSerialize(v[k], depth + 1); } catch (_) { out[k] = "[unserializable]"; }
-      }
-      return out;
-    }
-    return String(v);
-  }
-  const args = ${argsLiteral};
-  const __timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("site tool timeout")), ${timeoutMs}));
-  const __work = (async () => {
-${userCode}
-  })();
-  try {
-    const value = await Promise.race([__work, __timeout]);
-    return { ok: true, value: safeSerialize(value) };
-  } catch (e) {
-    return { __err: (e && e.message) ? e.message : String(e), __stack: e && e.stack };
-  }
-})()`
-}
+// ── tool factories: produce tool objects bound to a getTabId fn ─────
 
-// ── tool factories: produce tool objects bound to a getActiveTabId fn ─────
-
-export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetwork }) {
+export function buildBaseTools({ getTabId }) {
   return [
     // ── 1. The escape hatch: raw eval ────────────────────────────────
     {
       path: "/eval",
       description:
-        "Run arbitrary JavaScript in the page's main world. Use this FIRST on unfamiliar sites to explore the DOM, locate selectors, and figure out what other tools you should compose. The code runs as a function body; whatever you `return` is sent back (serialized via JSON). Async: you may `return await ...`. Errors are surfaced. KEEP RESULTS SMALL — large DOM dumps are expensive; prefer targeted queries.",
+        "Run arbitrary JavaScript in the connected tab's main world. Use this FIRST on unfamiliar sites to explore the DOM, locate selectors, and figure out what other tools you should compose. The code runs as a function body; whatever you `return` is sent back (serialized via JSON). Async: you may `return await ...`. Errors are surfaced. KEEP RESULTS SMALL — large DOM dumps are expensive; prefer targeted queries.",
       input_schema: {
         type: "object",
         required: ["code"],
@@ -202,120 +196,20 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
         const args = parseBody(body)
         if (typeof args.code !== "string") return bad("expected { code: string }")
         const timeoutMs = Math.min(Math.max(args.timeout_ms ?? 5000, 100), 30000)
-        const tabId = await getActiveTabId()
-        if (!tabId) return runtimeError(new Error("no active tab"))
-
-        // Primary path: chrome.userScripts.execute injects raw source via the
-        // user-scripts world, which bypasses the page's CSP entirely (no
-        // 'unsafe-eval' needed). Requires the user to have toggled "Allow User
-        // Scripts" on this extension in chrome://extensions.
-        if (chrome.userScripts && typeof chrome.userScripts.execute === "function") {
-          try {
-            const wrapped = buildEvalScript(args.code, timeoutMs)
-            const results = await chrome.userScripts.execute({
-              target: { tabId },
-              world: "MAIN",
-              js: [{ code: wrapped }],
-            })
-            const r = Array.isArray(results) ? results[0] : null
-            if (r?.error) return runtimeError(new Error(typeof r.error === "string" ? r.error : (r.error.message ?? "user script error")))
-            const v = r?.result
-            if (v && typeof v === "object" && v.__err) {
-              return { status: 500, body: { error: { code: "runtime_error", message: v.__err, stack: v.__stack } } }
-            }
-            return v
-          } catch (e) {
-            const msg = e?.message ?? String(e)
-            if (/user scripts? api is not allowed|user scripts? not allowed|developer mode|allow user scripts/i.test(msg)) {
-              return {
-                status: 400,
-                body: { error: {
-                  code: "user_scripts_not_enabled",
-                  message: "chrome.userScripts is disabled on this extension. /eval is blocked by site CSP without it. Enable: open chrome://extensions, find 'Agent Socket', click Details, toggle 'Allow User Scripts' on, then reconnect this tab from the extension popup.",
-                } },
-              }
-            }
-            // Other failure (e.g. cross-origin frame) — fall through to the
-            // scripting.executeScript path which still works for sites without
-            // strict CSP and surfaces a more useful error for those that do.
-          }
-        }
-
-        // Fallback: scripting.executeScript with new Function(). Works on any
-        // site that doesn't ban 'unsafe-eval'. Sites like x.com, github.com,
-        // accounts.google.com will fail here — the error surfaces back to the
-        // agent so it can tell the user to enable user scripts.
-        try {
-          const result = await execInPage(getActiveTabId, async (code, timeoutMs) => {
-            try {
-              const AsyncFn = (async function () {}).constructor
-              const fn = new AsyncFn(code)
-              const p = Promise.resolve(fn())
-              const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("eval timeout")), timeoutMs))
-              const value = await Promise.race([p, timeout])
-              return { ok: true, value: safeSerialize(value) }
-            } catch (e) {
-              return { __err: e?.message ?? String(e), __stack: e?.stack }
-            }
-            function safeSerialize(v, depth = 0) {
-              if (depth > 6) return "[max depth]"
-              if (v === null || v === undefined) return v
-              const t = typeof v
-              if (t === "string" || t === "number" || t === "boolean") return v
-              if (t === "function") return `[Function ${v.name || "anonymous"}]`
-              if (t === "bigint") return v.toString() + "n"
-              if (v instanceof Element) {
-                return {
-                  __type: "Element",
-                  tag: v.tagName.toLowerCase(),
-                  id: v.id || undefined,
-                  classes: v.className && typeof v.className === "string" ? v.className : undefined,
-                  text: (v.textContent || "").slice(0, 200),
-                }
-              }
-              if (v instanceof NodeList || v instanceof HTMLCollection) {
-                return Array.from(v).slice(0, 50).map((x) => safeSerialize(x, depth + 1))
-              }
-              if (Array.isArray(v)) return v.slice(0, 200).map((x) => safeSerialize(x, depth + 1))
-              if (t === "object") {
-                const out = {}
-                let i = 0
-                for (const k of Object.keys(v)) {
-                  if (i++ > 100) { out["__truncated"] = true; break }
-                  try { out[k] = safeSerialize(v[k], depth + 1) } catch { out[k] = "[unserializable]" }
-                }
-                return out
-              }
-              return String(v)
-            }
-          }, [args.code, timeoutMs])
-          return result
-        } catch (e) {
-          const msg = e?.message ?? String(e)
-          // The classic CSP-strict-site error — point the agent at the fix.
-          if (/unsafe-eval|Content Security Policy/i.test(msg)) {
-            return {
-              status: 400,
-              body: { error: {
-                code: "csp_blocked_enable_user_scripts",
-                message: "This site's Content Security Policy blocks the fallback /eval path, and chrome.userScripts is not enabled. To run /eval here: open chrome://extensions, find 'Agent Socket', click Details, toggle 'Allow User Scripts' on, then reconnect this tab.",
-                page_error: msg,
-              } },
-            }
-          }
-          return runtimeError(e)
-        }
+        const tabId = await getTabId()
+        if (!tabId) return runtimeError(new Error("the connected tab is gone"))
+        return runPageCode(tabId, args.code, null, timeoutMs)
       },
     },
 
     // ── 2. Page info ─────────────────────────────────────────────────
     {
       path: "/page_info",
-      description: "Return basic info about the active tab: url, title, host, viewport, scroll position, document size, doc readyState, and a short text excerpt. Cheap; safe to call first.",
+      description: "Return basic info about the connected tab: url, title, host, viewport, scroll position, document size, doc readyState, and a short text excerpt. Cheap; safe to call first.",
       input_schema: { type: "object", properties: {} },
       handler: async () => {
         try {
-          const info = await execInPage(getActiveTabId, () => ({
+          const info = await execInPage(getTabId, () => ({
             url: location.href,
             host: location.host,
             title: document.title,
@@ -352,7 +246,7 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
           : ["href", "name", "type", "value", "aria-label", "role", "placeholder", "alt", "title"]
         const text_max = Math.min(Math.max(args.text_max ?? 200, 0), 5000)
         try {
-          const result = await execInPage(getActiveTabId, (selector, limit, attrs, textMax) => {
+          const result = await execInPage(getTabId, (selector, limit, attrs, textMax) => {
             let nodes
             try { nodes = document.querySelectorAll(selector) }
             catch (e) { return { __err: `bad selector: ${e.message}` } }
@@ -394,7 +288,7 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
         const args = parseBody(body)
         if (typeof args.selector !== "string") return bad("expected { selector: string }")
         try {
-          const result = await execInPage(getActiveTabId, (selector, nth) => {
+          const result = await execInPage(getTabId, (selector, nth) => {
             const nodes = document.querySelectorAll(selector)
             if (nodes.length <= nth) return { clicked: false, reason: `only ${nodes.length} matches for selector` }
             const el = nodes[nth]
@@ -432,7 +326,7 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
           return bad("expected { selector: string, value: string }")
         }
         try {
-          const result = await execInPage(getActiveTabId, (selector, value, append, submit) => {
+          const result = await execInPage(getTabId, (selector, value, append, submit) => {
             const el = document.querySelector(selector)
             if (!el) return { filled: false, reason: "no match" }
             try { el.scrollIntoView({ block: "center", behavior: "instant" }) } catch {}
@@ -482,7 +376,7 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
         const timeoutMs = Math.min(Math.max(args.timeout_ms ?? 5000, 100), 30000)
         const absent = !!args.absent
         try {
-          const result = await execInPage(getActiveTabId, async (selector, timeoutMs, absent) => {
+          const result = await execInPage(getTabId, async (selector, timeoutMs, absent) => {
             const deadline = Date.now() + timeoutMs
             while (Date.now() < deadline) {
               const el = document.querySelector(selector)
@@ -505,7 +399,7 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
     // ── 7. Navigate ─────────────────────────────────────────────────
     {
       path: "/navigate",
-      description: "Navigate the active tab to a URL. If `wait_load` is true (default), waits for `load` event before returning.",
+      description: "Navigate the connected tab to an http(s) URL. If `wait_load` is true (default), waits for the `load` event before returning. Refuses local/private-network hosts (localhost, private/link-local/CGNAT IPs, single-label and .local/.lan/.internal names) by URL only — no DNS check. This is a guardrail, not a sandbox: /eval, /click and the page itself can still navigate anywhere.",
       input_schema: {
         type: "object",
         required: ["url"],
@@ -522,8 +416,8 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
         if (urlErr) return bad(urlErr)
         const wait = args.wait_load !== false
         const timeoutMs = Math.min(Math.max(args.timeout_ms ?? 15000, 100), 60000)
-        const tabId = await getActiveTabId()
-        if (!tabId) return runtimeError(new Error("no active tab"))
+        const tabId = await getTabId()
+        if (!tabId) return runtimeError(new Error("the connected tab is gone"))
         await chrome.tabs.update(tabId, { url: args.url })
         if (!wait) return { navigated: true }
         // Wait for tab status = complete
@@ -558,7 +452,7 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
       handler: async ({ body }) => {
         const args = parseBody(body)
         try {
-          const result = await execInPage(getActiveTabId, (a) => {
+          const result = await execInPage(getTabId, (a) => {
             if (a.selector) {
               const el = document.querySelector(a.selector)
               if (!el) return { scrolled: false, reason: "no match" }
@@ -595,7 +489,7 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
         const args = parseBody(body)
         const max = Math.min(Math.max(args.max ?? 4000, 1), 200000)
         try {
-          const result = await execInPage(getActiveTabId, (selector, max) => {
+          const result = await execInPage(getTabId, (selector, max) => {
             const root = selector ? document.querySelector(selector) : document.body
             if (!root) return { text: null, reason: "no match" }
             const text = (root.innerText || root.textContent || "").replace(/\n{3,}/g, "\n\n")
@@ -621,7 +515,7 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
         const args = parseBody(body)
         const max = Math.min(Math.max(args.max ?? 8000, 1), 200000)
         try {
-          const result = await execInPage(getActiveTabId, (selector, max) => {
+          const result = await execInPage(getTabId, (selector, max) => {
             const root = selector ? document.querySelector(selector) : document.documentElement
             if (!root) return { html: null, reason: "no match" }
             const h = root.outerHTML
@@ -635,128 +529,32 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
     // ── 11. Screenshot ──────────────────────────────────────────────
     {
       path: "/screenshot",
-      description: "Capture a PNG of the visible viewport of the active tab. Returns a data URL. Use sparingly — large.",
+      description: "Capture a PNG of the connected tab's visible viewport. Returns a data URL. Only works while the connected tab is the selected tab of its window (409 tab_not_visible otherwise). Use sparingly — large.",
       input_schema: {
         type: "object",
         properties: { format: { enum: ["png", "jpeg"], default: "png" }, quality: { type: "integer", minimum: 1, maximum: 100 } },
       },
       handler: async ({ body }) => {
         const args = parseBody(body)
-        const tabId = await getActiveTabId()
-        if (!tabId) return runtimeError(new Error("no active tab"))
+        const tabId = await getTabId()
+        if (!tabId) return runtimeError(new Error("the connected tab is gone"))
+        // captureVisibleTab grabs whatever tab is in front of the window, so
+        // only capture while that is the bound tab (checked again after).
+        const notVisible = { status: 409, body: { error: { code: "tab_not_visible", message: "The connected tab is not the selected tab of its window, so it can't be captured. Ask the user to switch to it." } } }
         const tab = await chrome.tabs.get(tabId)
+        if (!tab.active) return notVisible
         try {
           const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
             format: args.format ?? "png",
             ...(args.quality ? { quality: args.quality } : {}),
           })
+          if (!(await chrome.tabs.get(tabId)).active) return notVisible
           return { data_url: dataUrl, format: args.format ?? "png", bytes: dataUrl.length }
         } catch (e) { return runtimeError(e) }
       },
     },
 
-    // ── 12. Tabs list ───────────────────────────────────────────────
-    {
-      path: "/tabs_list",
-      description: "List open tabs in the current Chrome window. Returns id, url, title, active.",
-      input_schema: { type: "object", properties: {} },
-      handler: async () => {
-        try {
-          const tabs = await chrome.tabs.query({ currentWindow: true })
-          return tabs.map((t) => ({ id: t.id, url: t.url, title: t.title, active: t.active }))
-        } catch (e) { return runtimeError(e) }
-      },
-    },
-
-    // ── 13. Tabs switch ─────────────────────────────────────────────
-    {
-      path: "/tabs_switch",
-      description: "Switch the active tab to one by id. Subsequent tool calls operate on it.",
-      input_schema: { type: "object", required: ["id"], properties: { id: { type: "integer" } } },
-      handler: async ({ body }) => {
-        const args = parseBody(body)
-        if (typeof args.id !== "number") return bad("expected { id: integer }")
-        try { await chrome.tabs.update(args.id, { active: true }); return { switched: true, id: args.id } }
-        catch (e) { return runtimeError(e) }
-      },
-    },
-
-    // ── 14. Console log ─────────────────────────────────────────────
-    {
-      path: "/console_recent",
-      description: "Return the most recent N console messages from the active tab (captured by the extension).",
-      input_schema: { type: "object", properties: { limit: { type: "integer", default: 50, maximum: 500 } } },
-      handler: async ({ body }) => {
-        const args = parseBody(body)
-        const limit = Math.min(args.limit ?? 50, 500)
-        const tabId = await getActiveTabId()
-        return { messages: getRecentConsole(tabId, limit) }
-      },
-    },
-
-    // ── 15a. Configure a keybind slot ───────────────────────────────
-    {
-      path: "/configure_keybind",
-      description:
-        "Bind a keybind slot (1..4) to a URL. The user has 4 Chrome keyboard-shortcut slots; this tool sets which URL each one opens. When the user presses the slot's shortcut, the extension opens that URL in a BACKGROUND tab (no focus steal), mints a fresh agent-socket session against it, copies the session URL to the system clipboard, and surfaces a desktop notification. Pass an empty string for `url` to clear a slot. NOTE: the user must one-time assign actual keystrokes at chrome://extensions/shortcuts — this tool only sets the slot→URL mapping. Use /list_keybinds first to see what's already bound.",
-      input_schema: {
-        type: "object",
-        required: ["slot", "url"],
-        properties: {
-          slot: { type: "integer", minimum: 1, maximum: 4, description: "Slot number 1..4." },
-          url: { type: "string", description: "Full URL, e.g. https://www.reddit.com. Empty string clears the slot." },
-        },
-      },
-      handler: async ({ body }) => {
-        const args = parseBody(body)
-        if (!Number.isInteger(args.slot) || args.slot < 1 || args.slot > 4) {
-          return bad("expected { slot: 1..4 }")
-        }
-        if (typeof args.url !== "string") return bad("expected { url: string }")
-        const all = (await chrome.storage.local.get("keybind_slots")).keybind_slots ?? {}
-        if (args.url === "") delete all[String(args.slot)]
-        else all[String(args.slot)] = args.url
-        await chrome.storage.local.set({ keybind_slots: all })
-        let shortcut = null
-        try {
-          const cmds = await chrome.commands.getAll()
-          shortcut = cmds.find((c) => c.name === `connect-slot-${args.slot}`)?.shortcut || null
-        } catch {}
-        return {
-          slot: args.slot,
-          url: args.url,
-          slots: all,
-          shortcut,
-          note: shortcut
-            ? `Slot ${args.slot} bound. Press ${shortcut} to mint a session.`
-            : `Slot ${args.slot} bound, but no keystroke is assigned to it yet. User: open chrome://extensions/shortcuts and assign a key for "agent-socket: connect slot ${args.slot}".`,
-        }
-      },
-    },
-
-    // ── 15b. List configured keybinds ───────────────────────────────
-    {
-      path: "/list_keybinds",
-      description:
-        "Return the current keybind slot→URL mapping and the actual Chrome keystrokes assigned (if any). Use to check what's configured before (re)binding a slot, or to tell the user which keystroke to press for a given site.",
-      input_schema: { type: "object", properties: {} },
-      handler: async () => {
-        const slots = (await chrome.storage.local.get("keybind_slots")).keybind_slots ?? {}
-        let commands = []
-        try { commands = await chrome.commands.getAll() } catch {}
-        const summary = [1, 2, 3, 4].map((n) => {
-          const cmd = commands.find((c) => c.name === `connect-slot-${n}`)
-          return {
-            slot: n,
-            url: slots[String(n)] ?? null,
-            shortcut: cmd?.shortcut || null,
-          }
-        })
-        return { slots: summary }
-      },
-    },
-
-    // ── 16. Save profile ────────────────────────────────────────────
+    // ── 12. Save profile ────────────────────────────────────────────
     {
       path: "/save_site_profile",
       description: "Persist a discovered toolset (a list of tool definitions agents can later call) keyed by hostname. Use after exploring a new site with /eval. The profile is stored in chrome.storage and surfaced as extra tools on subsequent connections to that host. NOTE: this does NOT mutate the live session; the user must reconnect for new tools to be served by the relay.",
@@ -807,7 +605,7 @@ export function buildBaseTools({ getActiveTabId, getRecentConsole, getRecentNetw
 // is a JS body executed in the page main world. `args` is the parsed body
 // (object). Whatever it `return`s becomes the response body.
 
-export function buildSiteTools(profile, getActiveTabId) {
+export function buildSiteTools(profile, getTabId) {
   if (!profile || !Array.isArray(profile.tools)) return []
   return profile.tools.map((t) => ({
     method: t.method,
@@ -815,75 +613,9 @@ export function buildSiteTools(profile, getActiveTabId) {
     description: t.description,
     input_schema: t.input_schema,
     handler: async ({ body }) => {
-      const args = parseBody(body)
-      const timeoutMs = 30000
-      const tabId = await getActiveTabId()
-      if (!tabId) return runtimeError(new Error("no active tab"))
-
-      // Primary path: chrome.userScripts.execute injects raw source via the
-      // user-scripts world, which bypasses the page's CSP entirely (no
-      // 'unsafe-eval' needed). Required for strict-CSP sites like reddit.com.
-      // Requires the user to have toggled "Allow User Scripts" on this
-      // extension in chrome://extensions.
-      if (chrome.userScripts && typeof chrome.userScripts.execute === "function") {
-        try {
-          const wrapped = buildSiteToolScript(t.code, args, timeoutMs)
-          const results = await chrome.userScripts.execute({
-            target: { tabId },
-            world: "MAIN",
-            js: [{ code: wrapped }],
-          })
-          const r = Array.isArray(results) ? results[0] : null
-          if (r?.error) return runtimeError(new Error(typeof r.error === "string" ? r.error : (r.error.message ?? "user script error")))
-          const v = r?.result
-          if (v && typeof v === "object" && v.__err) {
-            return { status: 500, body: { error: { code: "runtime_error", message: v.__err, stack: v.__stack } } }
-          }
-          return v
-        } catch (e) {
-          const msg = e?.message ?? String(e)
-          if (/user scripts? api is not allowed|user scripts? not allowed|developer mode|allow user scripts/i.test(msg)) {
-            return {
-              status: 400,
-              body: { error: {
-                code: "user_scripts_not_enabled",
-                message: "chrome.userScripts is disabled on this extension. Site-specific tools are blocked by site CSP without it. Enable: open chrome://extensions, find 'Agent Socket', click Details, toggle 'Allow User Scripts' on, then reconnect this tab from the extension popup.",
-              } },
-            }
-          }
-          // Other failure (e.g. cross-origin frame) — fall through to the
-          // scripting.executeScript path. Works on any site without strict CSP.
-        }
-      }
-
-      // Fallback: scripting.executeScript with new Function(). Hits page CSP
-      // on strict-CSP sites (reddit.com, x.com, github.com), but the resulting
-      // error message points the agent at the user-scripts toggle.
-      try {
-        const result = await execInPage(getActiveTabId, async (code, args) => {
-          try {
-            const AsyncFn = (async function () {}).constructor
-            const fn = new AsyncFn("args", code)
-            return { ok: true, value: await fn(args) }
-          } catch (e) {
-            return { __err: e?.message ?? String(e), __stack: e?.stack }
-          }
-        }, [t.code, args])
-        return result
-      } catch (e) {
-        const msg = e?.message ?? String(e)
-        if (/unsafe-eval|Content Security Policy/i.test(msg)) {
-          return {
-            status: 400,
-            body: { error: {
-              code: "csp_blocked_enable_user_scripts",
-              message: "This site's CSP blocks the fallback site-tool path, and chrome.userScripts is not enabled. To run site tools here: open chrome://extensions, find 'Agent Socket', click Details, toggle 'Allow User Scripts' on, then reconnect this tab.",
-              page_error: msg,
-            } },
-          }
-        }
-        return runtimeError(e)
-      }
+      const tabId = await getTabId()
+      if (!tabId) return runtimeError(new Error("the connected tab is gone"))
+      return runPageCode(tabId, t.code, parseBody(body), 30000)
     },
   }))
 }

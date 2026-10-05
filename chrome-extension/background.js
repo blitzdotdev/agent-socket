@@ -1,62 +1,35 @@
 // Background service worker.
 //
 // Owns the WebSocket connection to the agent-socket relay. Builds the tool
-// list from base tools + the active tab's site profile (if any). Dispatches
-// tool_call frames to handlers that run chrome.scripting.executeScript in the
-// page's MAIN world.
+// list from base tools + the bound tab's site profile (if any). Tool handlers
+// only ever touch the bound tab, which shows a toolbar badge and an in-page
+// pill (pill.js) while the session lasts.
 
 import { connect, exponentialBackoff } from "./lib/sdk/index.js"
-import { buildBaseTools, buildSiteTools } from "./lib/tools-base.js"
+import { buildBaseTools, buildSiteTools, userScriptsAvailable } from "./lib/tools-base.js"
 
 // ── state ──────────────────────────────────────────────────────────
 let session = null         // SDK Session — owns the WS to the relay
-let lastStatus = { status: "idle" }
+let lastStatus = { status: "idle" }  // idle | connecting | connected | disconnected | reconnect-failed | closed
 let lastUrl = null
 let lastToken = null
-let lastProfile = null     // site profile loaded for the currently-bound tab
-let boundTabId = null      // the tab we last connected for (so we know which one to "drive")
-
-// emitStatus is the popup-facing status stream. The SDK exposes a granular
-// onDisconnect + onSessionChanged surface; this wraps both into the
-// "connecting / connected / disconnected / reconnect-failed / closed / idle"
-// vocabulary that popup.js already speaks.
-function emitStatus(s) {
-  lastStatus = s
-  void chrome.storage.session?.set?.({ status: s }).catch(() => {})
-  try { chrome.runtime.sendMessage({ type: "status", status: s }).catch(() => {}) } catch {}
-}
-
-// Recent console messages per tab, kept in-memory.
-const consoleByTab = new Map()  // tabId → [{ level, text, ts }]
-const MAX_CONSOLE_PER_TAB = 200
+let lastProfile = null     // site profile loaded for the bound tab
+let boundTabId = null      // the one tab tool calls may touch
+let lastToolCallAt = null  // the relay serves agents.md/tools.json itself; tool calls are our only sign of the AI
+let connecting = null      // in-flight startConnect, so double clicks don't open two sessions
 
 // Default relay base. Overridable in the popup via chrome.storage.local.relay_base.
 const DEFAULT_BASE = "https://agentsocket.dev"
+// Requested from the popup on Connect (a user gesture), not at install.
+const SITE_ACCESS = { origins: ["<all_urls>"] }
 
 // ── helpers ────────────────────────────────────────────────────────
 
-async function getActiveTabId() {
-  // SECURITY: once a session is bound to a tab, tool calls must ONLY ever
-  // touch that tab. If the bound tab is gone, return null and let the caller
-  // fail the tool call — we must NOT silently fall back to whatever tab the
-  // user is currently looking at (that would let a remote AI drive the user's
-  // banking/email/etc. tab the moment the bound tab closes, defeating the
-  // per-tab activation gate that is the extension's core containment).
-  if (boundTabId != null) {
-    try {
-      const t = await chrome.tabs.get(boundTabId)
-      if (t) return t.id
-    } catch { /* bound tab gone */ }
-    return null  // bound but dead → fail closed, never substitute the active tab
-  }
-  // No session bound yet (e.g. the initial popup "Connect this tab" flow):
-  // the active tab is the legitimate target to bind.
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  return tab?.id ?? null
-}
-
-function getRecentConsole(tabId, limit) {
-  return (consoleByTab.get(tabId) ?? []).slice(-limit)
+async function getBoundTabId() {
+  // SECURITY: tool calls must ONLY ever touch the bound tab. If it's gone,
+  // fail closed — never substitute whatever tab the user is looking at.
+  if (boundTabId == null) return null
+  try { return (await chrome.tabs.get(boundTabId)).id } catch { return null }
 }
 
 async function loadSiteProfileForUrl(url) {
@@ -89,10 +62,10 @@ async function loadSiteProfileForUrl(url) {
 function buildAgentsMd({ host, profile, tools }) {
   const tooLines = tools.map((t) => `- \`${(t.method ?? "POST")} ${t.path}\` — ${t.description.split("\n")[0]}`).join("\n")
   return [
-    `# Agent Socket — driving \`${host || "the active browser tab"}\``,
+    `# Agent Socket — driving \`${host || "a browser tab"}\``,
     "",
-    "You are connected to a Chrome extension that exposes the user's active",
-    "browser tab as a set of HTTPS tool endpoints. Each call runs in the page's",
+    "You are connected to a Chrome extension that exposes one browser tab the",
+    "user chose as a set of HTTPS tool endpoints. Each call runs in the page's",
     "main world (it sees the same JS globals as if you'd opened DevTools).",
     "",
     "**Start by calling `POST /page_info`** to see what's on screen. Then use",
@@ -114,297 +87,173 @@ function buildAgentsMd({ host, profile, tools }) {
   ].filter(Boolean).join("\n")
 }
 
+// ── indicator: per-tab badge + in-page pill ─────────────────────────
+
+async function showIndicator(tabId) {
+  await chrome.action.setBadgeText({ tabId, text: "AI" }).catch(() => {})
+  await chrome.action.setBadgeBackgroundColor({ tabId, color: "#f06" }).catch(() => {})
+  await chrome.scripting.executeScript({ target: { tabId }, files: ["pill.js"] }).catch(() => {})
+}
+
+async function hideIndicator(tabId) {
+  await chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {})
+  await chrome.tabs.sendMessage(tabId, { type: "as_pill_remove" }).catch(() => {})
+}
+
+// Navigations reset per-tab badges and drop the pill; put both back.
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (tabId === boundTabId && info.status === "complete") void showIndicator(tabId)
+})
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (tabId === boundTabId) void stopConnect()
+})
+
+// A service-worker restart loses the session; clear the indicator it left.
+chrome.storage.session.get("bound_tab").then(({ bound_tab }) => {
+  if (bound_tab == null || bound_tab === boundTabId) return
+  void hideIndicator(bound_tab)
+  void chrome.storage.session.remove("bound_tab")
+}).catch(() => {})
+
 // ── connection lifecycle ──────────────────────────────────────────
 
-async function startConnect(opts) {
-  // Keybind-driven flow passes opts.tabId to bind a specific (usually
-  // background) tab. If a session already exists on a DIFFERENT tab, tear it
-  // down first so the new keybind press is the active session. Same-tab
-  // re-presses short-circuit.
-  if (session && session.connected) {
-    if (opts?.tabId && opts.tabId !== boundTabId) {
-      await stopConnect()
-    } else {
-      return { status: "already_connected", info: lastStatus, url: lastUrl, token: lastToken }
-    }
-  }
-  const base = opts?.base ?? (await chrome.storage.local.get("relay_base")).relay_base ?? DEFAULT_BASE
+function startConnect(tabId) {
+  connecting ??= doConnect(tabId).finally(() => { connecting = null })
+  return connecting
+}
 
-  // Capture which tab we're binding to. Keybind callers pass opts.tabId; the
-  // popup path falls back to the user's currently-active tab.
-  const activeTab = opts?.tabId
-    ? await chrome.tabs.get(opts.tabId).catch(() => null)
+async function doConnect(tabId) {
+  const tab = tabId != null
+    ? await chrome.tabs.get(tabId).catch(() => null)
     : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
-  if (!activeTab) throw new Error("no active tab to bind")
-  boundTabId = activeTab.id
-  lastProfile = await loadSiteProfileForUrl(activeTab.url)
-  const host = (() => { try { return new URL(activeTab.url).host } catch { return "" } })()
+  if (!tab) throw new Error("no tab to bind")
+  if (session) {
+    if (tab.id === boundTabId && session.connected) {
+      return { status: "already_connected", url: lastUrl, host: hostOf(tab.url), profile: lastProfile?.host ?? null }
+    }
+    await stopConnect()
+  }
+  if (!(await chrome.permissions.contains(SITE_ACCESS))) {
+    throw new Error("site access not granted — click Connect in the extension popup to allow it")
+  }
+  const base = (await chrome.storage.local.get("relay_base")).relay_base || DEFAULT_BASE
 
-  const baseTools = buildBaseTools({ getActiveTabId, getRecentConsole })
-  const siteTools = buildSiteTools(lastProfile, getActiveTabId)
-  const tools = [...baseTools, ...siteTools]
+  boundTabId = tab.id
+  lastToolCallAt = null
+  lastProfile = await loadSiteProfileForUrl(tab.url)
+  const host = hostOf(tab.url)
+
+  const tools = [
+    ...buildBaseTools({ getTabId: getBoundTabId }),
+    ...buildSiteTools(lastProfile, getBoundTabId),
+  ].map((t) => ({ ...t, handler: (ctx) => { lastToolCallAt = Date.now(); return t.handler(ctx) } }))
   const agentsMd = buildAgentsMd({ host, profile: lastProfile, tools })
 
   emitStatus({ status: "connecting" })
-
-  // Reconnect backoff is the SDK default; we keep a single instance across
-  // the session so the attempt counter passes through cleanly.
   const reconnectBackoff = exponentialBackoff()
-
+  let s
   try {
-    session = await connect({
+    s = await connect({
       baseUrl: base,
       appId: "as_app_anon",
-      appDescription: `Chrome extension driving an active tab on ${host || "unknown host"}.`,
+      appDescription: `Chrome extension driving one browser tab on ${host || "unknown host"}.`,
       agentsMd,
       tools,
       onDisconnect: (info) => {
-        // First fire (attempt=1) = initial WS close; subsequent fires =
-        // a reconnect attempt's connect() threw. Emit the matching legacy
-        // status name so popup.js doesn't have to learn a new vocabulary.
-        emitStatus({
-          status: info.attempt === 1 ? "disconnected" : "reconnect-failed",
-          reason: info.reason,
-          ...(info.attempt > 1 ? { attempt: info.attempt } : {}),
-        })
+        if (session && s !== session) return info.giveUp()
+        // attempt 1 = the WS just dropped; later = a reconnect attempt failed.
+        emitStatus({ status: info.attempt === 1 ? "disconnected" : "reconnect-failed", reason: info.reason, attempt: info.attempt })
         reconnectBackoff(info)
       },
-      // After a successful reconnect with a new session-id, the SDK has
-      // already re-minted our token under the same label. Update lastUrl
-      // and tell the popup so it can refresh its "paste this URL" pill.
-      onSessionChanged: ({ sessionId, tokensRemapped }) => {
-        const fresh = tokensRemapped.get(lastUrl)
-        if (fresh) {
-          lastUrl = fresh
-          void chrome.storage.local.set({ last_url: lastUrl }).catch(() => {})
-          try { chrome.runtime.sendMessage({ type: "url_changed", url: lastUrl }).catch(() => {}) } catch {}
-        }
+      // After a reconnect the SDK has re-minted our token under a new
+      // session-id; pick up the new URL + token (or mint one if that failed).
+      onSessionChanged: async ({ sessionId, tokensRemapped }) => {
+        if (s !== session) return
+        try {
+          const fresh = tokensRemapped.get(lastUrl)
+          const link = fresh
+            ? (await s.listAgentTokens()).find((t) => t.url === fresh)
+            : await s.mintAgentToken({ label: "chrome-extension" })
+          lastUrl = link?.url ?? null
+          lastToken = link?.token ?? null
+        } catch { lastUrl = lastToken = null }
         emitStatus({ status: "connected", sessionId })
       },
     })
+    if (boundTabId !== tab.id) throw new Error("connect cancelled")  // tab closed or Stop pressed meanwhile
+    const link = await s.mintAgentToken({ label: "chrome-extension" })
+    if (boundTabId !== tab.id) throw new Error("connect cancelled")
+    session = s
+    lastUrl = link.url
+    lastToken = link.token
   } catch (e) {
+    s?.close()
+    if (boundTabId === tab.id) { boundTabId = null; lastProfile = null }
     emitStatus({ status: "closed", reason: e?.message ?? String(e) })
-    session = null
     throw e
   }
-
+  await chrome.storage.session.set({ bound_tab: tab.id })
   emitStatus({ status: "connected", sessionId: session.sessionId })
-
-  const link = await session.mintAgentToken({ label: "chrome-extension" })
-  lastUrl = link.url
-  lastToken = link.token
-  await chrome.storage.local.set({ last_url: lastUrl, last_token: lastToken })
-  return { status: "connected", info: lastStatus, url: lastUrl, token: lastToken, host, profile: lastProfile?.host ?? null, tool_count: tools.length }
+  await showIndicator(tab.id)
+  return { status: "connected", url: lastUrl, host, profile: lastProfile?.host ?? null, tool_count: tools.length }
 }
 
 async function stopConnect() {
-  if (session) {
-    try { session.close() } catch {}
-    session = null
-  }
-  lastUrl = null
-  lastToken = null
+  const s = session, token = lastToken, tabId = boundTabId
+  session = null
+  lastUrl = lastToken = lastProfile = lastToolCallAt = null
   boundTabId = null
-  lastProfile = null
-  await chrome.storage.local.remove(["last_url", "last_token"])
   emitStatus({ status: "idle" })
+  if (s) {
+    // Closing the socket kills every token on the relay; revoke first anyway.
+    if (token && s.connected) await Promise.race([s.revokeAgentToken(token).catch(() => {}), new Promise((r) => setTimeout(r, 2000))])
+    s.close()
+  }
+  await chrome.storage.session.remove("bound_tab").catch(() => {})
+  if (tabId != null) await hideIndicator(tabId)
   return { status: "idle" }
 }
 
+function emitStatus(s) { lastStatus = s }
+
+function hostOf(url) { try { return new URL(url).host } catch { return "" } }
+
 async function snapshot() {
+  const tab = boundTabId != null ? await chrome.tabs.get(boundTabId).catch(() => null) : null
   return {
     status: lastStatus,
     url: lastUrl,
-    token: lastToken,
-    boundTabId,
-    profileHost: lastProfile?.host ?? null,
     connected: session?.connected ?? false,
+    boundTab: tab && { id: tab.id, windowId: tab.windowId, title: tab.title, url: tab.url, favIconUrl: tab.favIconUrl },
+    profileHost: lastProfile?.host ?? null,
+    lastToolCallAt,
   }
 }
 
-// ── userScripts availability check ──────────────────────────────────
-// chrome.userScripts is the privileged API used by /eval to bypass page CSP.
-// It exists only when the user has toggled "Allow User Scripts" on this
-// extension in chrome://extensions. Calling getScripts() is the cheapest way
-// to distinguish (a) API not present (b) present but user-gated off (c) ready.
-async function checkUserScripts() {
-  if (!chrome.userScripts || typeof chrome.userScripts.execute !== "function") {
-    return { available: false, reason: "api_unavailable",
-      hint: "Your Chrome version doesn't expose chrome.userScripts.execute (need Chrome 135+)." }
-  }
-  try {
-    await chrome.userScripts.getScripts()
-    return { available: true }
-  } catch (e) {
-    return { available: false, reason: "user_toggle_off",
-      hint: "Open chrome://extensions, find Agent Socket → Details → enable 'Allow User Scripts'.",
-      error: e?.message ?? String(e) }
-  }
-}
+// ── popup + pill messaging ──────────────────────────────────────────
 
-// ── keybind-driven background-tab connect ──────────────────────────
-// Each user-assigned shortcut fires `connect-slot-N`. We look up the slot's
-// URL from chrome.storage.local.keybind_slots (managed by the agent via the
-// /configure_keybind tool), open it in a background tab without focus-
-// stealing, wait for the page to be scriptable, mint a session, copy the URL
-// to the clipboard, and surface a desktop notification.
-
-function waitForTabComplete(tabId, timeoutMs = 20000) {
-  return new Promise((resolve, reject) => {
-    let settled = false
-    const done = (ok, err) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      chrome.tabs.onUpdated.removeListener(listener)
-      chrome.tabs.onRemoved.removeListener(removed)
-      ok ? resolve() : reject(err)
-    }
-    const timer = setTimeout(() => done(false, new Error("tab load timeout")), timeoutMs)
-    function listener(id, info) {
-      if (id === tabId && info.status === "complete") done(true)
-    }
-    function removed(id) {
-      if (id === tabId) done(false, new Error("tab closed before load completed"))
-    }
-    chrome.tabs.onUpdated.addListener(listener)
-    chrome.tabs.onRemoved.addListener(removed)
-    chrome.tabs.get(tabId).then((t) => {
-      if (t?.status === "complete") done(true)
-    }).catch((e) => done(false, e))
-  })
-}
-
-let _offscreenSetup = null
-async function ensureOffscreen() {
-  if (!chrome.offscreen) throw new Error("chrome.offscreen unavailable")
-  if (_offscreenSetup) return _offscreenSetup
-  _offscreenSetup = (async () => {
-    const has = await chrome.offscreen.hasDocument?.()
-    if (has) return
-    await chrome.offscreen.createDocument({
-      url: chrome.runtime.getURL("offscreen.html"),
-      reasons: ["CLIPBOARD"],
-      justification: "Copy minted agent-socket session URL after keybind connect.",
-    })
-  })()
-  try { await _offscreenSetup } catch (e) { _offscreenSetup = null; throw e }
-}
-
-async function copyToClipboard(text) {
-  try {
-    await ensureOffscreen()
-    const res = await chrome.runtime.sendMessage({ __as_target: "offscreen", type: "copy", text })
-    return !!res?.ok
-  } catch (e) {
-    console.warn("[as-ext] copyToClipboard failed:", e)
-    return false
-  }
-}
-
-async function notify(title, message) {
-  try {
-    if (!chrome.notifications) return
-    await new Promise((resolve) => {
-      chrome.notifications.create("", {
-        type: "basic",
-        iconUrl: chrome.runtime.getURL("icons/icon-128.png"),
-        title,
-        message: message ?? "",
-        priority: 1,
-      }, () => resolve())
-    })
-  } catch (e) { console.warn("[as-ext] notify failed:", e) }
-}
-
-async function connectViaSlot(slot) {
-  const { keybind_slots = {} } = await chrome.storage.local.get("keybind_slots")
-  const url = keybind_slots[String(slot)]
-  if (!url) {
-    await notify(`agent-socket slot ${slot}`, `No URL configured. Ask the agent to run /configure_keybind { slot: ${slot}, url: "https://…" }.`)
-    return { ok: false, error: "slot_not_configured", slot }
-  }
-  let host = ""
-  try { host = new URL(url).host } catch {}
-
-  let tab
-  try {
-    tab = await chrome.tabs.create({ url, active: false })
-  } catch (e) {
-    await notify(`agent-socket slot ${slot}`, `Failed to open tab: ${e?.message ?? String(e)}`)
-    return { ok: false, error: e?.message ?? String(e) }
-  }
-
-  try {
-    await waitForTabComplete(tab.id, 25000)
-  } catch (e) {
-    await notify(`agent-socket slot ${slot}`, `Tab load timed out for ${host || url}.`)
-    return { ok: false, error: "tab_load_timeout", url }
-  }
-
-  let res
-  try {
-    res = await startConnect({ tabId: tab.id })
-  } catch (e) {
-    await notify(`agent-socket slot ${slot}`, `Connect failed: ${e?.message ?? String(e)}`)
-    return { ok: false, error: e?.message ?? String(e) }
-  }
-
-  const copied = await copyToClipboard(res.url ?? "")
-  const tools = res.tool_count != null ? `${res.tool_count} tools` : "ready"
-  const msg = copied
-    ? `URL copied (${tools}). Paste into your AI.`
-    : `URL: ${res.url}`
-  await notify(`agent-socket: ${host || "session ready"}`, msg)
-  return { ok: true, slot, url: res.url, tab_id: tab.id, copied }
-}
-
-chrome.commands?.onCommand?.addListener((command) => {
-  const m = command?.match?.(/^connect-slot-(\d+)$/)
-  if (!m) return
-  void connectViaSlot(parseInt(m[1], 10))
-})
-
-// ── popup messaging ─────────────────────────────────────────────────
-
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  // Offscreen doc has its own listener for these; don't compete.
-  if (msg?.__as_target === "offscreen") return false
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   ;(async () => {
     try {
-      if (msg?.type === "connect") sendResponse({ ok: true, ...(await startConnect(msg.opts)) })
+      if (msg?.type === "connect") sendResponse({ ok: true, ...(await startConnect(msg.tabId)) })
       else if (msg?.type === "disconnect") sendResponse({ ok: true, ...(await stopConnect()) })
       else if (msg?.type === "snapshot") sendResponse({ ok: true, ...(await snapshot()) })
-      else if (msg?.type === "list_profiles") {
+      else if (msg?.type === "pill_state") {
+        sendResponse({ bound: sender.tab?.id != null && sender.tab.id === boundTabId, status: lastStatus.status, lastToolCallAt })
+      } else if (msg?.type === "list_profiles") {
         const stored = (await chrome.storage.local.get("site_profiles")).site_profiles ?? {}
-        sendResponse({ ok: true, saved: Object.keys(stored), saved_full: stored })
+        sendResponse({ ok: true, saved: Object.keys(stored) })
       } else if (msg?.type === "delete_profile") {
         const all = (await chrome.storage.local.get("site_profiles")).site_profiles ?? {}
         delete all[msg.host]
         await chrome.storage.local.set({ site_profiles: all })
         sendResponse({ ok: true })
+      } else if (msg?.type === "check_user_scripts") {
+        sendResponse({ ok: true, available: userScriptsAvailable() })
       } else if (msg?.type === "set_relay_base") {
         await chrome.storage.local.set({ relay_base: msg.base })
         sendResponse({ ok: true })
-      } else if (msg?.type === "check_user_scripts") {
-        sendResponse({ ok: true, ...(await checkUserScripts()) })
-      } else if (msg?.type === "get_keybinds") {
-        const slots = (await chrome.storage.local.get("keybind_slots")).keybind_slots ?? {}
-        let commands = []
-        try { commands = await chrome.commands.getAll() } catch {}
-        sendResponse({ ok: true, slots, commands })
-      } else if (msg?.type === "set_keybind") {
-        const slot = msg.slot
-        const url = msg.url
-        if (!Number.isInteger(slot) || slot < 1 || slot > 4) {
-          sendResponse({ ok: false, error: "slot must be 1..4" })
-        } else {
-          const all = (await chrome.storage.local.get("keybind_slots")).keybind_slots ?? {}
-          if (!url) delete all[String(slot)]
-          else all[String(slot)] = String(url)
-          await chrome.storage.local.set({ keybind_slots: all })
-          sendResponse({ ok: true, slots: all })
-        }
       } else {
         sendResponse({ ok: false, error: `unknown message: ${msg?.type}` })
       }
@@ -415,100 +264,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return true  // async response
 })
 
-// ── test/devtools surface ───────────────────────────────────────────
-// Expose the lifecycle handlers on self so puppeteer can drive them via
-// the service-worker target during E2E tests. No-op for normal users; this
-// just mirrors what the popup already does via chrome.runtime.sendMessage.
-self.__as_internal = {
-  startConnect,
-  stopConnect,
-  snapshot,
-  loadSiteProfileForUrl,
-  getActiveTabId,
-}
-
 // ── keep-alive: MV3 service workers idle-kill after ~30s ──────────
 // Chrome wakes the SW briefly when an alarm fires, but the SW goes right
-// back to sleep unless something exercises it. A no-op alarm handler is
-// useless. Calling session.ping() sends a real WS ping frame — the
-// outbound write + the inbound pong dispatch both run through the SW,
-// keeping it (and therefore the WebSocket) alive.
+// back to sleep unless something exercises it. Calling session.ping() sends
+// a real WS ping frame — the outbound write + the inbound pong dispatch both
+// run through the SW, keeping it (and therefore the WebSocket) alive.
 //
-// Chrome MV3 clamps periodInMinutes to a minimum of 0.5 (30s) in packed
-// extensions, regardless of what we ask for. The relay's HEARTBEAT_TIMEOUT_MS
-// is 50s — generous enough that a 30s alarm period keeps the connection
-// alive (alarm wakes SW → session.ping() → pong) before the relay times out.
+// Chrome MV3 clamps periodInMinutes to a minimum of 0.5 (30s). The relay's
+// HEARTBEAT_TIMEOUT_MS is 50s, so a 30s alarm keeps the connection alive.
 chrome.alarms.create("as-keepalive", { periodInMinutes: 0.5 })
 chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === "as-keepalive") {
-    if (session?.connected) session.ping()
-  }
-})
-
-// ── console capture: attach a small listener via content scripts ────
-// We can't directly hook console.* across pages from a SW; instead, we inject
-// a tiny logger on tab updates. It only sends back recent messages on demand
-// (the agent calls /console_recent which forwards a request to the page).
-chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.status !== "complete") return
-  // The injected listener runs in MAIN world and stashes messages on window.
-  chrome.scripting.executeScript({
-    target: { tabId },
-    world: "MAIN",
-    func: () => {
-      if (window.__as_console_hook__) return
-      window.__as_console_hook__ = true
-      window.__as_console = []
-      const orig = {}
-      for (const lvl of ["log", "info", "warn", "error", "debug"]) {
-        orig[lvl] = console[lvl].bind(console)
-        console[lvl] = (...args) => {
-          try {
-            const text = args.map((a) => {
-              try { return typeof a === "string" ? a : JSON.stringify(a) } catch { return String(a) }
-            }).join(" ").slice(0, 1000)
-            window.__as_console.push({ level: lvl, text, ts: Date.now() })
-            if (window.__as_console.length > 500) window.__as_console.shift()
-          } catch {}
-          orig[lvl](...args)
-        }
-      }
-    },
-  }).catch(() => { /* not all pages allow injection */ })
-})
-
-// When the popup or a tool asks for recent console messages, pull them from
-// the page. The /console_recent handler gets them via this mirror function.
-async function pullConsoleFromPage(tabId, limit) {
-  try {
-    const [r] = await chrome.scripting.executeScript({
-      target: { tabId },
-      world: "MAIN",
-      func: (limit) => (window.__as_console ?? []).slice(-limit),
-      args: [limit],
-    })
-    return r?.result ?? []
-  } catch { return [] }
-}
-
-// Patch the recent-console getter to actually fetch from the page. We declared
-// it synchronously above (closure-bound); rebind via the global, which the
-// base tools call. We do this by exporting from this module... but service
-// workers don't allow circular module shenanigans. Simpler: replace the
-// function used by getRecentConsole with an async one — but tools-base passes
-// a synchronous reference. So tools-base/console_recent reads from
-// consoleByTab; we update consoleByTab on demand. Cleaner alternative: when
-// /console_recent is called, refresh consoleByTab via pullConsoleFromPage.
-
-// Hook: every time the active tab changes or before tool dispatch, we refresh
-// the console cache. We can't easily hook tool dispatch, so we periodically
-// pull on an alarm. Cheap. (0.5 = Chrome MV3's clamped minimum in packed
-// extensions; asking for less is silently rounded up.)
-chrome.alarms.create("as-pull-console", { periodInMinutes: 0.5 })
-chrome.alarms.onAlarm.addListener(async (a) => {
-  if (a.name !== "as-pull-console") return
-  const tabId = await getActiveTabId()
-  if (!tabId) return
-  const msgs = await pullConsoleFromPage(tabId, MAX_CONSOLE_PER_TAB)
-  consoleByTab.set(tabId, msgs)
+  if (a.name === "as-keepalive" && session?.connected) session.ping()
 })
