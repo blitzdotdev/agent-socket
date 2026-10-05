@@ -5,6 +5,8 @@ export interface Env {
   WS_RATE_LIMIT: RateLimit
   MAX_SYNC_TOOL_MS: string
   HEARTBEAT_TIMEOUT_MS: string
+  // How long a dropped app's session is held for resume. 0 disables resume.
+  RESUME_GRACE_MS?: string
   DEBUG?: string
 }
 
@@ -21,6 +23,7 @@ export interface ToolDef {
 
 export type Frame =
   | RegisterFrame
+  | ResumeFrame
   | RegisterReplyFrame
   | MintAgentTokenFrame
   | MintAgentTokenReplyFrame
@@ -42,10 +45,30 @@ export interface RegisterFrame {
   tools: ToolDef[]
 }
 
+// Sent as the first frame on /v1/_ws?session=<sessionId> to reattach to a
+// session whose socket dropped. Carries a full registration, which replaces
+// the old one; tokens and async tasks carry over.
+export interface ResumeFrame {
+  type: "resume"
+  sessionId: string
+  secret: string  // register_reply.resumeSecret
+  appId: string
+  agentsMd: string
+  appDescription?: string
+  tools: ToolDef[]
+  /** Tokens the app revoked while it was offline. */
+  revokeTokens?: string[]
+}
+
 export interface RegisterReplyFrame {
   type: "register_reply"
   ok: boolean
   sessionId?: string
+  /** On success: present with `resume` to reattach after a drop. */
+  resumeSecret?: string
+  /** True when this reply answers a `resume`. */
+  resumed?: boolean
+  /** "resume_failed" (followed by close 4401) when a resume is refused. */
   error?: { code: string; message?: string }
 }
 

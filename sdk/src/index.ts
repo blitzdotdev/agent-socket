@@ -9,6 +9,8 @@ export type {
   DisconnectHandler,
   DisconnectInfo,
   ListedToken,
+  ReconnectHandler,
+  ReconnectInfo,
   Session,
   SessionChangedHandler,
   SessionChangedInfo,

@@ -576,7 +576,7 @@ footer a { color: var(--band-ink); }
 <span class="k">const</span> link = <span class="k">await</span> session.mintAgentToken({ label: <span class="s">"user-42"</span> })
 <span class="c">// show link.url next to a “Connect with AI” button</span></code></pre>
         </div>
-        <p class="muted">The SDK opens a WebSocket to the relay, registers your tools and mints paste-able links. It handles heartbeats and reconnects, and re-mints links if the session changes.</p>
+        <p class="muted">The SDK opens a WebSocket to the relay, registers your tools and mints paste-able links. It handles heartbeats and reconnects, resuming the same session so pasted links keep working, and re-mints links if the session is gone.</p>
       </div>
 
       <div class="tabset">
@@ -657,7 +657,7 @@ POST $BASE/set_pixel
       </div>
       <div>
         <h3>Self-host the relay</h3>
-        <p>One Cloudflare Worker with a Durable Object per session. Run <code>npx wrangler deploy</code> in <code>relay/</code> and point the SDK’s <code>baseUrl</code> at it. Session state lives in memory and is gone when your app disconnects.</p>
+        <p>One Cloudflare Worker with a Durable Object per session. Run <code>npx wrangler deploy</code> in <code>relay/</code> and point the SDK’s <code>baseUrl</code> at it. Session state lives in memory: held for a minute after your app drops so it can resume, gone when it disconnects for good.</p>
       </div>
       <div>
         <h3><a href="https://github.com/blitzdotdev/agent-socket/tree/master/examples/pixel-art-canvas">Try the smallest demo</a></h3>

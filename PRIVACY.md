@@ -32,12 +32,12 @@ This data is sent only in response to tool calls that arrive on the user's one-t
 
 ## How long data is retained
 
-- **Relay**: Sessions live in memory only while the user's tab is connected. When the user clicks Disconnect, closes the tab, or the WebSocket drops, the session is destroyed and any in-flight tool calls fail. Nothing persists across the session.
+- **Relay**: Sessions live in memory only. When the user clicks Disconnect or closes the tab, the session is destroyed and any in-flight tool calls fail. If the WebSocket drops unexpectedly (a network blip, or Chrome restarting the extension's background worker), in-flight tool calls fail and the relay keeps the session's registration and session URL valid in memory for up to 60 seconds so the extension can reconnect to it; tool calls arriving in that window are refused, and if the extension doesn't reconnect the session is destroyed. Nothing persists across the session.
 - **Extension**: Before the user clicks Connect, the extension stores nothing. Afterwards it keeps, on the user's machine only:
   - in `chrome.storage.local`: (a) the relay base URL, if the user changed it in Settings, and (b) site-specific tool profiles saved via the `/save_site_profile` tool (deletable from the popup's Settings);
-  - in `chrome.storage.session` (cleared when Chrome exits): the id of the connected tab, so a restarted extension can remove a stale "connected" indicator.
+  - in `chrome.storage.session` (held in memory, cleared when Chrome exits, not readable by web pages or content scripts) while a tab is connected: the id of the connected tab, the relay base URL, the session id, the session URL and token, and a random reconnect secret the relay issued for the session. This lets a restarted extension background worker reconnect to the same session, so the session URL the user pasted keeps working. It is removed on Disconnect, when the connected tab closes, or when reconnecting fails.
 
-  The session URL and token live only in memory and are discarded on disconnect. None of this is transmitted except the relay base URL, which decides where the session connects. Uninstalling the extension deletes all of it.
+  The session URL, token and reconnect secret are discarded on disconnect. None of this is transmitted except the relay base URL, which decides where the session connects, and the session id and reconnect secret, which go only to that relay when reconnecting. Uninstalling the extension deletes all of it.
 
 ## Third parties
 
@@ -45,7 +45,7 @@ We do not sell, rent, or share user data with third parties for advertising, mar
 
 ## User control
 
-- While a tab is connected it shows an "AI has access to this tab" bar with a Stop button and an "AI" badge on the extension icon. Stop (in the bar or the popup's "Stop & disconnect"), closing the tab, or restarting Chrome terminates the session and invalidates the session URL.
+- While a tab is connected it shows an "AI has access to this tab" bar with a Stop button and an "AI" badge on the extension icon. Stop (in the bar or the popup's "Stop & disconnect") or closing the tab terminates the session and invalidates the session URL at once; restarting Chrome does so within 60 seconds.
 - The session URL is the only authorization token.
 - The user can revoke the extension's site access or remove it at any time from `chrome://extensions`.
 - The `chrome.userScripts` API used by the `/eval` tool is additionally gated behind a per-extension "Allow User Scripts" toggle that the user must explicitly enable.

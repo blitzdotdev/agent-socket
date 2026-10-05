@@ -12,7 +12,7 @@ One Durable Object per active session (one app connected via WS). The DO owns:
 - The map of agent-tokens minted in this session.
 - A pending-request map: each agent's HTTPS call gets a generated request id, forwarded over the WS as a `tool_call` frame; the app's `tool_reply` (matched by id) resolves the original HTTPS response.
 
-When the WS drops the DO eventually dies. v0 has zero `ctx.storage` usage — channels reset to a fresh state on each connect.
+`register_reply` gives the app a resume secret. When the WS drops (anything but a clean 1000 close) the DO holds the registration, tokens and async tasks for `RESUME_GRACE_MS`; the app reattaches on `/v1/_ws?session=<id>` with a `resume` frame carrying the secret, and every agent URL keeps working. In that window agents still get `agents.md` / `tools.json`, tool calls get `503 app_offline` + `Retry-After: 2`. A clean close, a protocol violation or the window running out wipes the session. Close codes: `4401` resume refused (bad secret or session gone), `4409` session already attached, `4410` replaced by a resume with the secret. v0 has zero `ctx.storage` usage, so if Cloudflare evicts the DO the resume is refused and the SDK starts a fresh session.
 
 ## Tokens
 
@@ -25,6 +25,7 @@ Format: `as_<sessionId>_<verifier>` (`as_<8>_<22>`). The 8-char Crockford-base32
 | `GET /` | Inline-HTML landing page |
 | `GET /privacy` | Inline-HTML privacy policy (linked from Chrome Web Store submission) |
 | `GET /v1/_ws` | WS upgrade; mints a fresh session-id at the edge and routes to a brand-new DO |
+| `GET /v1/_ws?session=<id>` | WS upgrade to resume that session; the first frame must be `resume` with the secret |
 | `POST /v1/t/<token>/<path>` | Forward to that token's DO, which invokes the registered tool handler over WS. CSRF-gated via `Sec-Fetch-Site` (see SECURITY.md). |
 | `GET /v1/t/<token>/agents.md` | The app's briefing document for AIs (CSRF gate exempt) |
 | `GET /v1/t/<token>/tools.json` | The registered tool list (machine-readable, CSRF gate exempt) |
@@ -39,6 +40,7 @@ See `wrangler.jsonc`. Production env vars:
 |---|---|
 | `MAX_SYNC_TOOL_MS` | How long the relay holds an HTTP request waiting for the app's WS reply before returning 504 `tool_timeout` |
 | `HEARTBEAT_TIMEOUT_MS` | How long the app's WS may stay silent before the relay closes it as dead (the SDK pings every 25 s) |
+| `RESUME_GRACE_MS` | How long a dropped app's session is held for resume (default 60000; 0 disables resume) |
 
 `DEBUG` is intentionally absent in production. Set it in `.dev.vars` (gitignored) only.
 

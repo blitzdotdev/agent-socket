@@ -58,7 +58,9 @@ Key `opts`:
 - **`appDescription`** — 1-3 sentence summary surfaced in `tools.json`.
 - **`tools[]`** — `{ method?, path, description, input_schema?, handler }`. Handler receives `{ method, path, body, headers }`, returns `{ status?, body?, headers? }` (or just a value — defaults to status 200, JSON body). If `headers["content-type"]` is set AND `body` is a string, the relay serves it verbatim with that content-type — useful for HTML/text/CSV/shell-script tools. Non-string bodies always JSON-encode in v0.
 - **`baseUrl`** — defaults to `https://agentsocket.dev`. Override for self-hosted relays or local dev.
-- **`autoReconnect`** — defaults to `true`. The SDK handles WS drops with exponential backoff and re-mints any previously-issued tokens under the new session-id, reporting the remap via `onSessionChanged`. With `false` the SDK neither reconnects nor re-mints.
+- **`autoReconnect`** — defaults to `true`. The SDK handles WS drops with exponential backoff and resumes the same session, so every agent URL keeps working. Only if the session is gone does it open a new one and re-mint the previously-issued tokens, reporting the remap via `onSessionChanged`. With `false` the SDK neither reconnects nor re-mints. See [Reconnect, resume and re-mint](#reconnect-resume-and-re-mint).
+- **`onReconnect`** — called after every successful reconnect with `{ sessionId, resumed }`.
+- **`resume`** — `{ sessionId, secret }` of a session this app opened earlier, to reattach after a page or worker restart. See below.
 
 ### `session.mintAgentToken({ label }): Promise<AgentToken>`
 
@@ -72,7 +74,7 @@ Standard CRUD for the session's tokens.
 
 Completes an async task previously started by a handler that returned `{ status: 202, taskId }`. Fire-and-forget — no reply. Throws if the WS is closed or `taskId` is empty. `status` defaults to 200.
 
-Async tasks live in the relay's Durable Object memory; they do **not** survive a WS reconnect. After `onSessionChanged` fires, taskIds from the prior session are dead — the agent's poll on the old paste-URL will already be returning errors.
+Async tasks live in the relay's Durable Object memory. They survive a resumed reconnect, so a handler can still complete a task after a blip. They do **not** survive a new session: after `onSessionChanged` fires, taskIds from the prior session are dead — the agent's poll on the old paste-URL will already be returning errors.
 
 ### `session.close()`
 
@@ -102,13 +104,23 @@ tools: [
 
 The agent gets `202 { taskId }` immediately, then polls `<URL>/_as_tasks/<taskId>` until it returns 200 with the body.
 
-## Reconnect + remint semantics
+## Reconnect, resume and re-mint
 
-By default, if the WS drops, the SDK reconnects with exponential backoff and re-mints all previously-issued agent-tokens under the new session-id (keeping the same labels). Old URLs become dead; the new URLs are reported via `onSessionChanged({ priorSessionId, sessionId, tokensRemapped })`.
+`register_reply` gives the SDK a resume secret (`session.resumeSecret`). When the WS drops, the relay holds the session (tools, tokens, async tasks) for a grace window (60 s on `agentsocket.dev`). On reconnect the SDK opens `/v1/_ws?session=<id>` and sends the secret in its first frame, with the current tools and `agentsMd`, which replace the old ones. If the relay accepts, nothing changes for agents: **the same URLs keep working**, `onSessionChanged` doesn't fire, and `onReconnect` reports `{ resumed: true }`.
 
-If the initial `connect()` fails it rejects and nothing retries. After a drop, `onDisconnect` fires once per attempt (`attempt` 1, 2, …) until a reconnect succeeds; tokens survive failed attempts, and tokens revoked while disconnected are not re-minted.
+While the app is away, agents still get `agents.md` and `tools.json`; tool calls get `503 app_offline` with `Retry-After: 2`. A call in flight when the socket dropped fails with `503`.
 
-Override `onDisconnect` to control timing, or set `autoReconnect: false` for full manual control (the SDK doesn't reconnect; your `onDisconnect`, if any, may still call `reconnect()`, and no tokens are re-minted).
+If the relay refuses the resume (close `4401`: the grace window ran out, the relay restarted, or the secret is wrong), the SDK opens a fresh session in the same attempt and re-mints every token still in use under the new session-id, keeping the labels. Old URLs become dead; the new ones are reported via `onSessionChanged({ priorSessionId, sessionId, tokensRemapped })`. If another connection resumes the session with this app's secret, the relay closes this socket with `4410`, and this SDK starts a fresh session instead of taking it back.
+
+`session.close()` closes with code 1000, which ends the session on the relay immediately — no grace window.
+
+If the initial `connect()` fails it rejects and nothing retries. After a drop, `onDisconnect` fires once per attempt (`attempt` 1, 2, …) until a reconnect succeeds; every attempt tries the resume first. Tokens survive failed attempts. A token revoked while disconnected is revoked on the relay as part of the resume (and isn't re-minted if the session is new).
+
+Override `onDisconnect` to control timing, or set `autoReconnect: false` for full manual control (the SDK doesn't reconnect; your `onDisconnect`, if any, may still call `reconnect()`, which resumes when it can and doesn't re-mint when it can't).
+
+### Surviving a restart
+
+To keep URLs alive across a page reload or a Chrome MV3 service-worker restart, save `{ sessionId: session.sessionId, secret: session.resumeSecret }` and pass it back as `connect({ ..., resume })`. If the session is still held, `connect()` resolves with the same `sessionId` and adopts its live tokens; otherwise it opens a fresh session (compare `sessionId` to tell, then mint new URLs). The secret plus the session-id lets anyone take over the session, so store it no more widely than the agent URLs themselves — e.g. `sessionStorage` or `chrome.storage.session`, not `localStorage`.
 
 ## Threat model
 

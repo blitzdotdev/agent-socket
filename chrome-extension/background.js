@@ -17,6 +17,7 @@ let lastProfile = null     // site profile loaded for the bound tab
 let boundTabId = null      // the one tab tool calls may touch
 let lastToolCallAt = null  // the relay serves agents.md/tools.json itself; tool calls are our only sign of the AI
 let connecting = null      // in-flight startConnect, so double clicks don't open two sessions
+let lastBase = null        // relay base the session is on
 
 // Default relay base. Overridable in the popup via chrome.storage.local.relay_base.
 const DEFAULT_BASE = "https://agentsocket.dev"
@@ -109,21 +110,54 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (tabId === boundTabId) void stopConnect()
 })
 
-// A service-worker restart loses the session; clear the indicator it left.
-chrome.storage.session.get("bound_tab").then(({ bound_tab }) => {
-  if (bound_tab == null || bound_tab === boundTabId) return
-  void hideIndicator(bound_tab)
-  void chrome.storage.session.remove("bound_tab")
-}).catch(() => {})
+// ── surviving a service-worker restart ─────────────────────────────
+// Chrome can stop this worker (and its WebSocket) at any time. The live
+// session is saved in chrome.storage.session (memory only, cleared when Chrome
+// exits; not readable by content scripts), so a restarted worker can resume
+// it: the relay holds a dropped session for a grace window, and with the
+// resume secret the SAME agent URL keeps working.
+const SAVED_KEY = "as_session"  // { tabId, base, sessionId, secret, url, token }
+
+async function saveSession() {
+  if (!session || boundTabId == null) return
+  await chrome.storage.session.set({
+    [SAVED_KEY]: {
+      tabId: boundTabId,
+      base: lastBase,
+      sessionId: session.sessionId,
+      secret: session.resumeSecret,
+      url: lastUrl,
+      token: lastToken,
+    },
+  }).catch(() => {})
+}
+
+// Runs once per worker start. Message handlers wait for it, so the pill and
+// popup never see "not bound" for a tab that is about to be resumed.
+const restored = (async () => {
+  const saved = (await chrome.storage.session.get(SAVED_KEY).catch(() => ({})))[SAVED_KEY]
+  if (!saved || boundTabId != null) return
+  const tab = await chrome.tabs.get(saved.tabId).catch(() => null)
+  if (!tab || !saved.sessionId || !saved.secret) {
+    await chrome.storage.session.remove(SAVED_KEY).catch(() => {})
+    if (tab) void hideIndicator(tab.id)
+    return
+  }
+  boundTabId = tab.id
+  emitStatus({ status: "connecting" })
+  // Don't await: a slow resume mustn't hold up every message handler.
+  startConnect(tab.id, saved).catch((e) => console.warn("[as-ext] resume after restart failed:", e?.message ?? e))
+})().catch(() => {})
 
 // ── connection lifecycle ──────────────────────────────────────────
 
-function startConnect(tabId) {
-  connecting ??= doConnect(tabId).finally(() => { connecting = null })
+function startConnect(tabId, saved) {
+  connecting ??= doConnect(tabId, saved).finally(() => { connecting = null })
   return connecting
 }
 
-async function doConnect(tabId) {
+// `saved`: a session from before a worker restart, to resume rather than start.
+async function doConnect(tabId, saved) {
   const tab = tabId != null
     ? await chrome.tabs.get(tabId).catch(() => null)
     : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
@@ -138,6 +172,8 @@ async function doConnect(tabId) {
     throw new Error("site access not granted — click Connect in the extension popup to allow it")
   }
   const base = (await chrome.storage.local.get("relay_base")).relay_base || DEFAULT_BASE
+  const resume = saved && saved.base === base ? { sessionId: saved.sessionId, secret: saved.secret } : undefined
+  lastBase = base
 
   boundTabId = tab.id
   lastToolCallAt = null
@@ -166,8 +202,14 @@ async function doConnect(tabId) {
         emitStatus({ status: info.attempt === 1 ? "disconnected" : "reconnect-failed", reason: info.reason, attempt: info.attempt })
         reconnectBackoff(info)
       },
-      // After a reconnect the SDK has re-minted our token under a new
-      // session-id; pick up the new URL + token (or mint one if that failed).
+      // The usual reconnect resumes the same session: the URL is unchanged.
+      onReconnect: ({ sessionId, resumed }) => {
+        if (s !== session || !resumed) return
+        emitStatus({ status: "connected", sessionId })
+        void saveSession()
+      },
+      // The resume was refused, so the SDK opened a new session and re-minted
+      // our token; pick up the new URL + token (or mint one if that failed).
       onSessionChanged: async ({ sessionId, tokensRemapped }) => {
         if (s !== session) return
         try {
@@ -179,21 +221,30 @@ async function doConnect(tabId) {
           lastToken = link?.token ?? null
         } catch { lastUrl = lastToken = null }
         emitStatus({ status: "connected", sessionId })
+        await saveSession()
       },
+      resume,
     })
     if (boundTabId !== tab.id) throw new Error("connect cancelled")  // tab closed or Stop pressed meanwhile
-    const link = await s.mintAgentToken({ label: "chrome-extension" })
+    // Resumed after a restart: keep the saved link if the relay still has it.
+    const kept = resume && s.sessionId === resume.sessionId
+      ? (await s.listAgentTokens()).find((t) => t.token === saved.token)
+      : null
+    const link = kept ?? await s.mintAgentToken({ label: "chrome-extension" })
     if (boundTabId !== tab.id) throw new Error("connect cancelled")
     session = s
     lastUrl = link.url
     lastToken = link.token
   } catch (e) {
     s?.close()
-    if (boundTabId === tab.id) { boundTabId = null; lastProfile = null; void hideIndicator(tab.id) }
+    if (boundTabId === tab.id) {
+      boundTabId = null; lastProfile = null; void hideIndicator(tab.id)
+      await chrome.storage.session.remove(SAVED_KEY).catch(() => {})
+    }
     emitStatus({ status: "closed", reason: e?.message ?? String(e) })
     throw e
   }
-  await chrome.storage.session.set({ bound_tab: tab.id })
+  await saveSession()
   emitStatus({ status: "connected", sessionId: session.sessionId })
   await showIndicator(tab.id)
   return { status: "connected", url: lastUrl, host, profile: lastProfile?.host ?? null, tool_count: tools.length }
@@ -205,12 +256,12 @@ async function stopConnect() {
   lastUrl = lastToken = lastProfile = lastToolCallAt = null
   boundTabId = null
   emitStatus({ status: "idle" })
+  await chrome.storage.session.remove(SAVED_KEY).catch(() => {})
   if (s) {
-    // Closing the socket kills every token on the relay; revoke first anyway.
+    // close() ends the session on the relay, killing every token; revoke first anyway.
     if (token && s.connected) await Promise.race([s.revokeAgentToken(token).catch(() => {}), new Promise((r) => setTimeout(r, 2000))])
     s.close()
   }
-  await chrome.storage.session.remove("bound_tab").catch(() => {})
   if (tabId != null) await hideIndicator(tabId)
   return { status: "idle" }
 }
@@ -236,6 +287,7 @@ async function snapshot() {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   ;(async () => {
     try {
+      await restored
       if (msg?.type === "connect") sendResponse({ ok: true, ...(await startConnect(msg.tabId)) })
       else if (msg?.type === "disconnect") sendResponse({ ok: true, ...(await stopConnect()) })
       else if (msg?.type === "snapshot") sendResponse({ ok: true, ...(await snapshot()) })

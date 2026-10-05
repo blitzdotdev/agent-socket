@@ -25,8 +25,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const SCENARIOS_DIR = join(__dirname, "scenarios")
 const RELAY_DIR = join(__dirname, "..", "relay")
 const WRANGLER_BIN = join(__dirname, "..", "node_modules", ".bin", "wrangler")
-// Short timeouts so 28-tool-timeout and 51-app-liveness run fast.
-const BOOT_VARS = { DEBUG: "1", MAX_SYNC_TOOL_MS: "3000", HEARTBEAT_TIMEOUT_MS: "6000" }
+// Short timeouts so 28-tool-timeout, 51-app-liveness and the resume-expiry
+// scenarios run fast.
+const BOOT_VARS = { DEBUG: "1", MAX_SYNC_TOOL_MS: "3000", HEARTBEAT_TIMEOUT_MS: "6000", RESUME_GRACE_MS: "3000" }
 
 function freePort() {
   return new Promise((resolve) => {

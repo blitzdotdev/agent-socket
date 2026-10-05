@@ -8,6 +8,7 @@ Pre-launch polish toward the first public OSS release at `github.com/blitzdotdev
 
 ### Added
 
+- **Session resume**: a reconnecting app keeps its session and every agent URL. `register_reply` returns a `resumeSecret`; after a drop the relay holds the session for `RESUME_GRACE_MS` (60 s) and the SDK reattaches with `/v1/_ws?session=<id>` + a `resume` frame (close `4401` if refused, then a fresh session + re-mint as before). New SDK API: `ConnectOptions.resume`, `onReconnect`, `Session.resumeSecret`; `onSessionChanged` fires only when URLs change. The Chrome extension saves the session in `chrome.storage.session` and resumes it after a service-worker restart. Harness scenarios 52–55.
 - **Public landing page** at `https://agentsocket.dev/` with four audience-specific sections (paste-URL, SDK, channel host, chrome extension), favicon, Open Graph + Twitter card meta tags.
 - **Chrome extension** (`chrome-extension/`) — MV3 service worker exposing tab-driving tools (`/eval`, `/click`, `/fill`, `/navigate`, `/screenshot`, `/page_info`, `/dom_query`, etc.) plus site-specific profiles for github.com, news.ycombinator.com, x.com.
 - **Channel mode CLI** (`cli/`) — `agent-socket channel host/join/send/recv/watch/peers/stop`. Per-host log + outbox files at `~/.agent-socket/current/`. `/join.sh` endpoint serves a self-contained bash client for zero-install joining.

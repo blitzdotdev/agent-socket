@@ -43,21 +43,21 @@
 </ol>
 <h2>How long data is retained</h2>
 <ul>
-<li><p><strong>Relay</strong>: Sessions live in memory only while the user&#39;s tab is connected. When the user clicks Disconnect, closes the tab, or the WebSocket drops, the session is destroyed and any in-flight tool calls fail. Nothing persists across the session.</p>
+<li><p><strong>Relay</strong>: Sessions live in memory only. When the user clicks Disconnect or closes the tab, the session is destroyed and any in-flight tool calls fail. If the WebSocket drops unexpectedly (a network blip, or Chrome restarting the extension&#39;s background worker), in-flight tool calls fail and the relay keeps the session&#39;s registration and session URL valid in memory for up to 60 seconds so the extension can reconnect to it; tool calls arriving in that window are refused, and if the extension doesn&#39;t reconnect the session is destroyed. Nothing persists across the session.</p>
 </li>
 <li><p><strong>Extension</strong>: Before the user clicks Connect, the extension stores nothing. Afterwards it keeps, on the user&#39;s machine only:</p>
 <ul>
 <li>in <code>chrome.storage.local</code>: (a) the relay base URL, if the user changed it in Settings, and (b) site-specific tool profiles saved via the <code>/save_site_profile</code> tool (deletable from the popup&#39;s Settings);</li>
-<li>in <code>chrome.storage.session</code> (cleared when Chrome exits): the id of the connected tab, so a restarted extension can remove a stale &quot;connected&quot; indicator.</li>
+<li>in <code>chrome.storage.session</code> (held in memory, cleared when Chrome exits, not readable by web pages or content scripts) while a tab is connected: the id of the connected tab, the relay base URL, the session id, the session URL and token, and a random reconnect secret the relay issued for the session. This lets a restarted extension background worker reconnect to the same session, so the session URL the user pasted keeps working. It is removed on Disconnect, when the connected tab closes, or when reconnecting fails.</li>
 </ul>
-<p>The session URL and token live only in memory and are discarded on disconnect. None of this is transmitted except the relay base URL, which decides where the session connects. Uninstalling the extension deletes all of it.</p>
+<p>The session URL, token and reconnect secret are discarded on disconnect. None of this is transmitted except the relay base URL, which decides where the session connects, and the session id and reconnect secret, which go only to that relay when reconnecting. Uninstalling the extension deletes all of it.</p>
 </li>
 </ul>
 <h2>Third parties</h2>
 <p>We do not sell, rent, or share user data with third parties for advertising, marketing, or any other purpose unrelated to making the active session work. The relay is hosted on Cloudflare Workers; Cloudflare&#39;s data-handling practices are governed by its own privacy policy at <a href="https://www.cloudflare.com/privacypolicy/">https://www.cloudflare.com/privacypolicy/</a>.</p>
 <h2>User control</h2>
 <ul>
-<li>While a tab is connected it shows an &quot;AI has access to this tab&quot; bar with a Stop button and an &quot;AI&quot; badge on the extension icon. Stop (in the bar or the popup&#39;s &quot;Stop &amp; disconnect&quot;), closing the tab, or restarting Chrome terminates the session and invalidates the session URL.</li>
+<li>While a tab is connected it shows an &quot;AI has access to this tab&quot; bar with a Stop button and an &quot;AI&quot; badge on the extension icon. Stop (in the bar or the popup&#39;s &quot;Stop &amp; disconnect&quot;) or closing the tab terminates the session and invalidates the session URL at once; restarting Chrome does so within 60 seconds.</li>
 <li>The session URL is the only authorization token.</li>
 <li>The user can revoke the extension&#39;s site access or remove it at any time from <code>chrome://extensions</code>.</li>
 <li>The <code>chrome.userScripts</code> API used by the <code>/eval</code> tool is additionally gated behind a per-extension &quot;Allow User Scripts&quot; toggle that the user must explicitly enable.</li>

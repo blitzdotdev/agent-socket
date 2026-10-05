@@ -61,13 +61,25 @@ export interface ConnectOptions {
    */
   baseUrl?: string
   /**
-   * When true (default), the SDK auto-reconnects after WS drops AND
-   * re-mints any previously-minted agent-tokens under the new session.
-   * The mapping {oldUrl → newUrl} is reported via onSessionChanged.
+   * When true (default), the SDK auto-reconnects after WS drops. It first
+   * resumes the same session, so every agent URL keeps working; only if the
+   * relay refuses (the session ended, e.g. the app was away longer than the
+   * relay's grace window) does it open a fresh session and re-mint the
+   * previously-minted agent-tokens under it, reporting {oldUrl → newUrl} via
+   * onSessionChanged.
    * When false, the SDK neither reconnects nor re-mints; onDisconnect
-   * (if given) still fires and may call reconnect() itself.
+   * (if given) still fires and may call reconnect() itself, which resumes
+   * the same way but doesn't re-mint if it lands in a fresh session.
    */
   autoReconnect?: boolean
+  /**
+   * Resume a session this app opened earlier (e.g. before a page or
+   * service-worker restart): pass the `sessionId` and `resumeSecret` it had.
+   * If the relay refuses (the session ended), connect() opens a fresh
+   * session instead — compare `session.sessionId` to tell. Store the secret
+   * only where the session's own agent URLs could be stored.
+   */
+  resume?: { sessionId: string; secret: string }
   /**
    * Called when the WS drops, and again after each failed reconnect.
    * App decides when (or whether) to reconnect. Not called when the
@@ -76,10 +88,17 @@ export interface ConnectOptions {
    */
   onDisconnect?: DisconnectHandler
   /**
-   * Called after a successful reconnect when sessionId changed.
-   * tokensRemapped is non-empty only when autoReconnect:true.
+   * Called after a reconnect when agent URLs changed: the resume failed and
+   * the SDK opened a fresh session (sessionId changed), or it re-minted
+   * tokens an earlier interrupted re-mint missed. Not called after a
+   * successful resume. tokensRemapped is non-empty only when autoReconnect:true.
    */
   onSessionChanged?: SessionChangedHandler
+  /**
+   * Called after every successful reconnect, once any re-minting is done.
+   * `resumed` is true when the same session (and every agent URL) survived.
+   */
+  onReconnect?: ReconnectHandler
   /**
    * Optional: heartbeat send interval (ms). Default 25000.
    */
@@ -114,6 +133,13 @@ export interface SessionChangedInfo {
 }
 export type SessionChangedHandler = (info: SessionChangedInfo) => void | Promise<void>
 
+export interface ReconnectInfo {
+  sessionId: string
+  /** True when the reconnect resumed the same session. */
+  resumed: boolean
+}
+export type ReconnectHandler = (info: ReconnectInfo) => void | Promise<void>
+
 export interface AgentToken {
   /** Full agent-token string. Used as the URL secret AND the revoke handle. */
   token: string
@@ -131,9 +157,17 @@ export interface ListedToken extends AgentToken {
  * Public Session interface returned from connect(). Methods are async.
  */
 export interface Session {
-  /** Current session-id (changes after reconnect with new session). */
+  /** Current session-id (changes only when a reconnect can't resume). */
   readonly sessionId: string
-  /** Whether the WebSocket is currently open. */
+  /**
+   * Secret that lets this app resume the session after a drop (see
+   * ConnectOptions.resume). The SDK uses it itself on auto-reconnect; read
+   * it only to persist the session across a restart. Anyone holding it and
+   * the session-id can take the session over, so treat it like the
+   * session's agent URLs. null when there is no session to resume.
+   */
+  readonly resumeSecret: string | null
+  /** Whether the WebSocket is open and the session registered (or resumed). */
   readonly connected: boolean
   /** Mint a new agent-token. */
   mintAgentToken(opts: { label: string }): Promise<AgentToken>
@@ -147,9 +181,9 @@ export interface Session {
    * will then return the supplied status + body.
    *
    * Fire-and-forget — no reply frame. Throws if the WS is not currently
-   * open, or if taskId is missing. Async tasks do NOT survive a WS
-   * reconnect (the relay's task map lives in DO memory); completing a
-   * task minted in a prior session is a no-op on the relay.
+   * open, or if taskId is missing. Async tasks survive a resumed
+   * reconnect but not a fresh session (the relay's task map lives in DO
+   * memory); completing a task from a prior session is a no-op on the relay.
    */
   completeTask(taskId: string, result?: { status?: number; body?: unknown; headers?: Record<string, string> }): void
   /**

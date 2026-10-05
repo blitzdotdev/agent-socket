@@ -18,7 +18,7 @@ export type ErrorCode =
   | "too_many_tasks"
   | "body_too_large"
 
-export function errorResponse(code: ErrorCode, message: string, status: number): Response {
+export function errorResponse(code: ErrorCode, message: string, status: number, headers?: Record<string, string>): Response {
   return new Response(
     JSON.stringify({ error: { code, message } }),
     {
@@ -26,6 +26,7 @@ export function errorResponse(code: ErrorCode, message: string, status: number):
       headers: {
         "content-type": "application/json; charset=utf-8",
         "x-content-type-options": "nosniff",
+        ...headers,
       },
     },
   )

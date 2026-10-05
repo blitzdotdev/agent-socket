@@ -6,14 +6,18 @@
 //   GET  /_debug/health                       → "ok" (DEBUG=1 only)
 //   POST /_debug/kill-ws/<sessionId>          → close that session's WS (DEBUG=1 only)
 //   WSS  /v1/_ws                              → upgrade, route to a fresh session DO (rate-limited per IP)
+//   WSS  /v1/_ws?session=<sessionId>          → resume: route to that session's DO, which checks the secret
 //   *    /v1/t/<token>/<path>                 → route to existing session DO (no WS upgrades, body ≤ 1 MiB)
 //
 // The WS upgrade mints a random session-id at the edge and routes to
-// idFromName(sessionId); the DO reads it back as `this.name`.
+// idFromName(sessionId); the DO reads it back as `this.name`. A resume names
+// its session in ?session=; the session-id is public (it's in every agent
+// URL), so the DO only lets the socket in once its first frame proves the
+// resume secret.
 
 import { RelayServer } from "./relay-do"
 import type { Env } from "./types"
-import { generateSessionId, parseAgentToken } from "./tokens"
+import { SESSION_ID_RE, generateSessionId, parseAgentToken } from "./tokens"
 import { errorResponse } from "./errors"
 
 export { RelayServer }
@@ -44,12 +48,16 @@ export default {
       if (!(await env.WS_RATE_LIMIT.limit({ key: ip })).success) {
         return errorResponse("rate_limited", "too many connections from this address", 429)
       }
-      // Generate a session-id at the edge — or, when DEBUG=1, honor a
-      // ?force_session= query param so the harness can drive the
-      // "second WS rejected" path. Never honored in prod.
+      // Resume names its session; otherwise generate a session-id at the
+      // edge — or, when DEBUG=1, honor a ?force_session= query param so the
+      // harness can drive the "second WS rejected" path. Never honored in prod.
       let sessionId: string
+      const resumeParam = url.searchParams.get("session")
       const forceParam = url.searchParams.get("force_session")
-      if (env.DEBUG === "1" && forceParam && /^[0-9A-HJKMNP-TV-Z]{8}$/.test(forceParam)) {
+      if (resumeParam !== null) {
+        if (!SESSION_ID_RE.test(resumeParam)) return errorResponse("protocol_error", "bad session id", 400)
+        sessionId = resumeParam
+      } else if (env.DEBUG === "1" && forceParam && SESSION_ID_RE.test(forceParam)) {
         sessionId = forceParam
       } else {
         sessionId = generateSessionId()
@@ -118,8 +126,9 @@ async function handleDebug(req: Request, env: Env, pathname: string): Promise<Re
   if (pathname === "/_debug/health") {
     return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } })
   }
-  // POST /_debug/kill-ws/<sessionId> — force-closes that session's WS.
-  // Drives the harness's reconnect scenarios. Never enabled in prod.
+  // POST /_debug/kill-ws/<sessionId> — force-closes that session's WS, which
+  // leaves it resumable; ?end=1 also ends the session (as if the grace window
+  // ran out). Drives the harness's reconnect scenarios. Never enabled in prod.
   const km = pathname.match(/^\/_debug\/kill-ws\/([0-9A-HJKMNP-TV-Z]{8})$/)
   if (km && req.method === "POST") {
     const sessionId = km[1]!
@@ -127,7 +136,7 @@ async function handleDebug(req: Request, env: Env, pathname: string): Promise<Re
     // Forward to the DO via an internal-only path. Reuses /_as_kill-ws inside
     // the DO so the public agent surface doesn't accidentally hit it.
     const innerUrl = new URL(req.url)
-    innerUrl.pathname = "/_as_kill-ws"
+    innerUrl.pathname = "/_as_kill-ws"  // keeps ?end=1
     return env.RELAY.get(id).fetch(new Request(innerUrl.toString(), { method: "POST" }))
   }
   return errorResponse("not_found", "unknown debug path", 404)

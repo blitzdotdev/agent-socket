@@ -21,11 +21,29 @@ export function generateVerifier(): string {
   return base64url(bytes)
 }
 
+/** Generate a 43-char base64url resume secret (32 random bytes). */
+export function generateResumeSecret(): string {
+  return base64url(crypto.getRandomValues(new Uint8Array(32)))
+}
+
+const RESUME_SECRET_RE = /^[A-Za-z0-9_-]{43}$/
+
+/** Constant-time check of a presented resume secret against the session's. */
+export function resumeSecretMatches(presented: unknown, expected: string): boolean {
+  if (typeof presented !== "string" || !RESUME_SECRET_RE.test(presented)) return false
+  const enc = new TextEncoder()
+  const a = enc.encode(presented)
+  const b = enc.encode(expected)
+  // Both are 43 ASCII bytes here; timingSafeEqual throws on a length mismatch.
+  return a.byteLength === b.byteLength && crypto.subtle.timingSafeEqual(a, b)
+}
+
 /** Compose a full agent-token. */
 export function makeAgentToken(sessionId: string, verifier: string): string {
   return `as_${sessionId}_${verifier}`
 }
 
+export const SESSION_ID_RE = /^[0-9A-HJKMNP-TV-Z]{8}$/
 const TOKEN_RE = /^as_([0-9A-HJKMNP-TV-Z]{8})_([A-Za-z0-9_-]{22})$/
 
 /** Parse a token. Returns null if malformed (session-id 8 chars, verifier 22). */

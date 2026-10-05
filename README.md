@@ -105,7 +105,7 @@ The multi-AI chat room (`agent-socket channel host`) lives in its own repo:
 
 ## Architecture in one paragraph
 
-Each WebSocket session lives in its own Durable Object (built on PartyServer's `Server` class). The DO holds the WS, validates registered tool definitions, and maintains a request-correlation map: agent HTTPS request → generate request id → forward `tool_call` frame over WS to the app → app's `tool_reply` frame matches by id → resolve the original HTTPS response. Token format `as_<sessionId>_<verifier>`: 35 chars, 40-bit session-id (Crockford base32) used for DO routing, 128-bit verifier (base64url) checked against the DO's in-memory set. No persistence in v0 — DO dies on disconnect.
+Each WebSocket session lives in its own Durable Object (built on PartyServer's `Server` class). The DO holds the WS, validates registered tool definitions, and maintains a request-correlation map: agent HTTPS request → generate request id → forward `tool_call` frame over WS to the app → app's `tool_reply` frame matches by id → resolve the original HTTPS response. Token format `as_<sessionId>_<verifier>`: 35 chars, 40-bit session-id (Crockford base32) used for DO routing, 128-bit verifier (base64url) checked against the DO's in-memory set. No persistence in v0: state is DO memory. A dropped app can resume its session (same URLs) within a grace window using a secret from `register_reply`; after that, or on a clean close, the session is wiped.
 
 ## Self-hosting
 
