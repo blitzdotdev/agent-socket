@@ -197,21 +197,36 @@ async function updateBadge(tabId) {
   await chrome.action.setTitle({ tabId, title: changed ? "Agent Socket: your link changed. Click to copy the new one." : "Agent Socket" }).catch(() => {})
 }
 
-async function showIndicator(tabId) {
-  await updateBadge(tabId)
-  await chrome.scripting.executeScript({ target: { tabId }, files: ["pill.js"] }).catch(() => {})
+// Indicator updates run one at a time, and a show re-checks the binding when
+// its turn comes: otherwise a show started by a page load can land after
+// Stop's hide and leave "AI" on a tab that is no longer connected.
+let indicatorQueue = Promise.resolve()
+function queueIndicator(fn) {
+  indicatorQueue = indicatorQueue.then(fn, fn)
+  return indicatorQueue
 }
 
-async function hideIndicator(tabId) {
-  await chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {})
-  await chrome.action.setTitle({ tabId, title: "Agent Socket" }).catch(() => {})
-  await chrome.tabs.sendMessage(tabId, { type: "as_pill_remove" }).catch(() => {})
+function showIndicator(tabId) {
+  return queueIndicator(async () => {
+    if (tabId !== boundTabId) return
+    await updateBadge(tabId)
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["pill.js"] }).catch(() => {})
+  })
+}
+
+function hideIndicator(tabId) {
+  return queueIndicator(async () => {
+    await chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {})
+    await chrome.action.setTitle({ tabId, title: "Agent Socket" }).catch(() => {})
+    await chrome.tabs.sendMessage(tabId, { type: "as_pill_remove" }).catch(() => {})
+  })
 }
 
 async function markLinkChanged(info) {
   linkChanged = { at: Date.now(), ...info }
   lastToolCallAt = null  // that activity was on the dead link
-  if (boundTabId != null) await updateBadge(boundTabId)
+  const tabId = boundTabId
+  if (tabId != null) await queueIndicator(() => tabId === boundTabId ? updateBadge(tabId) : undefined)
 }
 
 // The user copied the new link (`via` popup / pill) or the AI used it (tool_call).
@@ -219,7 +234,8 @@ async function clearLinkChanged(via) {
   if (!linkChanged) return
   linkChanged = null
   logEvent("link_acknowledged", { via })
-  if (boundTabId != null) await updateBadge(boundTabId)
+  const tabId = boundTabId
+  if (tabId != null) await queueIndicator(() => tabId === boundTabId ? updateBadge(tabId) : undefined)
   await saveSession()
 }
 
