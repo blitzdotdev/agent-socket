@@ -1,35 +1,38 @@
 {
   "name": "@agent-socket/sdk",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "type": "module",
   "license": "Apache-2.0",
   "description": "Client SDK for agent-socket — connect any web app to AI chats via paste-able URLs.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blitzdotdev/agent-socket.git",
+    "directory": "sdk"
+  },
+  "homepage": "https://agentsocket.dev",
+  "bugs": "https://github.com/blitzdotdev/agent-socket/issues",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
-  "files": ["dist", "src", "README.md"],
+  "files": ["dist", "README.md", "LICENSE"],
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
-    "watch": "tsc --watch"
-  },
-  "peerDependencies": {
-    "ws": "^8.0.0"
-  },
-  "peerDependenciesMeta": {
-    "ws": {
-      "optional": true
-    }
+    "watch": "tsc --watch",
+    "test": "tsc && node --test \"test/*.test.mjs\"",
+    "prepublishOnly": "npm run build"
   },
   "devDependencies": {
-    "@types/ws": "^8.5.0",
-    "typescript": "^5.5.0",
-    "ws": "^8.20.0"
+    "typescript": "^5.5.0"
   }
 }

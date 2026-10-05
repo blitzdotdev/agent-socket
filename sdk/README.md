@@ -2,15 +2,13 @@
 
 JS/TS client for [agent-socket](https://github.com/blitzdotdev/agent-socket) — connect any web app to AI chats via paste-able URLs.
 
-Works in Node, Cloudflare Workers, and the browser. No MCP, no OAuth, no server-side AI integration — the AI calls plain HTTP endpoints you define.
+Works in Node 22+, Cloudflare Workers, and the browser (uses the native `WebSocket`; no dependencies). No MCP, no OAuth, no server-side AI integration — the AI calls plain HTTP endpoints you define.
 
 ## Install
 
 ```bash
 npm install @agent-socket/sdk
 ```
-
-> v0 — not yet published. For now, vendor from the [repo](https://github.com/blitzdotdev/agent-socket) or use a workspace dep.
 
 ## Quick start
 
@@ -60,7 +58,7 @@ Key `opts`:
 - **`appDescription`** — 1-3 sentence summary surfaced in `tools.json`.
 - **`tools[]`** — `{ method?, path, description, input_schema?, handler }`. Handler receives `{ method, path, body, headers }`, returns `{ status?, body?, headers? }` (or just a value — defaults to status 200, JSON body). If `headers["content-type"]` is set AND `body` is a string, the relay serves it verbatim with that content-type — useful for HTML/text/CSV/shell-script tools. Non-string bodies always JSON-encode in v0.
 - **`baseUrl`** — defaults to `https://agentsocket.dev`. Override for self-hosted relays or local dev.
-- **`autoReconnect`** — defaults to `true`. The SDK handles WS drops with exponential backoff and re-mints any previously-issued tokens under the new session-id, reporting the remap via `onSessionChanged`.
+- **`autoReconnect`** — defaults to `true`. The SDK handles WS drops with exponential backoff and re-mints any previously-issued tokens under the new session-id, reporting the remap via `onSessionChanged`. With `false` the SDK neither reconnects nor re-mints.
 
 ### `session.mintAgentToken({ label }): Promise<AgentToken>`
 
@@ -108,7 +106,9 @@ The agent gets `202 { taskId }` immediately, then polls `<URL>/_as_tasks/<taskId
 
 By default, if the WS drops, the SDK reconnects with exponential backoff and re-mints all previously-issued agent-tokens under the new session-id (keeping the same labels). Old URLs become dead; the new URLs are reported via `onSessionChanged({ priorSessionId, sessionId, tokensRemapped })`.
 
-Override `onDisconnect` to control timing, or set `autoReconnect: false` for full manual control.
+If the initial `connect()` fails it rejects and nothing retries. After a drop, `onDisconnect` fires once per attempt (`attempt` 1, 2, …) until a reconnect succeeds; tokens survive failed attempts, and tokens revoked while disconnected are not re-minted.
+
+Override `onDisconnect` to control timing, or set `autoReconnect: false` for full manual control (the SDK doesn't reconnect; your `onDisconnect`, if any, may still call `reconnect()`, and no tokens are re-minted).
 
 ## Threat model
 
@@ -116,16 +116,16 @@ agent-socket v0 has **no authentication beyond URL secrecy**. Anyone with an age
 
 The SDK doesn't add auth — that's a v1 concern at the relay layer.
 
-See the parent [`README.md`](../README.md) and [`SECURITY.md`](../SECURITY.md) for the full picture.
+See the main [`README.md`](https://github.com/blitzdotdev/agent-socket#readme) and [`SECURITY.md`](https://github.com/blitzdotdev/agent-socket/blob/master/SECURITY.md) for the full picture.
 
 ## Examples
 
-- [`examples/pixel-art-canvas/`](../examples/pixel-art-canvas/) — vanilla JS pixel-painting demo. Single HTML file, no build, ~120 lines of JS.
-- [`chrome-extension/`](../chrome-extension/) — the chrome extension is itself an SDK consumer; the compiled SDK is vendored at `chrome-extension/lib/sdk/` (see `chrome-extension/scripts/vendor-sdk.sh`) so the extension can load-unpacked with no build step.
+- [`examples/pixel-art-canvas/`](https://github.com/blitzdotdev/agent-socket/tree/master/examples/pixel-art-canvas) — vanilla JS pixel-painting demo. Single HTML file, no build, ~120 lines of JS.
+- [`chrome-extension/`](https://github.com/blitzdotdev/agent-socket/tree/master/chrome-extension) — the chrome extension is itself an SDK consumer; the compiled SDK is vendored at `chrome-extension/lib/sdk/` (see `chrome-extension/scripts/vendor-sdk.sh`) so the extension can load-unpacked with no build step.
 
 ## Browser usage
 
-The SDK works in browsers without polyfills. WebSocket is native; the `ws` peer-dep is only loaded in Node environments where the global doesn't exist.
+The SDK works in browsers without polyfills.
 
 ```js
 // In a <script type="module"> or via your bundler:
@@ -135,4 +135,4 @@ import { connect } from "@agent-socket/sdk"
 
 ## License
 
-[Apache 2.0](../LICENSE).
+[Apache 2.0](LICENSE).
