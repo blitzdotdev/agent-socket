@@ -1,11 +1,12 @@
 // Worker entry. Routes incoming requests to the right Durable Object.
 //
-// URL surface (per design doc §5.2):
+// URL surface:
+//   GET  /                                    → landing page
+//   GET  /privacy                             → privacy policy
 //   GET  /_debug/health                       → "ok" (DEBUG=1 only)
-//   GET  /_debug/sessions                     → list module-registered sessions (DEBUG=1)
-//   POST /_debug/sessions/<id>/kill-ws        → close that session's WS (DEBUG=1)
-//   WSS  /v1/_ws                              → upgrade, route to a fresh session DO
-//   *    /v1/t/<token>/<path>                 → route to existing session DO (no WS upgrades)
+//   POST /_debug/kill-ws/<sessionId>          → close that session's WS (DEBUG=1 only)
+//   WSS  /v1/_ws                              → upgrade, route to a fresh session DO (rate-limited per IP)
+//   *    /v1/t/<token>/<path>                 → route to existing session DO (no WS upgrades, body ≤ 1 MiB)
 //
 // The WS upgrade mints a random session-id at the edge and routes to
 // idFromName(sessionId); the DO reads it back as `this.name`.
@@ -53,8 +54,6 @@ export default {
 
     // ── WS upgrade for app connections ─────────────────────────────
     // Path: /v1/_ws
-    // The DO routes by session-id, but we don't have one yet — we mint
-    // one here and pass it via a header so the DO knows its own name.
     if (pathname === "/v1/_ws") {
       if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
         return errorResponse("protocol_error", "expected ws upgrade", 400)

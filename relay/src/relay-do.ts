@@ -552,8 +552,6 @@ export class RelayServer extends Server<Env> {
     if (userPath.startsWith("/_as_")) {
       return errorResponse("not_found", "unknown internal path", 404)
     }
-    // Note: the debug-only kill-ws path is matched at the start of onRequest
-    // before token validation, see the early-return below.
 
     // CSRF defense on the user-tool surface. Tool paths run user-defined
     // handlers and can have arbitrary side effects, so a browser-initiated
