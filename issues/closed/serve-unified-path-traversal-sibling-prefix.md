@@ -43,3 +43,5 @@ decodes to `../agent-socket-secrets/file`, joins to `…/packages/agent-socket-s
 ## Provenance
 
 Found during a full line-by-line audit. Verified the boundary check in `serve-unified.mjs:56` and `browser.mjs:53` uses `startsWith(PKG_ROOT)` with no separator, and that `decodeURIComponent(new URL().pathname)` lets `%2f`-encoded `..` survive into `path.join`. `serve-unified.mjs` binds `0.0.0.0` and is documented as tunnel-fronted.
+
+**CLOSED 2026-10-05.** `scripts/serve-unified.mjs` was deleted (nothing used it). `harness/lib/browser.mjs` already checks `PKG_ROOT + path.sep`.

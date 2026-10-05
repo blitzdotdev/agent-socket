@@ -1,38 +1,28 @@
 // Worker entry. Routes incoming requests to the right Durable Object.
 //
-// URL surface (per design doc §5.2):
+// URL surface:
+//   GET  /                                    → landing page
+//   GET  /privacy                             → privacy policy
 //   GET  /_debug/health                       → "ok" (DEBUG=1 only)
-//   GET  /_debug/sessions                     → list module-registered sessions (DEBUG=1)
-//   POST /_debug/sessions/<id>/kill-ws        → close that session's WS (DEBUG=1)
-//   WSS  /v1/_ws                              → upgrade, route to a fresh session DO
-//   *    /v1/t/<token>/<path>                 → route to existing session DO (no WS upgrades)
+//   POST /_debug/kill-ws/<sessionId>          → close that session's WS (DEBUG=1 only)
+//   WSS  /v1/_ws                              → upgrade, route to a fresh session DO (rate-limited per IP)
+//   *    /v1/t/<token>/<path>                 → route to existing session DO (no WS upgrades, body ≤ 1 MiB)
 //
 // The WS upgrade mints a random session-id at the edge and routes to
 // idFromName(sessionId); the DO reads it back as `this.name`.
 
 import { RelayServer } from "./relay-do"
 import type { Env } from "./types"
-import { generateSessionId, parseAgentToken, validateTokenPrefix } from "./tokens"
+import { generateSessionId, parseAgentToken } from "./tokens"
 import { errorResponse } from "./errors"
-import { lookupApp } from "./apps"
 import { PRIVACY_HTML } from "./privacy"
 
 export { RelayServer }
 
-// Validate TOKEN_PREFIX at module-top-level so a misconfigured deploy
-// fails fast rather than returning 500 to the first user request.
-// (Validated again per-isolate; cheap and reads from `env` which isn't
-// available at module scope, hence the lazy first-call check too.)
-let prefixValidated = false
-function ensurePrefixValid(env: Env): void {
-  if (prefixValidated) return
-  validateTokenPrefix(env.TOKEN_PREFIX)
-  prefixValidated = true
-}
+const MAX_REQUEST_BODY_BYTES = 1024 * 1024
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
-    ensurePrefixValid(env)
     const url = new URL(req.url)
     const pathname = url.pathname
 
@@ -64,11 +54,13 @@ export default {
 
     // ── WS upgrade for app connections ─────────────────────────────
     // Path: /v1/_ws
-    // The DO routes by session-id, but we don't have one yet — we mint
-    // one here and pass it via a header so the DO knows its own name.
     if (pathname === "/v1/_ws") {
       if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
         return errorResponse("protocol_error", "expected ws upgrade", 400)
+      }
+      const ip = req.headers.get("cf-connecting-ip") ?? ""
+      if (!(await env.WS_RATE_LIMIT.limit({ key: ip })).success) {
+        return errorResponse("rate_limited", "too many connections from this address", 429)
       }
       // Generate a session-id at the edge — or, when DEBUG=1, honor a
       // ?force_session= query param so the harness can drive the
@@ -92,20 +84,49 @@ export default {
     const tokenMatch = pathname.match(/^\/v1\/t\/([^/]+)(?:\/|$)/)
     if (tokenMatch) {
       const tokenStr = tokenMatch[1]!
-      const parsed = parseAgentToken(env.TOKEN_PREFIX, tokenStr)
+      const parsed = parseAgentToken(tokenStr)
       if (!parsed) return errorResponse("not_found", "bad token format", 404)
       // Only /v1/_ws may open a session's WebSocket. An upgrade here would let
       // anyone holding an agent URL attach to the session as the app.
       if (req.headers.get("upgrade")) {
         return errorResponse("protocol_error", "websocket upgrade only on /v1/_ws", 400)
       }
+      // Buffer the body here, capped, so no DO ever holds an agent's request
+      // stream: an unread stream left open when the DO responds early (e.g. a
+      // junk verifier) throws in workerd and resets the session.
+      let body: ArrayBuffer | null = null
+      if (req.body) {
+        body = await readBodyCapped(req.body, MAX_REQUEST_BODY_BYTES)
+        if (!body) return errorResponse("body_too_large", `max ${MAX_REQUEST_BODY_BYTES} bytes`, 413)
+      }
       const id = env.RELAY.idFromName(parsed.sessionId)
-      return env.RELAY.get(id).fetch(req)
+      return env.RELAY.get(id).fetch(new Request(req, { body }))
     }
 
     return errorResponse("not_found", "no route", 404)
   },
 } satisfies ExportedHandler<Env>
+
+// Returns the body, or null once it exceeds `max` bytes.
+async function readBodyCapped(stream: ReadableStream<Uint8Array>, max: number): Promise<ArrayBuffer | null> {
+  const reader = stream.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > max) {
+      await reader.cancel().catch(() => {})
+      return null
+    }
+    chunks.push(value)
+  }
+  const buf = new Uint8Array(size)
+  let off = 0
+  for (const c of chunks) { buf.set(c, off); off += c.byteLength }
+  return buf.buffer
+}
 
 // ────────────────────────────────────────────────────────────────────
 // Debug endpoints — only when DEBUG=1. Never enabled in prod wrangler.jsonc.
@@ -114,13 +135,6 @@ export default {
 async function handleDebug(req: Request, env: Env, pathname: string): Promise<Response> {
   if (pathname === "/_debug/health") {
     return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } })
-  }
-  if (pathname === "/_debug/apps") {
-    const sample = lookupApp("as_app_anon")
-    return new Response(JSON.stringify({ as_app_anon: sample }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    })
   }
   // POST /_debug/kill-ws/<sessionId> — force-closes that session's WS.
   // Drives the harness's reconnect scenarios. Never enabled in prod.

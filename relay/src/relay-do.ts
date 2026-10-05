@@ -2,7 +2,7 @@
 //
 // Holds:
 //   - the app's WebSocket connection
-//   - the registered app-id, agentsMd, tools list
+//   - the registered app-id (a label), agentsMd, tools list
 //   - the set of valid agent-tokens (verifiers) minted in this session
 //   - the pending-request correlation map for in-flight tool calls
 //
@@ -20,7 +20,6 @@ import type {
   ListAgentTokensReplyFrame,
 } from "./types"
 import { generateVerifier, makeAgentToken, parseAgentToken } from "./tokens"
-import { lookupApp, checkOrigin } from "./apps"
 import { errorResponse } from "./errors"
 // Source of truth for the framework's "how to call tools" reference card
 // lives in the SDK so the constant doesn't drift between served bytes and
@@ -37,8 +36,11 @@ const MAX_AGENTS_MD_BYTES = 64 * 1024
 // in-memory `tasks` Map until workerd OOM-kills the isolate.
 const MAX_TASKS_PER_SESSION = 100
 const MAX_TASK_BODY_BYTES = 64 * 1024
+const REGISTER_TIMEOUT_MS = 10_000
+const MAX_FRAME_BYTES = 4 * 1024 * 1024
 
 const TOOL_PATH_RE = /^\/[a-zA-Z0-9_\-/.]+$/
+const APP_ID_RE = /^[A-Za-z0-9_.-]{1,64}$/
 // Task IDs are app-supplied strings used as Map keys and echoed in HTTP
 // responses. Bound the shape so an app can't store control chars, oversized
 // keys, or non-strings.
@@ -81,6 +83,9 @@ export class RelayServer extends Server<Env> {
   pending: Map<string, PendingRequest> = new Map()
   // For async / task polling
   tasks: Map<string, PendingTask> = new Map()
+  // Fires when the app has been silent for HEARTBEAT_TIMEOUT_MS (the SDK pings
+  // every 25 s), so a half-open socket doesn't keep the session "live".
+  livenessTimer: ReturnType<typeof setTimeout> | null = null
 
   // ── WS lifecycle ──────────────────────────────────────────────────
 
@@ -100,16 +105,27 @@ export class RelayServer extends Server<Env> {
       c.close(4409, "already connected")
       return
     }
-    // Stash the Origin header for the later origin-check on register.
-    const origin = ctx.request.headers.get("origin")
-    ;(c as Connection & { origin?: string | null }).origin = origin
     this.appWs = c
+    // Don't let a socket that never registers pin this DO.
+    setTimeout(() => {
+      if (this.appWs?.id === c.id && this.appId === null) this.dropApp(4408, "register timeout")
+    }, REGISTER_TIMEOUT_MS)
     if (this.env.DEBUG === "1") console.log(`[DO] WS connected sessionId=${this.sessionId}, awaiting register`)
   }
 
   onClose(c: Connection): void {
     // A rejected extra connection closing must not tear down the live app.
     if (!this.appWs || c.id !== this.appWs.id) return
+    this.dropApp()
+  }
+
+  // Close the app socket (if asked) and end the session. Doesn't wait for
+  // onClose: a dead peer may never complete the close handshake.
+  private dropApp(code?: number, reason?: string): void {
+    if (code !== undefined) {
+      try { this.appWs?.close(code, reason) } catch {}
+    }
+    clearTimeout(this.livenessTimer)
     if (this.env.DEBUG === "1") console.log("[DO] WS closed; failing", this.pending.size, "pending")
     for (const p of this.pending.values()) {
       clearTimeout(p.timer)
@@ -139,6 +155,17 @@ export class RelayServer extends Server<Env> {
 
   onMessage(c: Connection, raw: string | ArrayBuffer): void {
     if (c.id !== this.appWs?.id) return
+    // workerd's own limit is 32 MiB; parsing frames that big risks OOM for
+    // every session sharing this isolate.
+    if ((typeof raw === "string" ? raw.length : raw.byteLength) > MAX_FRAME_BYTES) {
+      this.dropApp(1009, "frame too large")
+      return
+    }
+    clearTimeout(this.livenessTimer)
+    this.livenessTimer = setTimeout(
+      () => this.dropApp(4408, "heartbeat timeout"),
+      parseInt(this.env.HEARTBEAT_TIMEOUT_MS || "50000", 10),
+    )
     const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw)
     let msg: Frame
     try { msg = JSON.parse(text) as Frame } catch {
@@ -200,39 +227,43 @@ export class RelayServer extends Server<Env> {
 
   private handleRegister(msg: RegisterFrame): void {
     // 0. Already-registered guard. A second register can't change app-id /
-    //    origin allowlist / tools mid-session.
+    //    tools mid-session.
     if (this.appId !== null) {
       this.send({ type: "register_reply", ok: false, error: { code: "protocol_error", message: "already registered" } })
       return
     }
 
-    // 1. Look up app-id.
-    const app = lookupApp(msg.appId)
-    if (!app) {
-      this.send({ type: "register_reply", ok: false, error: { code: "unknown_app_id" } })
-      this.appWs?.close(4001, "unknown app_id")
+    // 1. app-id is a free-form label shown in tools.json, not a credential:
+    //    any app can claim any id, so there's nothing to look up.
+    if (typeof msg.appId !== "string" || !APP_ID_RE.test(msg.appId)) {
+      this.send({ type: "register_reply", ok: false, error: { code: "invalid_app_id", message: "use [A-Za-z0-9_.-]{1,64}" } })
+      this.appWs?.close(4001, "invalid app_id")
       return
     }
 
-    // 2. Origin check (browsers only — non-browsers skip via "*" or absent origin).
-    const origin = (this.appWs as Connection & { origin?: string | null }).origin ?? null
-    if (!checkOrigin(app, origin)) {
-      this.send({ type: "register_reply", ok: false, error: { code: "origin_denied" } })
-      this.appWs?.close(4003, "origin denied")
-      return
-    }
-
-    // 3. Validate agentsMd size.
+    // 2. Validate agentsMd size.
     if (typeof msg.agentsMd !== "string" || msg.agentsMd.length > MAX_AGENTS_MD_BYTES) {
       this.send({ type: "register_reply", ok: false, error: { code: "agents_md_too_large" } })
       this.appWs?.close(4413, "agents.md too large")
       return
     }
 
-    // 4. Validate + index tools.
+    // 3. Validate + index tools.
+    if (msg.tools !== undefined && !Array.isArray(msg.tools)) {
+      this.send({ type: "register_reply", ok: false, error: { code: "protocol_error", message: "tools must be an array" } })
+      this.appWs?.close(4400, "invalid tools")
+      return
+    }
     const validatedTools: ToolDef[] = []
     const seen = new Set<string>()
     for (const t of msg.tools ?? []) {
+      if (!t || typeof t !== "object"
+        || (t.method !== undefined && typeof t.method !== "string")
+        || (t.description !== undefined && typeof t.description !== "string")) {
+        this.send({ type: "register_reply", ok: false, error: { code: "protocol_error", message: "each tool needs a path and string method/description" } })
+        this.appWs?.close(4400, "invalid tool")
+        return
+      }
       const path = t.path
       const method = (t.method ?? "POST").toUpperCase()
 
@@ -273,7 +304,7 @@ export class RelayServer extends Server<Env> {
       validatedTools.push(validated)
     }
 
-    // 5. Store state, reply with the session-id assigned at WS handshake.
+    // 4. Store state, reply with the session-id assigned at WS handshake.
     this.appId = msg.appId
     this.appDescription = typeof msg.appDescription === "string" ? msg.appDescription.slice(0, 1024) : ""
     this.agentsMd = msg.agentsMd
@@ -295,7 +326,7 @@ export class RelayServer extends Server<Env> {
       return
     }
     const verifier = generateVerifier()
-    const token = makeAgentToken(this.env.TOKEN_PREFIX, this.sessionId, verifier)
+    const token = makeAgentToken(this.sessionId, verifier)
     const url = `__BASE__/v1/t/${token}/agents.md`  // SDK rewrites __BASE__ to actual host
     const label = typeof msg.label === "string" ? msg.label.slice(0, 256) : ""
     const minted: MintedToken = {
@@ -318,7 +349,7 @@ export class RelayServer extends Server<Env> {
   }
 
   private handleRevoke(msg: { id: string; token: string }): void {
-    const parsed = parseAgentToken(this.env.TOKEN_PREFIX, msg.token)
+    const parsed = parseAgentToken(msg.token)
     let revoked = false
     if (parsed && parsed.sessionId === this.sessionId) {
       revoked = this.validTokens.delete(parsed.verifier)
@@ -391,7 +422,7 @@ export class RelayServer extends Server<Env> {
       if (this.env.DEBUG === "1") console.log("[DO] task_complete dropped: taskId not pending:", taskId)
       return
     }
-    if (typeof status !== "number" || !Number.isInteger(status) || status < 100 || status > 599) {
+    if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 599) {
       if (this.env.DEBUG === "1") console.log("[DO] task_complete dropped: invalid status:", status)
       return
     }
@@ -423,17 +454,6 @@ export class RelayServer extends Server<Env> {
       return new Response("ok", { status: 200 })
     }
 
-    // Drain the request body up front. workerd throws an uncaught
-    // "Can't read from request stream after response has been sent" error
-    // (which destabilizes the DO) if we return a Response without consuming
-    // the body. Reading once and reusing avoids that whole class of bugs.
-    let body = ""
-    try {
-      body = await req.text()
-    } catch {
-      // Body unreadable for some reason (already-consumed, etc) — treat as empty
-    }
-
     // Strip the routing prefix `/v1/t/<token>` to get the user-facing path.
     // Worker entry already validated the token format and routed here.
     const m = pathname.match(/^\/v1\/t\/[^/]+(\/.*)?$/)
@@ -450,13 +470,17 @@ export class RelayServer extends Server<Env> {
     const tokenMatch = pathname.match(/^\/v1\/t\/([^/]+)\//)
     if (!tokenMatch) return errorResponse("not_found", "malformed url", 404)
     const tokenStr = tokenMatch[1]!
-    const parsed = parseAgentToken(this.env.TOKEN_PREFIX, tokenStr)
+    const parsed = parseAgentToken(tokenStr)
     if (!parsed || parsed.sessionId !== this.sessionId) {
       return errorResponse("token_invalid", "token format or session mismatch", 401)
     }
     if (!this.validTokens.has(parsed.verifier)) {
       return errorResponse("token_invalid", "agent-token unknown or revoked", 401)
     }
+
+    // The worker already buffered (and capped) the body, so returning above
+    // without reading it is safe; read it only once the token is known good.
+    const body = await req.text()
 
     // Reserved meta paths
     if (userPath === "/agents.md") {
@@ -480,7 +504,7 @@ export class RelayServer extends Server<Env> {
         version: "1.0",
         app: {
           id: this.appId,
-          name: lookupApp(this.appId ?? "")?.label ?? this.appId,
+          name: this.appId,
           description: this.appDescription,
         },
         tools: this.tools.map((t) => ({
@@ -528,8 +552,6 @@ export class RelayServer extends Server<Env> {
     if (userPath.startsWith("/_as_")) {
       return errorResponse("not_found", "unknown internal path", 404)
     }
-    // Note: the debug-only kill-ws path is matched at the start of onRequest
-    // before token validation, see the early-return below.
 
     // CSRF defense on the user-tool surface. Tool paths run user-defined
     // handlers and can have arbitrary side effects, so a browser-initiated
@@ -563,9 +585,12 @@ export class RelayServer extends Server<Env> {
 
     const id = crypto.randomUUID()
     const headers: Record<string, string> = {}
-    // Forward only safe-to-share headers — content-type and any X-* headers.
+    // Forward content-type and the agent's own X-* headers, but not the
+    // proxy headers Cloudflare adds (x-real-ip, x-forwarded-*): they carry the
+    // agent's IP. cf-* never matches the x- rule.
     for (const [k, v] of req.headers.entries()) {
       const lk = k.toLowerCase()
+      if (lk === "x-real-ip" || lk.startsWith("x-forwarded-")) continue
       if (lk === "content-type" || lk.startsWith("x-")) headers[lk] = v
     }
 
@@ -642,7 +667,9 @@ function extractContentType(headers: Record<string, string> | undefined): string
 // is served from the relay's own origin (agentsocket.dev) and the meta/task
 // surfaces are reachable by a plain browser GET, so we must never hand back
 // app-controlled markup that runs as HTML/SVG-script on our origin. These get
-// downgraded to text/plain (the body is still returned, just inert).
+// downgraded to text/plain (the body is still returned, just inert), as is
+// any *+xml type. APP_RESPONSE_CSP is the backstop for anything that slips by.
+const APP_RESPONSE_CSP = "sandbox; default-src 'none'"
 const SCRIPT_CAPABLE_TYPES = new Set([
   "text/html",
   "application/xhtml+xml",
@@ -651,29 +678,43 @@ const SCRIPT_CAPABLE_TYPES = new Set([
   "text/xml",
 ])
 
+// Never throws: an app reply that can't become a Response (bad status, a
+// header value with a newline) must still resolve the agent's request.
 function buildToolResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
-  const contentType = extractContentType(headers)
-  // Handler opted into a custom content-type AND gave us a string body — pass
-  // it through, but neutralize script-capable types (XSS on our origin) and
-  // always send nosniff so the browser can't sniff a safe type into HTML.
-  if (contentType && typeof body === "string") {
-    const essence = contentType.split(";")[0]!.trim().toLowerCase()
-    const safeType = SCRIPT_CAPABLE_TYPES.has(essence)
-      ? "text/plain; charset=utf-8"
-      : contentType
-    return new Response(body, {
-      status,
-      headers: { "content-type": safeType, "x-content-type-options": "nosniff" },
-    })
+  if (!Number.isInteger(status) || status < 200 || status > 599) {
+    return errorResponse("protocol_error", "app replied with an invalid status (use 200-599)", 502)
   }
-  return new Response(
-    body !== undefined ? JSON.stringify(body) : "",
-    {
-      status,
-      headers: {
-        "content-type": "application/json; charset=utf-8",
-        "x-content-type-options": "nosniff",
+  const contentType = extractContentType(headers)
+  try {
+    // Handler opted into a custom content-type AND gave us a string body — pass
+    // it through, but neutralize script-capable types (XSS on our origin) and
+    // always send nosniff so the browser can't sniff a safe type into HTML.
+    if (contentType && typeof body === "string") {
+      const essence = contentType.split(";")[0]!.trim().toLowerCase()
+      const safeType = SCRIPT_CAPABLE_TYPES.has(essence) || essence.endsWith("+xml")
+        ? "text/plain; charset=utf-8"
+        : contentType
+      return new Response(body, {
+        status,
+        headers: {
+          "content-type": safeType,
+          "x-content-type-options": "nosniff",
+          "content-security-policy": APP_RESPONSE_CSP,
+        },
+      })
+    }
+    return new Response(
+      body !== undefined ? JSON.stringify(body) : "",
+      {
+        status,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "x-content-type-options": "nosniff",
+          "content-security-policy": APP_RESPONSE_CSP,
+        },
       },
-    },
-  )
+    )
+  } catch {
+    return errorResponse("protocol_error", "app reply is not a valid HTTP response", 502)
+  }
 }

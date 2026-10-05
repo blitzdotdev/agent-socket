@@ -36,3 +36,5 @@ An unauthenticated attacker can open a large number of WS connections (or upgrad
 ## Provenance
 
 Found during a full line-by-line audit. Verified the upgrade path (`worker.ts:72-93`) spawns a DO with no auth, and `hibernate: false` (`relay-do.ts:70`). Recorded as MEDIUM: real for a public deploy, partially covered by the noted manual CF rate-limit step, but the `hibernate: false` pre-register angle is worth fixing in code.
+
+**CLOSED 2026-10-05.** `/v1/_ws` upgrades are rate-limited per IP with a Workers Rate Limiting binding (`WS_RATE_LIMIT`, 100 per 10 s, 429 `rate_limited`), and the DO closes a socket that hasn't registered within 10 s (4408). Harness: `48-register-timeout`, `90-ws-rate-limit`.

@@ -1,9 +1,9 @@
 // 28-tool-timeout — tool handler that never replies hits MAX_SYNC_TOOL_MS,
 // agent gets 504 tool_timeout. Pending entry is cleared so subsequent calls work.
 //
-// Reads MAX_SYNC_TOOL_MS from relay/.dev.vars to compute the expected window
-// so the test works regardless of whether dev is configured for fast tests
-// (e.g. 3000) or production-like (e.g. 30000).
+// Reads MAX_SYNC_TOOL_MS from the env (set by run.mjs when it boots the relay)
+// or relay/.dev.vars to compute the expected window, so the test works with
+// fast (3000) or production-like (30000) settings.
 
 import { Assert } from "../lib/assert.mjs"
 import { openRawWs, httpPost } from "../lib/relay.mjs"
@@ -15,6 +15,7 @@ const __dirname = path.dirname(url.fileURLToPath(import.meta.url))
 const DEV_VARS = path.join(__dirname, "..", "..", "relay", ".dev.vars")
 
 function expectedTimeoutMs() {
+  if (process.env.MAX_SYNC_TOOL_MS) return parseInt(process.env.MAX_SYNC_TOOL_MS, 10)
   try {
     const text = fs.readFileSync(DEV_VARS, "utf8")
     const m = text.match(/^MAX_SYNC_TOOL_MS\s*=\s*(\d+)/m)

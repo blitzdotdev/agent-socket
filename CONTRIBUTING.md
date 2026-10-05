@@ -38,13 +38,13 @@ node chrome-extension/test/reconnect.e2e.mjs
 - `chrome-extension/` — the MV3 extension that exposes tab-driving tools to any AI chat.
 - `examples/` — example app(s) using the SDK (currently just `pixel-art-canvas/`).
 - `harness/` — runtime integration scenarios.
-- `scripts/` — operational scripts. `deploy.sh` is the single entry point for all wrangler operations.
+- `scripts/` — operational scripts. `deploy.sh` deploys the relay (`deploy`, `smoke`, `dev`).
 - `docs/` — design + protocol docs.
 - `issues/` — historical / in-flight design notes (separate from GitHub Issues; tracks meta-decisions).
 
 ## Conventions
 
-- **No ad-hoc wrangler.** Use `scripts/deploy.sh <subcommand>` for everything (`deploy`, `tail`, `rollback`, `status`, `smoke`, `whoami`, `dev`).
+- **Deploy via `scripts/deploy.sh deploy`**, so the smoke test runs after every deploy.
 - **`wrangler.jsonc`, not `.toml`.** Comments matter; we keep them.
 - **Apache 2.0** license — every commit you make is contributed under that license.
 - **One concern per PR.** A bug fix shouldn't bundle a refactor. A doc tweak shouldn't bundle a behavior change.

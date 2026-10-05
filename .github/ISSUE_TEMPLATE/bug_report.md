@@ -21,9 +21,9 @@ labels: bug
 - Component: relay / SDK / CLI / chrome-ext / harness / docs
 - Node version: `node -v`
 - OS:
-- Wrangler version (if relay): `bash scripts/deploy.sh whoami`
+- Wrangler version (if relay): `npx wrangler --version`
 - Relay URL (if not the public one):
 
 ## Logs
 
-(Paste any relevant stderr / `bash scripts/deploy.sh tail` output. **Redact tokens and API keys** before pasting.)
+(Paste any relevant stderr / `npx wrangler tail` output. **Redact tokens and API keys** before pasting.)

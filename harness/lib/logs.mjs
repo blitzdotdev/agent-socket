@@ -4,11 +4,11 @@
 
 import { readFileSync, existsSync } from "node:fs"
 
-const LOG_PATH = process.env.WRANGLER_LOG ?? "/tmp/as-wrangler.log"
-
 export function tail(n = 20) {
-  if (!existsSync(LOG_PATH)) return []
-  const text = readFileSync(LOG_PATH, "utf8")
+  // Read lazily: run.mjs sets WRANGLER_LOG after import when it boots wrangler.
+  const logPath = process.env.WRANGLER_LOG ?? "/tmp/as-wrangler.log"
+  if (!existsSync(logPath)) return []
+  const text = readFileSync(logPath, "utf8")
   return text.split("\n").filter(Boolean).slice(-n)
 }
 

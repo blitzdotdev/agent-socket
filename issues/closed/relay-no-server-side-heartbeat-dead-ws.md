@@ -31,3 +31,5 @@ Net: agents see 30-second hangs instead of a prompt `app_offline`, and the DO li
 ## Provenance
 
 Found during a full line-by-line audit. Verified: no `setInterval`/`alarm`/outgoing-`ping` in `relay-do.ts`; `pong` is explicitly ignored (`:163-165`); `HEARTBEAT_INTERVAL_MS`/`HEARTBEAT_TIMEOUT_MS` appear only in `wrangler.jsonc` and `types.ts`, never read in source.
+
+**CLOSED 2026-10-05.** The DO re-arms a timer on every app frame; if the app is silent for `HEARTBEAT_TIMEOUT_MS` (default 50 s; the SDK pings every 25 s, the extension every 30 s) it closes the socket with 4408 and ends the session (`dropApp`), so pending and later agent calls get `app_offline` at once. The relay does not ping; the unused `HEARTBEAT_INTERVAL_MS` is gone. Harness: `51-app-liveness`.

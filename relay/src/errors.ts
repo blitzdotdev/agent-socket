@@ -7,8 +7,7 @@ export type ErrorCode =
   | "tool_timeout"
   | "too_many_inflight"
   | "too_many_tokens"
-  | "unknown_app_id"
-  | "origin_denied"
+  | "invalid_app_id"
   | "rate_limited"
   | "not_found"
   | "reserved_path"
@@ -17,6 +16,7 @@ export type ErrorCode =
   | "internal_error"
   | "csrf_denied"
   | "too_many_tasks"
+  | "body_too_large"
 
 export function errorResponse(code: ErrorCode, message: string, status: number): Response {
   return new Response(

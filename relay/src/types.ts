@@ -2,9 +2,8 @@
 
 export interface Env {
   RELAY: DurableObjectNamespace
-  TOKEN_PREFIX: string
+  WS_RATE_LIMIT: RateLimit
   MAX_SYNC_TOOL_MS: string
-  HEARTBEAT_INTERVAL_MS: string
   HEARTBEAT_TIMEOUT_MS: string
   DEBUG?: string
 }
@@ -17,14 +16,6 @@ export interface ToolDef {
   description: string
   input_schema?: unknown  // JSON Schema, optional
 }
-
-// App entry from apps.json
-export interface AppEntry {
-  allowedOrigins: string[]  // exact origins or "*"
-  label: string
-}
-
-export type AppsRegistry = Record<string, AppEntry>
 
 // Wire frames — app ↔ relay (both directions)
 

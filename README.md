@@ -14,7 +14,7 @@ v0 — actively in development. 42 end-to-end scenarios passing across relay + S
 
 **Deployed at https://agentsocket.dev** (canonical) and https://aisocket.dev (alias) — both routes hit the same Worker.
 
-**Deploys go through one script.** All wrangler operations (deploy, tail, rollback, status, dev) route through `scripts/deploy.sh`. Do not run `wrangler` ad-hoc — the script loads CF credentials from `.env` at the repo root (copy `.env.example` to `.env` and fill in `CLOUDFLARE_API_TOKEN`) so deployment is non-interactive and reproducible. The `account_id` is read from `relay/wrangler.jsonc` as the single source of truth.
+**Deploys go through one script.** `bash scripts/deploy.sh deploy` loads CF credentials from `.env` at the repo root (copy `.env.example` to `.env` and fill in `CLOUDFLARE_API_TOKEN`) so deployment is non-interactive and reproducible. The `account_id` is read from `relay/wrangler.jsonc` as the single source of truth.
 
 ## Quick start
 
@@ -76,8 +76,7 @@ console.log("Paste in your AI chat:", link.url)
 ```
 agent-socket/
 ├── relay/                # Cloudflare Worker + Durable Object via PartyServer
-│   ├── src/              # worker.ts, relay-do.ts, tokens.ts, apps.ts, errors.ts, privacy.ts, types.ts
-│   ├── apps.json         # registered app-ids + allowed origins
+│   ├── src/              # worker.ts, relay-do.ts, tokens.ts, errors.ts, privacy.ts, types.ts
 │   └── wrangler.jsonc    # CF config; default vars (no DEBUG)
 ├── sdk/                  # @agent-socket/sdk — JS/TS client (Node + browser)
 │   └── src/              # index.ts, session.ts, transport.ts, backoff.ts, agents-md.ts
@@ -115,7 +114,7 @@ cd relay
 npx wrangler deploy
 ```
 
-`apps.json` registers app-ids and their allowed origins. Edit, redeploy. `TOKEN_PREFIX` (default `as`) is configurable via `wrangler.jsonc` `vars` for self-hosters who want a branded prefix.
+`appId` is a free-form label (`[A-Za-z0-9_.-]{1,64}`); there's no app registry.
 
 ## Testing
 

@@ -16,9 +16,7 @@ When the WS drops the DO eventually dies. v0 has zero `ctx.storage` usage — ch
 
 ## Tokens
 
-Format: `<TOKEN_PREFIX>_<sessionId>_<verifier>` — by default `as_<8>_<22>`. The 8-char Crockford-base32 session-id is what `idFromName()` routes by; the 22-char base64url verifier is checked against the DO's in-memory set on every agent request.
-
-`TOKEN_PREFIX` is configurable in `vars` (must match `^[a-z0-9]{2,8}$`).
+Format: `as_<sessionId>_<verifier>` (`as_<8>_<22>`). The 8-char Crockford-base32 session-id is what `idFromName()` routes by; the 22-char base64url verifier is checked against the DO's in-memory set on every agent request.
 
 ## URL surface
 
@@ -39,10 +37,8 @@ See `wrangler.jsonc`. Production env vars:
 
 | Var | Purpose |
 |---|---|
-| `TOKEN_PREFIX` | Token format prefix; `"as"` for the canonical deployment |
 | `MAX_SYNC_TOOL_MS` | How long the relay holds an HTTP request waiting for the app's WS reply before returning 504 `tool_timeout` |
-| `HEARTBEAT_INTERVAL_MS` | Ping cadence to the app's WS |
-| `HEARTBEAT_TIMEOUT_MS` | Pong-wait before tearing down a stale WS |
+| `HEARTBEAT_TIMEOUT_MS` | How long the app's WS may stay silent before the relay closes it as dead (the SDK pings every 25 s) |
 
 `DEBUG` is intentionally absent in production. Set it in `.dev.vars` (gitignored) only.
 
@@ -63,8 +59,8 @@ node harness/run.mjs all
 bash scripts/deploy.sh deploy
 ```
 
-All wrangler operations go through `scripts/deploy.sh`. **Do not run `npx wrangler ...` directly.** See `scripts/deploy.sh --help` for subcommands.
+`scripts/deploy.sh` loads `CLOUDFLARE_API_TOKEN` from `.env`, runs `wrangler deploy`, then smoke-tests both production domains.
 
-## Apps registry
+## App-ids
 
-`apps.json` lists the registered app-ids. v0 has three: `as_app_anon` (anonymous, wide-open), `as_app_pixel_art` (the demo), `as_app_test_strict` (harness fixture). Add new apps by editing this file and redeploying. A signup flow is a v1 item.
+`appId` in the register frame is a free-form label (`[A-Za-z0-9_.-]{1,64}`, e.g. `as_app_anon`), echoed in `tools.json`. It isn't a credential and there's no registry: Origin can't be trusted outside browsers, so the relay doesn't check it.
