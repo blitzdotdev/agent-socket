@@ -72,6 +72,7 @@ A handler that throws produces `500 {"error": {"code": "handler_error", "message
 | `mintAgentToken({ label })` | New link: `{ token, url, label, expiresAt: null }`. Up to 50 per session (rejects with `mint failed: too_many_tokens`). |
 | `listAgentTokens()` | Active links, with `mintedAt`. Needs a live connection. |
 | `revokeAgentToken(token)` | Kills a link. While disconnected, the revoke is sent with the next resume. |
+| `updateTools(tools, agentsMd?)` | Replaces the tool list (and `agentsMd` if given) on the live session; every link keeps working. Rejects if the relay refuses the list, and then nothing changes. Calls run in order; while disconnected it waits for the reconnect. |
 | `completeTask(taskId, { status?, body?, headers? })` | Finishes an async call. Throws if not connected. |
 | `ping()` | Sends a heartbeat now, e.g. from a `chrome.alarms` handler in an MV3 service worker. |
 | `close()` | Closes with code 1000. The relay ends the session at once and every link stops working. |

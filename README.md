@@ -61,7 +61,7 @@ The relay is built on [PartyServer](https://github.com/cloudflare/partykit/tree/
 
 ## Site profile registry
 
-[`registry/`](registry/) is a shared library of per-site tool profiles (notes plus ready-made tools) for the extension, hosted at `registry.agentsocket.dev`. Anyone can submit a profile; it goes live only after the maintainer reviews it.
+[`registry/`](registry/) is a shared library of per-site tool profiles (notes plus ready-made tools) for the extension, hosted at `registry.agentsocket.dev`. On Connect the extension loads the profile for the tab's site, and the AI can search the registry and submit what it learns about a new site. Submissions go live only after the maintainer reviews them.
 
 ## Self-hosting
 

@@ -60,7 +60,7 @@ export default async function () {
 Separate from the harness because they need chromium:
 
 ```bash
-node chrome-extension/test/reconnect.unit.mjs   # 23 assertions, mocked WS; no chromium
+node chrome-extension/test/reconnect.unit.mjs   # mocked WS; no chromium
 node chrome-extension/test/reconnect.e2e.mjs    # real chromium; headless=new
 ```
 

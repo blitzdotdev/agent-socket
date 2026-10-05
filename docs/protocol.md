@@ -170,6 +170,17 @@ Optional `tool_reply` fields: `headers` (only `content-type` is used) and `taskI
 
 `task_complete` has no reply.
 
+### update_tools
+
+A registered app can replace its tools without changing any link:
+
+```json
+{ "type": "update_tools", "id": "u1", "tools": [ { "method": "POST", "path": "/b", "description": "…" } ], "agentsMd": "# optional" }
+{ "type": "update_tools_reply", "id": "u1", "ok": true }
+```
+
+The list is validated like `register`'s and replaces the old one; `agentsMd` is replaced only when present. On error (`reserved_path`, `protocol_error`, `agents_md_too_large`) nothing changes and the socket stays open. A later `resume` carries the full registration again, so resume with the current tools.
+
 ### Liveness
 
 ```json
