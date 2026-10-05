@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Socket: let Claude use your browser tab</title>
+<meta name="description" content="Connect one browser tab, paste a link into Claude, and it can read the page, click, type and move between pages for you. Free and open source.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f4f5fb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#17152e" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23d6005f'/%3E%3Ccircle cx='11' cy='16' r='2.6' fill='white'/%3E%3Ccircle cx='21' cy='16' r='2.6' fill='white'/%3E%3C/svg%3E">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Agent Socket">
+<meta property="og:title" content="Let Claude use your browser tab">
+<meta property="og:description" content="Connect one tab, paste a link into Claude, and it can read, click and type on that page for you.">
+<meta property="og:url" content="https://agentsocket.dev/">
+<meta name="twitter:card" content="summary">
+<style>
+:root {
+  --paper: #f4f5fb;
+  --surface: #ffffff;
+  --ink: #1b1840;
+  --muted: #55526e;
+  --line: #dcdbea;
+  --signal: #d6005f;
+  --signal-ink: #ffffff;
+  --glow: #ffe1ee;
+  --well: #e9e9f4;
+  --band: #1b1840;
+  --band-ink: #eceaf7;
+  --band-muted: #b9b6d6;
+  --band-line: #343062;
+  --band-code: #13112f;
+  --band-signal: #ff7aac;
+
+  --display: ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", "Nunito", "Varela Round", system-ui, sans-serif;
+  --text: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --measure: 34rem;
+  --page: 72rem;
+  --gutter: clamp(1.25rem, 4vw, 2.5rem);
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #17152e;
+    --surface: #221f40;
+    --ink: #eceaf7;
+    --muted: #a9a6c4;
+    --line: #36325c;
+    --signal: #ff5c9a;
+    --signal-ink: #17152e;
+    --glow: #3d1a3a;
+    --well: #1d1a38;
+    --band: #0f0d24;
+    --band-code: #0a091a;
+    --band-line: #2a2650;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 1.0625rem/1.6 var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; text-underline-offset: .2em; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 3px solid var(--signal); outline-offset: 3px; border-radius: 4px; }
+h1, h2, h3 { font-family: var(--display); line-height: 1.1; margin: 0; letter-spacing: -0.02em; font-weight: 800; }
+h2 { font-size: clamp(1.75rem, 3.2vw, 2.5rem); }
+h3 { font-size: 1.1875rem; letter-spacing: -0.01em; font-weight: 750; }
+p { margin: 0; }
+code, kbd { font-family: var(--mono); font-size: .9em; }
+.wrap { max-width: var(--page); margin: 0 auto; padding: 0 var(--gutter); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skip { position: absolute; left: -999px; top: .5rem; background: var(--surface); padding: .5rem .75rem; z-index: 10; }
+.skip:focus { left: .5rem; }
+
+/* ── top bar ─────────────────────────────────────────── */
+.top { padding: 1.25rem 0; }
+.top .wrap { display: flex; align-items: center; gap: 1.5rem; }
+.mark { display: inline-flex; align-items: center; gap: .55rem; font: 800 1.125rem/1 var(--display); text-decoration: none; letter-spacing: -0.01em; }
+.mark svg { width: 1.6rem; height: 1.6rem; flex: none; }
+.top nav { margin-left: auto; display: flex; gap: 1.25rem; font-size: .9375rem; }
+.top nav a { text-decoration: none; color: var(--muted); }
+.top nav a:hover { color: var(--ink); text-decoration: underline; }
+
+/* ── hero ────────────────────────────────────────────── */
+.hero { padding: clamp(1.5rem, 5vw, 4rem) 0 clamp(3rem, 7vw, 6rem); }
+.hero .wrap { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); gap: clamp(2rem, 4vw, 3.5rem) clamp(2rem, 5vw, 4.5rem); align-items: start; }
+.hero h1 { grid-column: 1 / -1; font-size: clamp(2.75rem, 7.6vw, 6.75rem); line-height: .96; letter-spacing: -0.045em; max-width: 15ch; }
+.hero .copy { padding-top: clamp(0rem, 2vw, 1.5rem); }
+.hero .lede { font-size: clamp(1.125rem, 1.6vw, 1.3125rem); line-height: 1.5; color: var(--muted); max-width: 30rem; }
+.actions { margin-top: 2.25rem; display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 1.75rem; }
+.btn {
+  display: inline-flex; align-items: center; gap: .65rem;
+  background: var(--signal); color: var(--signal-ink);
+  font: 750 1.125rem/1 var(--display); letter-spacing: -0.005em;
+  padding: 1.05rem 1.5rem 1.05rem 1.2rem; border-radius: 999px;
+  text-decoration: none;
+  box-shadow: 0 1px 0 rgba(0,0,0,.12), 0 8px 24px -10px var(--signal);
+}
+.btn:hover { text-decoration: none; filter: brightness(1.06); }
+.btn:active { transform: translateY(1px); }
+.btn svg { width: 1.5rem; height: 1.5rem; flex: none; }
+.textlink { font-weight: 600; color: var(--ink); }
+.fine { margin-top: 1.1rem; font-size: .9375rem; color: var(--muted); }
+
+/* hero scene: a browser window + a chat, joined by a cable */
+.scene { position: relative; container-type: inline-size; aspect-ratio: 16 / 11; margin: 0; }
+.scene .browser { position: absolute; left: 0; top: 0; width: 80%; height: 80%; }
+.scene .chat { position: absolute; right: 0; bottom: 0; width: 47%; }
+.cable { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.cable path { fill: none; stroke: var(--signal); stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 0; }
+.cable circle { fill: var(--signal); }
+
+.browser {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 2.2cqw;
+  box-shadow: 0 2cqw 5cqw -2.5cqw rgba(27,24,64,.28);
+  overflow: hidden; font-size: 1.85cqw; line-height: 1.3; display: flex; flex-direction: column;
+}
+.tabs { display: flex; align-items: flex-end; gap: .6em; padding: 1.1em 1em 0; background: var(--well); }
+.tabs .dots { display: flex; gap: .45em; padding: 0 .4em .75em 0; }
+.tabs .dots i { width: .8em; height: .8em; border-radius: 50%; background: var(--line); display: block; }
+.tab { padding: .55em 1em; border-radius: .7em .7em 0 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 12em; }
+.tab.on { background: var(--surface); color: var(--ink); position: relative; display: flex; align-items: center; gap: .5em; max-width: 16em; }
+.tab.on::after { content: ""; position: absolute; inset: 0 0 -.2em; border: .22em solid var(--signal); border-bottom: 0; border-radius: .7em .7em 0 0; }
+.tab.on .plug { width: 1.1em; height: 1.1em; flex: none; color: var(--signal); }
+.urlbar { display: flex; align-items: center; gap: .8em; padding: .7em 1em; border-bottom: 1px solid var(--line); }
+.urlbar .url { flex: 1; background: var(--well); border-radius: 99px; padding: .45em 1em; color: var(--muted); }
+.urlbar .ext { width: 1.9em; height: 1.9em; border-radius: .5em; background: var(--signal); display: grid; place-items: center; }
+.urlbar .ext svg { width: 1.3em; height: 1.3em; }
+.page { padding: 1.6em 2em; flex: 1; position: relative; }
+.page::after { content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 .22em var(--signal); opacity: 1; pointer-events: none; }
+.page h4 { margin: 0 0 1em; font: 800 1.45em/1.1 var(--display); letter-spacing: -0.01em; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: .8em 1.1em; }
+.field { display: grid; gap: .3em; }
+.field.wide { grid-column: 1 / -1; }
+.field span { color: var(--muted); font-size: .85em; }
+.field b { font-weight: 500; border: 1px solid var(--line); border-radius: .5em; padding: .5em .7em; display: block; min-height: 2.2em; white-space: nowrap; overflow: hidden; }
+.field b i { font-style: normal; display: inline-block; overflow: hidden; vertical-align: bottom; max-width: 100%; }
+.place { margin-top: 1.2em; display: inline-block; padding: .6em 1.2em; border-radius: .6em; background: var(--well); color: var(--muted); font-weight: 600; }
+
+.chat {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 2.2cqw;
+  box-shadow: 0 2.5cqw 6cqw -2.5cqw rgba(27,24,64,.35);
+  font-size: 1.85cqw; line-height: 1.4; padding: 1.2em; display: grid; gap: .9em;
+}
+.chat .who { display: flex; align-items: center; gap: .55em; font-weight: 700; }
+.chat .who i { width: 1.5em; height: 1.5em; border-radius: 50%; background: var(--ink); display: block; position: relative; }
+.chat .who i::after { content: ""; position: absolute; inset: .42em; border-radius: 50%; background: var(--surface); }
+.msg-user { justify-self: end; background: var(--well); border-radius: 1.1em 1.1em .3em 1.1em; padding: .8em .95em; max-width: 94%; }
+.linkpill { display: flex; align-items: center; gap: .45em; background: var(--surface); border: .16em solid var(--signal); border-radius: .7em; padding: .4em .6em; margin-bottom: .6em; font-family: var(--mono); font-size: .86em; color: var(--ink); white-space: nowrap; overflow: hidden; }
+.linkpill svg { width: 1.2em; height: 1.2em; flex: none; color: var(--signal); }
+.linkpill span { overflow: hidden; text-overflow: ellipsis; }
+.msg-ai { padding-right: 1em; }
+
+/* one orchestrated load sequence: link → cable → tab lights → fields type → reply */
+@media (prefers-reduced-motion: no-preference) {
+  .cable path { stroke-dashoffset: 1; animation: draw 1.1s cubic-bezier(.6,0,.2,1) .5s forwards; }
+  .cable circle { opacity: 0; animation: show .2s 1.55s forwards; }
+  .tab.on::after, .page::after { opacity: 0; animation: show .35s 1.5s forwards; }
+  .field b i { width: 0; animation: type .55s steps(16, end) forwards; animation-delay: calc(1.9s + var(--n) * .38s); }
+  .msg-ai { opacity: 0; transform: translateY(.6em); animation: rise .4s ease-out 4.1s forwards; }
+}
+@keyframes draw { to { stroke-dashoffset: 0; } }
+@keyframes show { to { opacity: 1; } }
+@keyframes type { to { width: var(--w); } }
+@keyframes rise { to { opacity: 1; transform: none; } }
+.field b i { width: var(--w); }
+
+/* ── sections ───────────────────────────────────────── */
+section { padding: clamp(3.5rem, 8vw, 6.5rem) 0; }
+.head { max-width: var(--measure); margin-bottom: clamp(2rem, 4vw, 3rem); }
+.head p { margin-top: .9rem; color: var(--muted); font-size: 1.125rem; }
+
+/* steps */
+.steps { background: var(--surface); border-block: 1px solid var(--line); }
+.steplist { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(1.5rem, 3vw, 2.5rem); counter-reset: step; }
+.steplist li { counter-increment: step; display: grid; grid-template-rows: auto auto 1fr; gap: 1rem; }
+.steplist h3 { display: flex; align-items: baseline; gap: .6rem; }
+.steplist h3::before {
+  content: counter(step); flex: none;
+  width: 2rem; height: 2rem; border-radius: 50%; display: inline-grid; place-items: center;
+  background: var(--ink); color: var(--paper); font: 800 1rem/1 var(--display); transform: translateY(.3rem);
+}
+.steplist p { color: var(--muted); }
+.mini { container-type: inline-size; aspect-ratio: 4 / 3; background: var(--paper); border-radius: 1.1rem; position: relative; overflow: hidden; }
+.mini > * { font-size: 4.4cqw; line-height: 1.3; }
+
+.m-bar { position: absolute; left: 7%; right: 7%; top: 12%; height: 15%; background: var(--surface); border: 1px solid var(--line); border-radius: 1em; display: flex; align-items: center; gap: .6em; padding: 0 .8em; }
+.m-bar .u { flex: 1; height: 1.1em; border-radius: 99px; background: var(--well); }
+.m-bar .ico { width: 1.7em; height: 1.7em; display: grid; place-items: center; border-radius: .45em; color: var(--muted); }
+.m-bar .ico.hot { background: var(--well); color: var(--ink); }
+.m-bar .ico.sig { background: var(--signal); }
+.m-bar svg { width: 1.15em; height: 1.15em; }
+.m-menu { position: absolute; right: 7%; top: 32%; width: 66%; background: var(--surface); border: 1px solid var(--line); border-radius: .9em; box-shadow: 0 1em 2em -1em rgba(27,24,64,.3); padding: .6em; display: grid; gap: .2em; }
+.m-menu div { display: flex; align-items: center; gap: .55em; padding: .45em .55em; border-radius: .55em; }
+.m-menu div.on { background: var(--glow); font-weight: 650; }
+.m-menu .sq { width: 1.25em; height: 1.25em; border-radius: .35em; background: var(--line); flex: none; }
+.m-menu .on .sq { background: var(--signal); }
+.m-menu .pin { margin-left: auto; color: var(--signal); width: 1em; height: 1em; }
+
+.m-pop { position: absolute; right: 7%; top: 32%; width: 74%; background: var(--surface); border: 1px solid var(--line); border-radius: .9em; box-shadow: 0 1em 2em -1em rgba(27,24,64,.3); padding: .9em; display: grid; gap: .65em; }
+.m-pop strong { font: 800 1em/1.1 var(--display); }
+.m-pop .host { color: var(--muted); font-size: .85em; }
+.m-pop .go { background: var(--signal); color: var(--signal-ink); border-radius: .6em; padding: .65em; text-align: center; font-weight: 750; position: relative; }
+.m-pop .cursor { position: absolute; width: 1.6em; height: 1.6em; right: 18%; bottom: -.9em; color: var(--ink); }
+
+.m-chat { position: absolute; left: 7%; right: 7%; bottom: 10%; background: var(--surface); border: 1px solid var(--line); border-radius: 1em; padding: .8em; display: grid; gap: .55em; box-shadow: 0 1em 2em -1em rgba(27,24,64,.3); }
+.m-chat .linkpill { margin: 0; font-size: .8em; }
+.m-chat .row { display: flex; align-items: flex-end; gap: .6em; }
+.m-chat .row span { flex: 1; }
+.m-chat .send { width: 1.9em; height: 1.9em; border-radius: 50%; background: var(--ink); display: grid; place-items: center; flex: none; }
+.m-chat .send svg { width: 1em; height: 1em; color: var(--paper); }
+.m-above { position: absolute; left: 7%; top: 10%; color: var(--muted); font-size: 3.8cqw; }
+
+/* use cases */
+.asks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(1.75rem, 3.5vw, 3rem) clamp(1.5rem, 4vw, 4rem); }
+.ask { display: grid; gap: .85rem; align-content: start; }
+.ask blockquote {
+  margin: 0; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 1.4rem 1.4rem .4rem 1.4rem; padding: 1rem 1.25rem;
+  font: 650 1.1875rem/1.4 var(--display); letter-spacing: -0.01em;
+}
+.ask p { color: var(--muted); padding-left: 1.25rem; max-width: 32rem; }
+.ask h3 { font-size: 1rem; font-family: var(--text); font-weight: 650; letter-spacing: 0; padding-left: 1.25rem; }
+
+/* safety */
+.safety .wrap { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); gap: clamp(2rem, 5vw, 5rem); }
+.safety .head { margin: 0; }
+.rules { margin: 0; display: grid; gap: 1.75rem; }
+.rules div { display: grid; grid-template-columns: 2.75rem 1fr; gap: .25rem 1.1rem; }
+.rules dt { grid-column: 2; font: 750 1.1875rem/1.3 var(--display); letter-spacing: -0.01em; }
+.rules dd { grid-column: 2; margin: 0; color: var(--muted); max-width: 34rem; }
+.rules svg { grid-row: 1 / span 2; grid-column: 1; width: 2.75rem; height: 2.75rem; color: var(--signal); }
+.honest { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--muted); max-width: 40rem; }
+.honest strong { color: var(--ink); }
+
+/* install */
+.box { background: var(--surface); border: 1px solid var(--line); border-radius: 1.75rem; padding: clamp(1.5rem, 4vw, 3rem); display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: clamp(1.5rem, 4vw, 4rem); }
+.box .head { margin: 0; }
+.box .btn { margin-top: 1.75rem; }
+.install ol { margin: 0; padding: 0; list-style: none; counter-reset: i; display: grid; gap: 1rem; }
+.install ol li { counter-increment: i; display: grid; grid-template-columns: 2rem 1fr; gap: 1rem; align-items: baseline; }
+.install ol li::before { content: counter(i); font: 800 1.25rem/1 var(--display); color: var(--signal); text-align: right; }
+.install ol li small { display: block; color: var(--muted); font-size: .9375rem; margin-top: .2rem; }
+kbd { background: var(--well); border: 1px solid var(--line); border-radius: .4em; padding: .05em .4em; white-space: nowrap; }
+.why { margin-top: 1rem; color: var(--muted); font-size: .9375rem; }
+
+/* developers: the page changes register here */
+.dev { background: var(--band); color: var(--band-ink); }
+.dev a { color: var(--band-ink); }
+.dev .head p, .dev .muted { color: var(--band-muted); }
+.dev .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(1.5rem, 3vw, 2.5rem); align-items: start; }
+.dev h3 { margin-bottom: .75rem; }
+pre { margin: 0; background: var(--band-code); border: 1px solid var(--band-line); border-radius: 1rem; padding: 1.1rem 1.25rem; overflow-x: auto; font: .8125rem/1.65 var(--mono); color: #d9d7ee; tab-size: 2; }
+pre .k { color: #ff9cc4; }
+pre .s { color: #a8e6c1; }
+pre .c { color: #8985ad; }
+pre .h { color: #ffffff; font-weight: 700; }
+.lbl { font: 600 .875rem/1.4 var(--text); color: var(--band-muted); margin: 0 0 .5rem; }
+.stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+
+.tabset { border: 1px solid var(--band-line); border-radius: 1rem; background: var(--band-code); overflow: hidden; }
+.tabset [role="tablist"] { display: flex; border-bottom: 1px solid var(--band-line); overflow-x: auto; }
+.tabset [role="tab"] { appearance: none; background: none; border: 0; color: var(--band-muted); font: 600 .875rem/1 var(--text); padding: .95rem 1.1rem; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+.tabset [role="tab"][aria-selected="true"] { color: #fff; border-bottom-color: var(--band-signal); }
+.tabset [role="tab"]:focus-visible { outline-offset: -3px; }
+.tabset pre { border: 0; border-radius: 0; background: transparent; }
+.tabset .note { padding: 0 1.25rem 1rem; font-size: .8125rem; color: var(--band-muted); }
+
+.versus { margin-top: clamp(2.5rem, 5vw, 4rem); display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); gap: clamp(1.5rem, 4vw, 4rem); }
+.versus table { width: 100%; border-collapse: collapse; font-size: .9375rem; }
+.versus th, .versus td { text-align: left; vertical-align: top; padding: .8rem .9rem .8rem 0; border-bottom: 1px solid var(--band-line); }
+.versus thead th { font-weight: 600; color: var(--band-muted); font-size: .875rem; }
+.versus tbody th { font-weight: 650; width: 26%; }
+.versus td { color: var(--band-muted); }
+.versus td:last-child { color: var(--band-ink); }
+.devlinks { margin-top: clamp(2.5rem, 5vw, 4rem); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.5rem; border-top: 1px solid var(--band-line); padding-top: 2rem; }
+.devlinks p { color: var(--band-muted); font-size: .9375rem; margin-top: .35rem; }
+.devlinks code { color: var(--band-ink); }
+
+footer { background: var(--band); color: var(--band-muted); border-top: 1px solid var(--band-line); padding: 2rem 0 2.5rem; font-size: .9375rem; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 1rem 1.75rem; align-items: center; }
+footer .mark { color: var(--band-ink); margin-right: auto; }
+footer a { color: var(--band-ink); }
+
+/* ── responsive ─────────────────────────────────────── */
+@media (max-width: 960px) {
+  .hero .wrap { grid-template-columns: minmax(0, 1fr); }
+  .hero h1 { max-width: 14ch; }
+  .safety .wrap, .box, .versus, .dev .grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  .steplist { grid-template-columns: minmax(0, 1fr); gap: 2.75rem; }
+  .mini { max-width: 26rem; }
+  .asks, .devlinks { grid-template-columns: minmax(0, 1fr); }
+  .top nav .hide-sm { display: none; }
+}
+@media (max-width: 560px) {
+  /* stack the hero scene: chat sits below the window, cable hidden */
+  .scene { aspect-ratio: auto; display: grid; gap: .9rem; }
+  .scene .browser, .scene .chat { position: relative; inset: auto; width: 100%; height: auto; font-size: 3.3cqw; }
+  .scene .chat { width: 90%; justify-self: end; margin-top: -1.75rem; }
+  .cable { display: none; }
+  .btn { width: 100%; justify-content: center; font-size: 1.0625rem; padding-inline: 1rem; }
+  .box { padding: 1.5rem 1.25rem; border-radius: 1.25rem; }
+  .install ol li { grid-template-columns: 1.25rem 1fr; gap: .75rem; }
+  .versus thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .versus tbody tr { display: grid; gap: .35rem; padding: 1rem 0; border-bottom: 1px solid var(--band-line); }
+  .versus tbody th, .versus td { display: block; width: auto; padding: 0; border: 0; }
+  .versus td::before { content: attr(data-l) ": "; font-weight: 600; }
+  .versus tbody tr:last-child { border-bottom: 0; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap">
+    <a href="/" class="mark" aria-label="Agent Socket home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--signal)"/><circle cx="11" cy="16" r="2.6" fill="#fff"/><circle cx="21" cy="16" r="2.6" fill="#fff"/></svg>
+      Agent Socket
+    </a>
+    <nav aria-label="Primary">
+      <a href="#how" class="hide-sm">How it works</a>
+      <a href="#safety" class="hide-sm">Safety</a>
+      <a href="#developers">Developers</a>
+      <a href="https://github.com/blitzdotdev/agent-socket">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ── hero ── -->
+<div class="hero">
+  <div class="wrap">
+    <h1>Let Claude use your browser tab.</h1>
+    <div class="copy">
+      <p class="lede">Connect one tab, paste a link into Claude, and it can read the page, click, type and move between pages for you, until you disconnect.</p>
+      <div class="actions">
+        <a class="btn" href="/download">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+          Get the Chrome extension
+        </a>
+        <a class="textlink" href="#developers">For developers ↓</a>
+      </div>
+      <p class="fine">Free and open source. Also works with ChatGPT and Gemini.</p>
+    </div>
+
+    <figure class="scene" aria-label="Illustration: a browser tab outlined in pink is connected to a Claude chat. Claude has filled in a shipping form on the page.">
+      <div class="browser" aria-hidden="true">
+        <div class="tabs">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="tab">Inbox (3)</span>
+          <span class="tab on"><svg class="plug" viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="4" fill="currentColor"/><circle cx="5.6" cy="8" r="1.5" fill="#fff"/><circle cx="10.4" cy="8" r="1.5" fill="#fff"/></svg>Checkout · Paper &amp; Co</span>
+          <span class="tab">Calendar</span>
+        </div>
+        <div class="urlbar">
+          <span class="url">paperandco.example/checkout</span>
+          <span class="ext"><svg viewBox="0 0 16 16"><circle cx="5.6" cy="8" r="1.6" fill="#fff"/><circle cx="10.4" cy="8" r="1.6" fill="#fff"/></svg></span>
+        </div>
+        <div class="page">
+          <h4>Shipping details</h4>
+          <div class="fields">
+            <label class="field"><span>First name</span><b><i style="--w:6ch;--n:0">Priya</i></b></label>
+            <label class="field"><span>Last name</span><b><i style="--w:7ch;--n:1">Raman</i></b></label>
+            <label class="field wide"><span>Street address</span><b><i style="--w:18ch;--n:2">14 Larkspur Lane</i></b></label>
+            <label class="field"><span>City</span><b><i style="--w:9ch;--n:3">Portland</i></b></label>
+            <label class="field"><span>Postcode</span><b><i style="--w:7ch;--n:4">97214</i></b></label>
+          </div>
+          <span class="place">Place order</span>
+        </div>
+      </div>
+
+      <svg class="cable" aria-hidden="true"><path pathLength="1" d=""/><circle r="4"/><circle r="4"/></svg>
+
+      <div class="chat" aria-hidden="true">
+        <div class="who"><i></i>Claude</div>
+        <div class="msg-user">
+          <div class="linkpill"><svg viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="4" fill="currentColor"/><circle cx="5.6" cy="8" r="1.5" fill="#fff"/><circle cx="10.4" cy="8" r="1.5" fill="#fff"/></svg><span>agentsocket.dev/v1/t/as_7K2Q…/agents.md</span></div>
+          Fill in the shipping form with my address. Don’t place the order.
+        </div>
+        <div class="msg-ai">Done. I filled in all five fields. Have a look before you place the order.</div>
+      </div>
+    </figure>
+  </div>
+</div>
+
+<!-- ── how it works ── -->
+<section class="steps" id="how" aria-labelledby="how-h">
+  <div class="wrap">
+    <div class="head">
+      <h2 id="how-h">How it works</h2>
+      <p>No account, no settings to fiddle with. You choose the tab, and you can stop whenever you like.</p>
+    </div>
+    <ol class="steplist">
+      <li>
+        <div class="mini" aria-hidden="true">
+          <div class="m-bar">
+            <span class="u"></span>
+            <span class="ico hot"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 3a2 2 0 0 1 4 0v2h4a1 1 0 0 1 1 1v4h-1.5a2 2 0 0 0 0 4H19v4a1 1 0 0 1-1 1h-4v-1.5a2 2 0 0 0-4 0V21H6a1 1 0 0 1-1-1v-4h2a2 2 0 0 0 0-4H5V6a1 1 0 0 1 1-1h4z"/></svg></span>
+          </div>
+          <div class="m-menu">
+            <div class="on"><span class="sq"></span>Agent Socket<svg class="pin" viewBox="0 0 24 24" fill="currentColor"><path d="M15 3l6 6-3 1-4 4 1 5-2 2-4-4-5 5-1-1 5-5-4-4 2-2 5 1 4-4z"/></svg></div>
+            <div><span class="sq"></span>Password manager</div>
+            <div><span class="sq"></span>Ad blocker</div>
+          </div>
+        </div>
+        <h3>Install the extension</h3>
+        <p>Add Agent Socket to Chrome and pin it to your toolbar. <a href="#install">Install steps</a> are below.</p>
+      </li>
+      <li>
+        <div class="mini" aria-hidden="true">
+          <div class="m-bar">
+            <span class="u"></span>
+            <span class="ico sig"><svg viewBox="0 0 16 16"><circle cx="5.6" cy="8" r="1.7" fill="#fff"/><circle cx="10.4" cy="8" r="1.7" fill="#fff"/></svg></span>
+          </div>
+          <div class="m-pop">
+            <strong>Agent Socket</strong>
+            <span class="host">Tab: paperandco.example</span>
+            <span class="go">Connect this tab<svg class="cursor" viewBox="0 0 24 24"><path d="M5 3l14 8-6 1.5L10 19z" fill="#fff" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></span>
+          </div>
+        </div>
+        <h3>Connect this tab</h3>
+        <p>Open the page you want help with, click the Agent Socket icon, then <strong>Connect this tab</strong>. You’ll get a link to copy.</p>
+      </li>
+      <li>
+        <div class="mini" aria-hidden="true">
+          <span class="m-above">New chat with Claude</span>
+          <div class="m-chat">
+            <div class="linkpill"><svg viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="4" fill="currentColor"/><circle cx="5.6" cy="8" r="1.5" fill="#fff"/><circle cx="10.4" cy="8" r="1.5" fill="#fff"/></svg><span>agentsocket.dev/v1/t/as_7K2Q…</span></div>
+            <div class="row"><span>Compare the three plans on this page for me</span><i class="send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M4 7l4-4 4 4"/></svg></i></div>
+          </div>
+        </div>
+        <h3>Paste the link into Claude</h3>
+        <p>Then say what you want done. Claude works in that tab and tells you what it did.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ── use cases ── -->
+<section aria-labelledby="ask-h">
+  <div class="wrap">
+    <div class="head">
+      <h2 id="ask-h">Things you can ask for</h2>
+      <p>If you could do it yourself in that tab, Claude can usually do it for you.</p>
+    </div>
+    <div class="asks">
+      <div class="ask">
+        <blockquote>“Fill in this application with the details from my notes above. Stop before you submit.”</blockquote>
+        <h3>Get through a long form</h3>
+        <p>Claude reads each field, types in the answers and leaves the final click to you.</p>
+      </div>
+      <div class="ask">
+        <blockquote>“Pull this month’s numbers off the dashboard and write me a three-line summary.”</blockquote>
+        <h3>Turn a dashboard into a summary</h3>
+        <p>It reads the figures on the page, and can take a screenshot when the answer is in a chart.</p>
+      </div>
+      <div class="ask">
+        <blockquote>“Go through the sign-up flow on my website and tell me anything that’s broken or confusing.”</blockquote>
+        <h3>Test your own website</h3>
+        <p>Claude clicks the buttons, fills in the forms and reports where things went wrong.</p>
+      </div>
+      <div class="ask">
+        <blockquote>“Open each of my last ten orders and list the ones that haven’t arrived yet.”</blockquote>
+        <h3>Do a task that spans many pages</h3>
+        <p>It follows links, goes back, and moves on to the next one, all in the same tab.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── safety ── -->
+<section class="safety steps" id="safety" aria-labelledby="safe-h">
+  <div class="wrap">
+    <div class="head">
+      <h2 id="safe-h">You stay in control</h2>
+      <p>Nothing happens until you click Connect, and only for as long as you want.</p>
+    </div>
+    <div>
+      <dl class="rules">
+        <div>
+          <dt>Only the tab you connect</dt>
+          <dd>Claude reads and acts inside the one tab you connected. The pages in your other tabs stay out of its reach.</dd>
+          <svg viewBox="0 0 44 44" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="13" width="34" height="24" rx="4"/><path d="M7 13V9.5A2.5 2.5 0 0 1 9.5 7h9a2.5 2.5 0 0 1 2.5 2.5V13"/><path d="M25 7h10" stroke-linecap="round" opacity=".4"/></svg>
+        </div>
+        <div>
+          <dt>Stop any time</dt>
+          <dd>Click <strong>Disconnect</strong> in the extension and the link stops working straight away. Close the tab and Claude can’t do anything more in it.</dd>
+          <svg viewBox="0 0 44 44" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="22" cy="22" r="16"/><path d="M16 16l12 12M28 16 16 28"/></svg>
+        </div>
+        <div>
+          <dt>The link is a key</dt>
+          <dd>Anyone who has the link can use your connected tab. Paste it only into your own chat, and don’t post it or send it to anyone.</dd>
+          <svg viewBox="0 0 44 44" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="14" cy="22" r="7"/><path d="M21 22h18M33 22v6M38 22v4"/></svg>
+        </div>
+        <div>
+          <dt>Open source</dt>
+          <dd>Every line of the extension is <a href="https://github.com/blitzdotdev/agent-socket">public on GitHub</a>. No account, no tracking. Read the <a href="/privacy">privacy policy</a>.</dd>
+          <svg viewBox="0 0 44 44" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 13 6 22l9 9M29 13l9 9-9 9M25 9l-6 26"/></svg>
+        </div>
+      </dl>
+      <p class="honest"><strong>Worth knowing:</strong> on a connected tab, Claude can see and do what you can, including on sites where you’re signed in. Connect the tabs you’d be happy to have someone help you with.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── install ── -->
+<section class="install" id="install" aria-labelledby="inst-h">
+  <div class="wrap">
+    <div class="box">
+      <div class="head">
+        <h2 id="inst-h">Install it</h2>
+        <p>Agent Socket isn’t in the Chrome Web Store yet, so you add it by hand. It’s five quick steps.</p>
+        <a class="btn" href="/download">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+          Get the Chrome extension
+        </a>
+      </div>
+      <div>
+        <ol>
+          <li><div>Download the extension and unzip it.<small>You’ll get a folder. Keep it somewhere you won’t delete it, like Documents.</small></div></li>
+          <li><div>In Chrome, go to <kbd>chrome://extensions</kbd> and turn on <strong>Developer mode</strong> (top right).</div></li>
+          <li><div>Click <strong>Load unpacked</strong> and choose the unzipped folder.</div></li>
+          <li><div>Click <strong>Details</strong> on Agent Socket and turn on <strong>Allow user scripts</strong>.<small>Some sites, like Google and GitHub, need this before Claude can work on them.</small></div></li>
+          <li><div>Open the puzzle-piece menu next to the address bar and pin Agent Socket.</div></li>
+        </ol>
+        <p class="why">Developer mode only lets Chrome load extensions from outside the Web Store. It doesn’t change anything else about your browser.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── developers ── -->
+<section class="dev" id="developers" aria-labelledby="dev-h">
+  <div class="wrap">
+    <div class="head">
+      <h2 id="dev-h">Add “Connect with AI” to your own app</h2>
+      <p>The extension is one app built on an open protocol. Register a few tools in your app, mint a link, and any AI chat that can make web requests (Claude, ChatGPT, Gemini, Claude Code) can call them over plain HTTPS. No MCP server, no OAuth, nothing to configure on the AI side.</p>
+    </div>
+
+    <div class="grid">
+      <div class="stack">
+        <div>
+          <p class="lbl">Your app: Node, Cloudflare Workers or the browser</p>
+<pre><code><span class="c">$ npm i @agent-socket/sdk</span>
+
+<span class="k">import</span> { connect } <span class="k">from</span> <span class="s">"@agent-socket/sdk"</span>
+
+<span class="k">const</span> session = <span class="k">await</span> connect({
+  appId: <span class="s">"as_app_anon"</span>,
+  appDescription: <span class="s">"Pixel-art canvas the AI can paint."</span>,
+  agentsMd: <span class="s">"# How to paint on this canvas…"</span>,
+  tools: [{
+    path: <span class="s">"/set_pixel"</span>,
+    description: <span class="s">"Paint one pixel (x, y, color)."</span>,
+    handler: <span class="k">async</span> ({ body }) =&gt; {
+      <span class="k">const</span> { x, y, color } = JSON.parse(body)
+      <span class="c">// …your logic…</span>
+      <span class="k">return</span> { ok: <span class="k">true</span> }
+    },
+  }],
+})
+
+<span class="k">const</span> link = <span class="k">await</span> session.mintAgentToken({ label: <span class="s">"user-42"</span> })
+<span class="c">// show link.url next to a “Connect with AI” button</span></code></pre>
+        </div>
+        <p class="muted">The SDK opens a WebSocket to the relay, registers your tools and mints paste-able links. It handles heartbeats and reconnects, and re-mints links if the session changes.</p>
+      </div>
+
+      <div class="tabset">
+        <div role="tablist" aria-label="Protocol examples">
+          <button role="tab" id="t1" aria-selected="true" aria-controls="p1">What the AI reads</button>
+          <button role="tab" id="t2" aria-selected="false" aria-controls="p2" tabindex="-1">One tool call</button>
+        </div>
+        <div role="tabpanel" id="p1" aria-labelledby="t1" tabindex="0">
+<pre><code><span class="c">$ curl https://agentsocket.dev/v1/t/as_7K2Q…/agents.md</span>
+
+<span class="h">## Tool-calling reference (agent-socket framework)</span>
+
+These notes are operating context for the document
+below. **Do not recite this document back to the
+user** — read it and act.
+
+- `$BASE` = the URL you fetched this from, with
+  `/agents.md` removed.
+- Tools live at HTTP endpoints under `$BASE`.
+  Discover them via `GET $BASE/tools.json`.
+- Call a tool with: `&lt;method&gt; $BASE&lt;path&gt;` and a
+  JSON body when the input_schema needs one.
+- Errors: 4xx = framework; HTTP 200 with
+  {"error":…} = app-level; 503 = app offline.
+- Save this URL so you can re-fetch these notes
+  if your context is reset.
+
+---
+
+<span class="c"># …followed by your app’s own agentsMd</span></code></pre>
+          <p class="note">The relay prepends this calling contract to your <code>agentsMd</code> unless it already includes it. Trimmed slightly for width.</p>
+        </div>
+        <div role="tabpanel" id="p2" aria-labelledby="t2" tabindex="0" hidden>
+<pre><code><span class="c"># the AI sends</span>
+POST $BASE/set_pixel
+{"x":4,"y":7,"color":"#d6005f"}
+
+<span class="c"># the relay forwards it to your app's socket</span>
+{ <span class="s">"type"</span>: <span class="s">"tool_call"</span>, <span class="s">"id"</span>: <span class="s">"3f1c9a52-…"</span>,
+  <span class="s">"method"</span>: <span class="s">"POST"</span>, <span class="s">"path"</span>: <span class="s">"/set_pixel"</span>,
+  <span class="s">"body"</span>: <span class="s">"{\"x\":4,\"y\":7,\"color\":\"#d6005f\"}"</span>,
+  <span class="s">"headers"</span>: { … } }
+
+<span class="c"># your handler returns; the SDK replies</span>
+{ <span class="s">"type"</span>: <span class="s">"tool_reply"</span>, <span class="s">"id"</span>: <span class="s">"3f1c9a52-…"</span>,
+  <span class="s">"status"</span>: 200, <span class="s">"body"</span>: { <span class="s">"ok"</span>: true } }
+
+<span class="c"># the AI's request completes with</span>
+200 OK  application/json
+{"ok":true}</code></pre>
+          <p class="note">Real frame shapes from the relay, not pseudocode.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="versus">
+      <div>
+        <h3>How it compares to MCP</h3>
+        <p class="muted">MCP suits integrations a user installs once and keeps. Agent Socket is for in-the-moment sessions where the user shouldn’t have to install anything.</p>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th scope="col"><span class="sr">Aspect</span></th><th scope="col">MCP server</th><th scope="col">Agent Socket</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">User setup</th><td data-l="MCP server">Add a server or connector to their AI client</td><td data-l="Agent Socket">Paste one link into any chat</td></tr>
+            <tr><th scope="row">What you run</th><td data-l="MCP server">A separate server that speaks MCP</td><td data-l="Agent Socket">Your existing app; the relay forwards calls to it</td></tr>
+            <tr><th scope="row">Access</th><td data-l="MCP server">OAuth for remote servers</td><td data-l="Agent Socket">The link is the credential. Revoke it, or disconnect and every link dies</td></tr>
+            <tr><th scope="row">AI side</th><td data-l="MCP server">Client must support MCP</td><td data-l="Agent Socket">Anything that can make HTTPS requests</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="devlinks">
+      <div>
+        <h3><a href="https://github.com/blitzdotdev/agent-socket">Source on GitHub</a></h3>
+        <p>Relay, SDK, Chrome extension and test harness. Apache 2.0. It’s v0, so the protocol may still change.</p>
+      </div>
+      <div>
+        <h3>Self-host the relay</h3>
+        <p>One Cloudflare Worker with a Durable Object per session. Run <code>npx wrangler deploy</code> in <code>relay/</code> and point the SDK’s <code>baseUrl</code> at it. Session state lives in memory and is gone when your app disconnects.</p>
+      </div>
+      <div>
+        <h3><a href="https://github.com/blitzdotdev/agent-socket/tree/master/examples/pixel-art-canvas">Try the smallest demo</a></h3>
+        <p>A single HTML file. Click “Connect with AI”, paste the link into a chat and ask it to paint. For a chat room shared by several AIs, see <a href="https://github.com/blitzdotdev/agent-socket-channel">agent-socket-channel</a>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <a href="/" class="mark">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--band-signal)"/><circle cx="11" cy="16" r="2.6" fill="#fff"/><circle cx="21" cy="16" r="2.6" fill="#fff"/></svg>
+      Agent Socket
+    </a>
+    <a href="https://github.com/blitzdotdev/agent-socket">GitHub</a>
+    <a href="https://github.com/blitzdotdev/agent-socket-channel">Channel CLI</a>
+    <a href="/privacy">Privacy</a>
+    <span>Apache 2.0 license</span>
+  </div>
+</footer>
+
+<script>
+// Hero cable: join the pasted link in the chat to the extension icon in the
+// browser. Computed from layout so it holds at every width and font.
+(function () {
+  var scene = document.querySelector('.scene'), svg = scene && scene.querySelector('.cable')
+  if (!svg) return
+  var pill = scene.querySelector('.chat .linkpill'), ext = scene.querySelector('.urlbar .ext')
+  var path = svg.querySelector('path'), dots = svg.querySelectorAll('circle')
+  function wire() {
+    var s = scene.getBoundingClientRect(), a = pill.getBoundingClientRect(), b = ext.getBoundingClientRect()
+    if (!s.width || getComputedStyle(svg).display === 'none') return
+    var x1 = a.right - s.left, y1 = a.top + a.height / 2 - s.top
+    var x2 = b.right - s.left, y2 = b.top + b.height / 2 - s.top
+    var bend = Math.max(x1, x2) + s.width * 0.09
+    path.setAttribute('d', 'M' + x1 + ' ' + y1 + ' C' + bend + ' ' + y1 + ' ' + bend + ' ' + y2 + ' ' + x2 + ' ' + y2)
+    dots[0].setAttribute('cx', x1); dots[0].setAttribute('cy', y1)
+    dots[1].setAttribute('cx', x2); dots[1].setAttribute('cy', y2)
+  }
+  wire()
+  addEventListener('resize', wire)
+  if (document.fonts) document.fonts.ready.then(wire)
+})()
+
+// Protocol tabs: click + arrow-key navigation (WAI-ARIA tabs pattern).
+(function () {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'))
+  function pick(t, focus) {
+    tabs.forEach(function (x) {
+      var on = x === t
+      x.setAttribute('aria-selected', on ? 'true' : 'false')
+      x.tabIndex = on ? 0 : -1
+      document.getElementById(x.getAttribute('aria-controls')).hidden = !on
+    })
+    if (focus) t.focus()
+  }
+  tabs.forEach(function (t, i) {
+    t.addEventListener('click', function () { pick(t) })
+    t.addEventListener('keydown', function (e) {
+      var d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
+      if (d) { e.preventDefault(); pick(tabs[(i + d + tabs.length) % tabs.length], true) }
+    })
+  })
+})()
+</script>
+</body>
+</html>
