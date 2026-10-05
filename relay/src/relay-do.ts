@@ -26,6 +26,8 @@ import type {
   MintAgentTokenReplyFrame,
   RevokeAgentTokenReplyFrame,
   ListAgentTokensReplyFrame,
+  UpdateToolsFrame,
+  UpdateToolsReplyFrame,
 } from "./types"
 import { generateResumeSecret, generateVerifier, makeAgentToken, parseAgentToken, resumeSecretMatches } from "./tokens"
 import { errorResponse } from "./errors"
@@ -291,6 +293,7 @@ export class RelayServer extends Server<Env> {
         const replyType = msg.type === "mint_agent_token" ? "mint_agent_token_reply"
           : msg.type === "revoke_agent_token" ? "revoke_agent_token_reply"
           : msg.type === "list_agent_tokens" ? "list_agent_tokens_reply"
+          : msg.type === "update_tools" ? "update_tools_reply"
           : null
         if (replyType) {
           this.send({ type: replyType, id: msg.id, ok: false, error: { code: "protocol_error", message: "register first" } } as unknown as Frame)
@@ -311,6 +314,9 @@ export class RelayServer extends Server<Env> {
         return
       case "list_agent_tokens":
         this.handleList(msg)
+        return
+      case "update_tools":
+        this.handleUpdateTools(msg)
         return
       case "tool_reply":
         this.handleToolReply(msg)
@@ -398,9 +404,36 @@ export class RelayServer extends Server<Env> {
     this.appId = r.appId
     this.appDescription = r.appDescription
     this.agentsMd = r.agentsMd
-    this.tools = r.tools
+    this.setTools(r.tools)
+  }
+
+  private setTools(tools: ToolDef[]): void {
+    this.tools = tools
     this.toolByRoute.clear()
-    for (const t of r.tools) this.toolByRoute.set(`${t.method} ${t.path}`, t)
+    for (const t of tools) this.toolByRoute.set(`${t.method} ${t.path}`, t)
+  }
+
+  // Replaces the tool list (and agents.md, if the frame has one) on a live
+  // session, so the same agent URLs serve the new tools. Validated exactly
+  // like register; unlike register, a bad frame is answered with an error and
+  // changes nothing, so the session keeps working with its current tools.
+  // Calls already forwarded to the app are unaffected.
+  private handleUpdateTools(msg: UpdateToolsFrame): void {
+    if (typeof msg.id !== "string") return
+    const reply = (r: Omit<UpdateToolsReplyFrame, "type" | "id">): void => { this.send({ type: "update_tools_reply", id: msg.id, ...r }) }
+    if (msg.agentsMd !== undefined) {
+      const md = validateAgentsMd(msg.agentsMd)
+      if (md) return reply({ ok: false, error: { code: md.code, message: md.message } })
+    }
+    if (!Array.isArray(msg.tools)) {
+      return reply({ ok: false, error: { code: "protocol_error", message: "tools must be an array" } })
+    }
+    const v = validateTools(msg.tools)
+    if (!v.ok) return reply({ ok: false, error: { code: v.error.code, message: v.error.message } })
+    if (msg.agentsMd !== undefined) this.agentsMd = msg.agentsMd
+    this.setTools(v.tools)
+    reply({ ok: true })
+    if (this.env.DEBUG === "1") console.log(`[DO] update_tools sessionId=${this.sessionId} tools=${this.tools.length}`)
   }
 
   // ── Mint / Revoke / List agent-tokens ─────────────────────────────
@@ -737,32 +770,56 @@ function sendTo(c: Connection, frame: Frame): boolean {
 
 // Validates a register (or resume) frame's app-id, agentsMd and tools.
 function validateRegistration(msg: RegisterFrame | ResumeFrame): { ok: true; registration: Registration } | { ok: false; error: RegistrationError } {
-  const fail = (code: string, message: string | undefined, closeCode: number, closeReason: string) =>
-    ({ ok: false as const, error: { code, message, closeCode, closeReason } })
-
   // app-id is a free-form label shown in tools.json, not a credential:
   // any app can claim any id, so there's nothing to look up.
   if (typeof msg.appId !== "string" || !APP_ID_RE.test(msg.appId)) {
-    return fail("invalid_app_id", "use [A-Za-z0-9_.-]{1,64}", 4001, "invalid app_id")
+    return validationFailure("invalid_app_id", "use [A-Za-z0-9_.-]{1,64}", 4001, "invalid app_id")
   }
-  if (typeof msg.agentsMd !== "string" || msg.agentsMd.length > MAX_AGENTS_MD_BYTES) {
-    return fail("agents_md_too_large", undefined, 4413, "agents.md too large")
-  }
+  const md = validateAgentsMd(msg.agentsMd)
+  if (md) return { ok: false, error: md }
   if (msg.tools !== undefined && !Array.isArray(msg.tools)) {
-    return fail("protocol_error", "tools must be an array", 4400, "invalid tools")
+    return validationFailure("protocol_error", "tools must be an array", 4400, "invalid tools")
   }
+  const v = validateTools(msg.tools ?? [])
+  if (!v.ok) return v
+  return {
+    ok: true,
+    registration: {
+      appId: msg.appId,
+      appDescription: typeof msg.appDescription === "string" ? msg.appDescription.slice(0, 1024) : "",
+      agentsMd: msg.agentsMd,
+      tools: v.tools,
+    },
+  }
+}
+
+function validationFailure(code: string, message: string | undefined, closeCode: number, closeReason: string) {
+  return { ok: false as const, error: { code, message, closeCode, closeReason } }
+}
+
+// null when valid. Shared by register, resume and update_tools.
+function validateAgentsMd(agentsMd: unknown): RegistrationError | null {
+  if (typeof agentsMd !== "string" || agentsMd.length > MAX_AGENTS_MD_BYTES) {
+    return validationFailure("agents_md_too_large", undefined, 4413, "agents.md too large").error
+  }
+  return null
+}
+
+// Validates and normalizes a tool list. Shared by register, resume and update_tools.
+function validateTools(input: unknown[]): { ok: true; tools: ToolDef[] } | { ok: false; error: RegistrationError } {
   const tools: ToolDef[] = []
   const seen = new Set<string>()
-  for (const t of msg.tools ?? []) {
+  for (const raw of input) {
+    const t = raw as Partial<ToolDef> | null
     if (!t || typeof t !== "object"
       || (t.method !== undefined && typeof t.method !== "string")
       || (t.description !== undefined && typeof t.description !== "string")) {
-      return fail("protocol_error", "each tool needs a path and string method/description", 4400, "invalid tool")
+      return validationFailure("protocol_error", "each tool needs a path and string method/description", 4400, "invalid tool")
     }
     const path = t.path
     const method = (t.method ?? "POST").toUpperCase()
     if (typeof path !== "string" || !TOOL_PATH_RE.test(path)) {
-      return fail("reserved_path", `invalid path: ${path}`, 4400, "invalid tool path")
+      return validationFailure("reserved_path", `invalid path: ${path}`, 4400, "invalid tool path")
     }
     // Reserve both the exact meta paths AND any path that shadows them
     // as a prefix (e.g. `/agents.md/x`, `/tools.jsonx`). Belt-and-suspenders
@@ -775,11 +832,11 @@ function validateRegistration(msg: RegisterFrame | ResumeFrame): { ok: true; reg
       || lowerPath === "/agents.md" || lowerPath.startsWith("/agents.md/")
       || lowerPath === "/tools.json" || lowerPath.startsWith("/tools.json/")
     if (isReserved) {
-      return fail("reserved_path", `path is reserved: ${path}`, 4400, "reserved path")
+      return validationFailure("reserved_path", `path is reserved: ${path}`, 4400, "reserved path")
     }
     const key = `${method} ${path}`
     if (seen.has(key)) {
-      return fail("protocol_error", `duplicate tool: ${key}`, 4400, "duplicate tool")
+      return validationFailure("protocol_error", `duplicate tool: ${key}`, 4400, "duplicate tool")
     }
     seen.add(key)
     tools.push({
@@ -789,15 +846,7 @@ function validateRegistration(msg: RegisterFrame | ResumeFrame): { ok: true; reg
       ...(t.input_schema !== undefined ? { input_schema: t.input_schema } : {}),
     })
   }
-  return {
-    ok: true,
-    registration: {
-      appId: msg.appId,
-      appDescription: typeof msg.appDescription === "string" ? msg.appDescription.slice(0, 1024) : "",
-      agentsMd: msg.agentsMd,
-      tools,
-    },
-  }
+  return { ok: true, tools }
 }
 
 // ────────────────────────────────────────────────────────────────────

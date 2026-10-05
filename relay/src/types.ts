@@ -31,6 +31,8 @@ export type Frame =
   | RevokeAgentTokenReplyFrame
   | ListAgentTokensFrame
   | ListAgentTokensReplyFrame
+  | UpdateToolsFrame
+  | UpdateToolsReplyFrame
   | ToolCallFrame
   | ToolReplyFrame
   | TaskCompleteFrame
@@ -111,6 +113,24 @@ export interface ListAgentTokensReplyFrame {
   type: "list_agent_tokens_reply"
   id: string
   tokens: { token: string; url: string; label: string; mintedAt: number }[]
+}
+
+// Replaces the registered tool list (and agents.md, when given) mid-session.
+// Validated exactly like register's tools/agentsMd; on any error nothing
+// changes. Agent URLs stay the same.
+export interface UpdateToolsFrame {
+  type: "update_tools"
+  id: string
+  tools: ToolDef[]
+  /** Omit to keep the current agents.md. */
+  agentsMd?: string
+}
+
+export interface UpdateToolsReplyFrame {
+  type: "update_tools_reply"
+  id: string
+  ok: boolean
+  error?: { code: string; message?: string }
 }
 
 export interface ToolCallFrame {

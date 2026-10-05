@@ -81,6 +81,11 @@ class SessionImpl implements Session {
   // Tokens we've minted in *this* session (for autoReconnect remint)
   myTokens: Map<string, MintedTokenInfo> = new Map()  // keyed by full token string
 
+  // updateTools calls run one at a time, in call order.
+  toolsChain: Promise<unknown> = Promise.resolve()
+  // Callers waiting for the session to be (re)connected.
+  connectedWaiters: Array<{ resolve: () => void; reject: (e: Error) => void }> = []
+
   // Heartbeat state
   heartbeatPingTimer: ReturnType<typeof setTimeout> | null = null
   heartbeatTimeoutTimer: ReturnType<typeof setTimeout> | null = null
@@ -140,16 +145,13 @@ class SessionImpl implements Session {
     this.ws = ws
     try {
       await this._waitOpen(ws)
+      // Always the current tool set: after updateTools, a resume or a fresh
+      // session registers the updated tools, not the ones passed to connect().
       const registration = {
         appId: this.appId,
         agentsMd: this.agentsMd,
         appDescription: this.appDescription,
-        tools: this.toolDefs.map((t) => ({
-          method: t.method,
-          path: t.path,
-          description: t.description,
-          ...(t.input_schema !== undefined ? { input_schema: t.input_schema } : {}),
-        })),
+        tools: wireTools(this.toolDefs),
       }
       // The secret goes in the first frame, not the URL, so it stays out of logs.
       this._sendFrame(resume
@@ -174,6 +176,7 @@ class SessionImpl implements Session {
     this._installHandlers(ws)
     this.registered = true
     this._scheduleNextPing()
+    this._settleConnectedWaiters(null)
   }
 
   // Track the live session's tokens as ours (after resuming from a saved secret).
@@ -237,6 +240,68 @@ class SessionImpl implements Session {
     }))
   }
 
+  updateTools(tools: Tool[], agentsMd?: string): Promise<void> {
+    const run = () => this._updateTools(tools, agentsMd)
+    const p = this.toolsChain.then(run, run)
+    this.toolsChain = p.catch(() => {})
+    return p
+  }
+
+  async _updateTools(tools: Tool[], agentsMd: string | undefined): Promise<void> {
+    if (!Array.isArray(tools)) throw new TypeError("updateTools: tools must be an array")
+    if (agentsMd !== undefined && typeof agentsMd !== "string") throw new TypeError("updateTools: agentsMd must be a string")
+    const defs = tools.map((t) => ({ ...t, method: (t.method ?? "POST").toUpperCase() }))
+    for (const t of defs) {
+      if (typeof t.handler !== "function") throw new TypeError(`updateTools: ${t.method} ${t.path} has no handler`)
+    }
+    for (;;) {
+      if (this.giveUpReconnect) throw new Error("updateTools: session closed")
+      // Disconnected: wait for the reconnect (whose resume re-sends the
+      // current tools), then send the update on the new socket.
+      if (!this.connected) { await this._waitConnected(); continue }
+      const ws = this.ws
+      // Serve old and new handlers until the relay confirms, so a call routed
+      // just after the relay switched still finds its handler.
+      const prev = this.toolsByRoute
+      const during = new Map(prev)
+      for (const t of defs) during.set(`${t.method} ${t.path}`, t.handler)
+      this.toolsByRoute = during
+      const id = this._uid()
+      this._sendFrame({ type: "update_tools", id, tools: wireTools(defs), ...(agentsMd !== undefined ? { agentsMd } : {}) })
+      let reply: any
+      try {
+        reply = await this._awaitReply(id, 10_000)
+      } catch (e) {
+        if (this.toolsByRoute === during) this.toolsByRoute = prev
+        // The socket dropped before the reply. The relay may or may not have
+        // applied it, but the resume replaces its tools with ours (the old
+        // set), so just send the update again once reconnected.
+        if (this.ws !== ws || !this.connected) continue
+        throw e
+      }
+      if (!reply.ok) {
+        if (this.toolsByRoute === during) this.toolsByRoute = prev
+        const code = reply.error?.code ?? "unknown"
+        throw Object.assign(new Error(`update_tools failed: ${code}${reply.error?.message ? ` (${reply.error.message})` : ""}`), { code })
+      }
+      this.toolDefs = defs
+      this.toolsByRoute = new Map(defs.map((t) => [`${t.method} ${t.path}`, t.handler]))
+      if (agentsMd !== undefined) this.agentsMd = agentsMd
+      return
+    }
+  }
+
+  _waitConnected(): Promise<void> {
+    if (this.connected) return Promise.resolve()
+    return new Promise((resolve, reject) => this.connectedWaiters.push({ resolve, reject }))
+  }
+
+  _settleConnectedWaiters(err: Error | null): void {
+    const waiters = this.connectedWaiters
+    this.connectedWaiters = []
+    for (const w of waiters) err ? w.reject(err) : w.resolve()
+  }
+
   completeTask(taskId: string, result?: { status?: number; body?: unknown; headers?: Record<string, string> }): void {
     if (typeof taskId !== "string" || taskId.length === 0) {
       throw new Error("completeTask: taskId must be a non-empty string")
@@ -263,6 +328,7 @@ class SessionImpl implements Session {
     this.registered = false
     this._teardownHeartbeat()
     this._failPending()
+    this._settleConnectedWaiters(new Error("session closed"))
     try { this.ws?.close(1000, "client closed") } catch {}
     this.ws = null
   }
@@ -425,6 +491,7 @@ class SessionImpl implements Session {
       if (resolved) return
       resolved = true
       this.giveUpReconnect = true
+      this._settleConnectedWaiters(new Error("session closed"))
     }
     void this.onDisconnect({ reason, attempt: this.attempt, reconnect, giveUp })
   }
@@ -543,6 +610,15 @@ class SessionImpl implements Session {
     if (this.heartbeatTimeoutTimer) { clearTimeout(this.heartbeatTimeoutTimer); this.heartbeatTimeoutTimer = null }
     this.pendingPingId = null
   }
+}
+
+function wireTools(defs: Tool[]): Array<Omit<Tool, "handler">> {
+  return defs.map((t) => ({
+    method: t.method,
+    path: t.path,
+    description: t.description,
+    ...(t.input_schema !== undefined ? { input_schema: t.input_schema } : {}),
+  }))
 }
 
 function normalizeResult(result: ToolResult): { status: number; body: unknown; taskId?: string; headers?: Record<string, string> } {

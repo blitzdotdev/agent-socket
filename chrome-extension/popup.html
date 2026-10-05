@@ -32,6 +32,12 @@
     <div class="row status-row">
       <span id="status-text">Not connected</span>
     </div>
+    <div id="tools-source" class="muted small" hidden></div>
+  </section>
+
+  <section id="pending-card" hidden>
+    <div class="muted small">The AI saved tools. They run only if you keep them:</div>
+    <ul id="pending-list" class="profile-list"></ul>
   </section>
 
   <div class="actions">
@@ -58,9 +64,16 @@
       <button id="save-relay">Save</button>
     </div>
     <div class="row">
-      <span class="muted small">Saved site profiles:</span>
+      <label for="registry-input" class="muted small">Tool registry URL</label>
     </div>
-    <ul id="profiles-list"></ul>
+    <div class="url-row">
+      <input id="registry-input" placeholder="https://registry.agentsocket.dev" />
+      <button id="save-registry">Save</button>
+    </div>
+    <div class="row">
+      <span class="muted small">Kept site profiles (load on this computer only):</span>
+    </div>
+    <ul id="profiles-list" class="profile-list"></ul>
   </details>
 
   <footer>

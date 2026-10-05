@@ -2,7 +2,9 @@
 //
 // Pipeline:
 //   1. Start agent-socket relay (wrangler dev on :RELAY_PORT, DEBUG=1)
-//   2. Start a tiny static HTTP server for the test page on :STATIC_PORT
+//   2. Start a tiny static HTTP server for the test page on :STATIC_PORT; it
+//      also serves a mock tool registry under /registry (same JSON API as
+//      registry/: /v1/sites/:host, /v1/search, /v1/submissions, CORS *)
 //   3. Launch headed Chromium under Xvfb with our extension loaded
 //   4. Discover the extension's ID by listening for the SW target's URL
 //   5. Open the test page in a tab, focus it; open the popup as a sibling tab
@@ -28,6 +30,11 @@ const CHROMIUM = process.env.CHROMIUM_PATH ?? "/usr/bin/chromium"
 const RELAY_PORT = parseInt(process.env.RELAY_PORT ?? "8794", 10)
 const STATIC_PORT = parseInt(process.env.STATIC_PORT ?? "8795", 10)
 const RELAY_BASE = `http://127.0.0.1:${RELAY_PORT}`
+const REGISTRY_BASE = `http://127.0.0.1:${STATIC_PORT}/registry`
+// The registry only knows public-looking hostnames, so the test page is
+// opened under these names; Chromium resolves them to 127.0.0.1.
+const SITE_HOST = "e2e-site.test"
+const GENERIC_SITE_HOST = "no-profile.test"
 
 // ── runner ────────────────────────────────────────────────────────────
 let passed = 0, failed = 0
@@ -81,10 +88,72 @@ function startRelay() {
   }
 }
 
+// ── mock registry ─────────────────────────────────────────────────────
+// Answers like registry/src/api.ts. `mode`: "ok", or "hang" (never answers,
+// so the extension's Connect timeout is what ends the wait).
+const registry = {
+  mode: "ok",
+  requests: [],
+  submissions: [],
+  sites: {
+    [SITE_HOST]: {
+      host: SITE_HOST, version: 2, updated: "2026-10-01 00:00:00",
+      notes: "E2E REGISTRY NOTES: the counter lives in #counter.",
+      tools: [
+        { method: "POST", path: "/reg_counter", description: "Read the counter (registry version).", input_schema: { type: "object", properties: {} }, code: "return { from: 'registry', value: Number(document.getElementById('counter').textContent) }" },
+        { method: "POST", path: "/reg_title", description: "Read the page heading.", code: "return document.getElementById('page-title').textContent" },
+      ],
+    },
+    "*": { host: "*", version: 1, updated: "2026-10-01 00:00:00", notes: "E2E GENERIC NOTES: no site profile.", tools: [] },
+  },
+}
+
+function registryHandler(req, res, url) {
+  const send = (status, body) => {
+    res.writeHead(status, { "content-type": "application/json", "access-control-allow-origin": "*" })
+    res.end(JSON.stringify(body))
+  }
+  let raw = ""
+  req.on("data", (c) => { raw += c })
+  req.on("end", () => {
+    const p = url.pathname.replace(/^\/registry/, "")
+    registry.requests.push({ method: req.method, path: p, search: url.search, headers: req.headers, body: raw })
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "Content-Type" })
+      return res.end()
+    }
+    if (registry.mode === "hang") return  // the connection stays open until the server stops
+    const site = p.match(/^\/v1\/sites\/([^/]+)$/)
+    if (req.method === "GET" && site) {
+      const host = decodeURIComponent(site[1])
+      const profile = registry.sites[host]
+      return profile ? send(200, { ...profile, requested_host: host }) : send(404, { error: { code: "not_found", message: `no approved profile for ${host}` } })
+    }
+    if (req.method === "GET" && p === "/v1/search") {
+      const q = (url.searchParams.get("q") ?? "").toLowerCase()
+      const results = Object.values(registry.sites).filter((s) => s.host !== "*")
+        .filter((s) => s.host.includes(q) || s.notes.toLowerCase().includes(q) || s.tools.some((t) => (t.path + t.description).toLowerCase().includes(q)))
+        .map((s) => ({ host: s.host, version: s.version, tool_count: s.tools.length, summary: s.notes.split("\n")[0], tools: s.tools.map((t) => t.path), matched_tools: s.tools.filter((t) => (t.path + t.description).toLowerCase().includes(q)).map((t) => t.path) }))
+      return send(200, { query: q, results })
+    }
+    if (req.method === "POST" && p === "/v1/submissions") {
+      let body
+      try { body = JSON.parse(raw) } catch { return send(400, { error: { code: "invalid_json", message: "body is not valid JSON" } }) }
+      if (!/^application\/json/.test(req.headers["content-type"] ?? "")) return send(415, { error: { code: "unsupported_media_type" } })
+      if (typeof body.host !== "string" || !Array.isArray(body.tools)) return send(400, { error: { code: "invalid_submission", issues: [] } })
+      const id = `sub_${registry.submissions.length + 1}`
+      registry.submissions.push({ id, body, userAgent: req.headers["user-agent"] })
+      return send(201, { id, status: "pending" })
+    }
+    send(404, { error: { code: "not_found", message: "no such endpoint" } })
+  })
+}
+
 // ── static page server ────────────────────────────────────────────────
 function startStatic() {
   const srv = http.createServer((req, res) => {
     const url = new URL(req.url, "http://x")
+    if (url.pathname.startsWith("/registry/")) return registryHandler(req, res, url)
     let fp = path.join(EXT_DIR, "test", url.pathname.replace(/^\/+/, ""))
     if (!fp.startsWith(EXT_DIR)) { res.writeHead(403).end(); return }
     try {
@@ -100,7 +169,7 @@ function startStatic() {
   })
   return new Promise((resolve) => srv.listen(STATIC_PORT, "127.0.0.1", () => resolve({
     url: `http://127.0.0.1:${STATIC_PORT}`,
-    stop: () => new Promise((r) => srv.close(() => r())),
+    stop: () => new Promise((r) => { srv.close(() => r()); srv.closeAllConnections() }),
   })))
 }
 
@@ -120,6 +189,7 @@ async function launchChrome(extDir) {
       `--load-extension=${extDir}`,
       `--user-data-dir=${userDataDir}`,
       "--window-size=1280,900",
+      `--host-resolver-rules=MAP ${SITE_HOST} 127.0.0.1, MAP ${GENERIC_SITE_HOST} 127.0.0.1`,
     ],
     defaultViewport: null,
   })
@@ -178,7 +248,7 @@ async function main() {
     console.log(`[setup] extension id: ${extId}`)
 
     // Open the test page first.
-    const testUrl = `${staticSrv.url}/test-page.html`
+    const testUrl = `http://${SITE_HOST}:${STATIC_PORT}/test-page.html`
     const testPage = await browser.newPage()
     await testPage.goto(testUrl, { waitUntil: "load" })
     console.log(`[setup] test page loaded`)
@@ -191,6 +261,7 @@ async function main() {
     await testPage.bringToFront()
     // Belt and braces: ask chrome.tabs to set the test tab active.
     await sendToSW(popupPage, { type: "set_relay_base", base: RELAY_BASE })
+    await sendToSW(popupPage, { type: "set_registry_base", base: REGISTRY_BASE })
     await popupPage.evaluate(async (url) => {
       const tabs = await chrome.tabs.query({})
       const t = tabs.find((t) => (t.url ?? "").startsWith(url))
@@ -205,6 +276,14 @@ async function main() {
       if (!r?.ok) throw new Error(`connect failed: ${JSON.stringify(r)}`)
       if (!r.url || !r.url.startsWith(RELAY_BASE)) throw new Error(`bad url: ${r.url}`)
       return r
+    })
+
+    await step("Connect fetched the site's registry profile (hostname only)", async () => {
+      const gets = registry.requests.filter((q) => q.method === "GET" && q.path.startsWith("/v1/sites/"))
+      if (gets.map((q) => q.path).join(",") !== `/v1/sites/${SITE_HOST}`) throw new Error(`registry requests: ${gets.map((q) => q.path)}`)
+      const src = connectInfo.source?.registry
+      if (src?.status !== "ok" || src.host !== SITE_HOST || src.version !== 2) throw new Error(JSON.stringify(connectInfo.source))
+      if (connectInfo.source.local !== null) throw new Error("unexpected local profile")
     })
     console.log(`       url:        ${connectInfo.url}`)
     console.log(`       host bound: ${connectInfo.host}`)
@@ -233,14 +312,24 @@ async function main() {
       const t = await r.text()
       if (!/Agent Socket/.test(t)) throw new Error("missing header")
       if (!/page_info/.test(t)) throw new Error("missing tool list")
+      if (!t.includes("E2E REGISTRY NOTES")) throw new Error("missing registry notes")
+      if (!t.includes(`registry profile for **${SITE_HOST}** (v2`)) throw new Error("missing profile source")
+      if (!/registry_search[\s\S]*save_site_profile[\s\S]*Keep[\s\S]*registry_submit/.test(t)) throw new Error("missing workflow")
     })
 
-    await step("GET /tools.json lists exactly the universal tools", async () => {
-      const j = await (await fetch(`${tokenBase}/tools.json`)).json()
-      const have = j.tools.map((t) => t.path).sort().join(",")
-      const want = ["/eval", "/page_info", "/dom_query", "/click", "/fill", "/wait_for", "/navigate", "/scroll",
-        "/get_text", "/get_html", "/screenshot", "/save_site_profile"].sort().join(",")
-      if (have !== want) throw new Error(`tools: ${have}`)
+    const BASE_PATHS = ["/eval", "/page_info", "/dom_query", "/click", "/fill", "/wait_for", "/navigate", "/scroll",
+      "/get_text", "/get_html", "/screenshot", "/save_site_profile", "/registry_search", "/registry_get", "/registry_submit"]
+    const toolPaths = async (base) => (await (await fetch(`${base}/tools.json`)).json()).tools.map((t) => t.path)
+    const sameSet = (a, b) => [...a].sort().join(",") === [...b].sort().join(",")
+
+    await step("GET /tools.json lists the universal + registry tools", async () => {
+      const have = await toolPaths(tokenBase)
+      if (!sameSet(have, [...BASE_PATHS, "/reg_counter", "/reg_title"])) throw new Error(`tools: ${have}`)
+    })
+
+    await step("registry tool runs in the page", async () => {
+      const { status, json } = await callTool("/reg_counter", {})
+      if (status !== 200 || json?.value?.from !== "registry" || json.value.value !== 0) throw new Error(`${status} ${JSON.stringify(json)}`)
     })
 
     // ── 3. Page info / DOM tools ──────────────────────────────────
@@ -249,7 +338,7 @@ async function main() {
       if (status !== 200) throw new Error(`status ${status}`)
       if (!json.url?.includes("test-page.html")) throw new Error(`url=${json.url}`)
       if (!/E2E Test Page/.test(json.title)) throw new Error(`title=${json.title}`)
-      if (json.host !== `127.0.0.1:${STATIC_PORT}`) throw new Error(`host=${json.host}`)
+      if (json.host !== `${SITE_HOST}:${STATIC_PORT}`) throw new Error(`host=${json.host}`)
     })
 
     await step("POST /eval reads page state", async () => {
@@ -356,50 +445,179 @@ async function main() {
       }
     })
 
-    // ── 7. Save & reload site profile ─────────────────────────────
-    await step("POST /save_site_profile persists discovered tool", async () => {
-      const { status, json } = await callTool("/save_site_profile", {
-        host: `127.0.0.1:${STATIC_PORT}`,
-        tools: [
-          {
-            path: "/get_counter",
-            description: "Read the current counter value as a number.",
-            input_schema: { type: "object", properties: {} },
-            code: "return Number(document.getElementById('counter').textContent);",
-          },
-          {
-            path: "/inc_n",
-            description: "Click increment N times.",
-            input_schema: { type: "object", required: ["n"], properties: { n: { type: "integer" } } },
-            code: "for (let i = 0; i < args.n; i++) document.getElementById('inc-btn').click(); return Number(document.getElementById('counter').textContent);",
-          },
-        ],
-        notes: "Test-page profile — counter & form submit.",
-      })
-      if (status !== 200 || !json.saved) throw new Error(JSON.stringify(json))
+    // ── 7. Registry tools + local profiles ──────────────────────────
+    const swSnap = () => sendToSW(popupPage, { type: "snapshot" })
+    const until = async (cond, ms = 5000) => {
+      const end = Date.now() + ms
+      while (!(await cond())) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 100)) }
+    }
+    const localHost = `${SITE_HOST}:${STATIC_PORT}`
+    const popupText = (sel) => popupPage.evaluate((s) => document.querySelector(s)?.textContent ?? null, sel)
+    // The popup tab sits behind the test page, and puppeteer's mouse click
+    // waits for rendering a background tab never does; a DOM click runs the
+    // same listener.
+    const clickInPopup = async (sel) => {
+      await popupPage.waitForSelector(sel, { timeout: 5000 })
+      await popupPage.$eval(sel, (n) => n.click())
+    }
+
+    await step("/registry_search returns compact hits", async () => {
+      const { status, json } = await callTool("/registry_search", { q: "counter" })
+      if (status !== 200) throw new Error(`${status} ${JSON.stringify(json)}`)
+      const hit = json.results?.[0]
+      if (hit?.host !== SITE_HOST || hit.tool_count !== 2 || !hit.matched_tools.includes("/reg_counter")) throw new Error(JSON.stringify(json))
+      if ("code" in hit) throw new Error("search leaked code")
+      const q = registry.requests.at(-1)
+      if (q.path !== "/v1/search" || !q.search.includes("q=counter")) throw new Error(JSON.stringify(q))
+      if ((await callTool("/registry_search", { q: "x" })).status !== 400) throw new Error("1-char q accepted")
     })
 
-    await step("reconnect surfaces saved tools as first-class", async () => {
+    await step("/registry_get: tab's host by default, code only on request", async () => {
+      const { json } = await callTool("/registry_get", {})
+      if (!json.found || json.host !== SITE_HOST || json.loaded !== true || !/E2E REGISTRY NOTES/.test(json.notes)) throw new Error(JSON.stringify(json))
+      if (json.tools.length !== 2 || json.tools.some((t) => "code" in t)) throw new Error(JSON.stringify(json.tools))
+      const withCode = (await callTool("/registry_get", { host: SITE_HOST, include_code: true })).json
+      if (!withCode.tools.every((t) => typeof t.code === "string")) throw new Error("no code with include_code")
+      const missing = (await callTool("/registry_get", { host: "nothing-here.test" })).json
+      if (missing.found !== false) throw new Error(JSON.stringify(missing))
+    })
+
+    await step("/registry_submit validates locally, then creates a pending submission", async () => {
+      const bad = await callTool("/registry_submit", { host: SITE_HOST, tools: [{ path: "/eval", description: "x", code: "return 1" }] })
+      if (bad.status !== 400 || !/built-in/.test(JSON.stringify(bad.json?.error?.issues))) throw new Error(`${bad.status} ${JSON.stringify(bad.json)}`)
+      if (registry.submissions.length !== 0) throw new Error("invalid submission was sent")
+      const { status, json } = await callTool("/registry_submit", {
+        notes: "Counter page.",
+        tools: [{ path: "/read_counter", description: "Read the counter.", code: "return Number(document.getElementById('counter').textContent)" }],
+      })
+      if (status !== 200 || !json.submitted || json.status !== "pending" || json.id !== "sub_1" || json.host !== SITE_HOST) throw new Error(`${status} ${JSON.stringify(json)}`)
+      const sub = registry.submissions[0]
+      if (sub.body.host !== SITE_HOST || sub.body.ext_version !== "0.3.0" || sub.body.tools[0].method !== "POST" || sub.body.notes !== "Counter page.") throw new Error(JSON.stringify(sub.body))
+      if (!/Chrome/.test(sub.userAgent ?? "")) throw new Error(`user agent: ${sub.userAgent}`)
+    })
+
+    const savedTools = [
+      { path: "/get_counter", description: "Read the current counter value as a number.", input_schema: { type: "object", properties: {} },
+        code: "return Number(document.getElementById('counter').textContent);" },
+      { path: "/inc_n", description: "Click increment N times.", input_schema: { type: "object", required: ["n"], properties: { n: { type: "integer" } } },
+        code: "for (let i = 0; i < args.n; i++) document.getElementById('inc-btn').click(); return Number(document.getElementById('counter').textContent);" },
+      { path: "/reg_counter", description: "Local override of the registry tool.", code: "return { from: 'local' }" },
+    ]
+
+    await step("/save_site_profile stores a PENDING profile that does not load", async () => {
+      const bad = await callTool("/save_site_profile", { tools: [{ path: "/click", description: "x", code: "1" }] })
+      if (bad.status !== 400) throw new Error(`base-path save accepted: ${bad.status}`)
+      const { status, json } = await callTool("/save_site_profile", { tools: savedTools, notes: "LOCAL NOTES for the test page." })
+      if (status !== 200 || json.status !== "pending_user_approval" || json.host !== localHost || json.tool_count !== 3) throw new Error(`${status} ${JSON.stringify(json)}`)
+      const paths = await toolPaths(activeTokenBase)
+      if (paths.includes("/get_counter")) throw new Error("pending tools are live")
+      if ((await callTool("/reg_counter", {})).json?.value?.from !== "registry") throw new Error("pending profile overrode a registry tool")
+    })
+
+    await step("popup shows the pending save; Keep makes the tools live on the SAME URL", async () => {
+      const item = `#pending-list li[data-host="${localHost}"]`
+      await popupPage.waitForSelector(item, { timeout: 5000 })
+      const text = await popupText(`${item} .profile-head span`)
+      if (text !== `AI saved 3 tools for ${localHost}`) throw new Error(`pending text: ${text}`)
+      const review = await popupText(`${item} details`)
+      if (!review.includes("POST /inc_n") || !review.includes("args.n")) throw new Error("review doesn't show tools + code")
+      const urlBefore = (await swSnap()).url
+      await clickInPopup(`${item} button[data-action="keep"]`)
+      await until(async () => (await toolPaths(activeTokenBase)).includes("/get_counter"))
+      if ((await swSnap()).url !== urlBefore) throw new Error("URL changed")
+      if (!sameSet(await toolPaths(activeTokenBase), [...BASE_PATHS, "/reg_counter", "/reg_title", "/get_counter", "/inc_n"])) throw new Error(`tools: ${await toolPaths(activeTokenBase)}`)
+      const n0 = (await callTool("/get_counter", {})).json?.value
+      const n3 = (await callTool("/inc_n", { n: 3 })).json?.value
+      if (typeof n0 !== "number" || n3 !== n0 + 3) throw new Error(`/inc_n: ${n0} → ${n3}`)
+      if ((await callTool("/reg_counter", {})).json?.value?.from !== "local") throw new Error("local tool didn't override the registry one")
+      const md = await (await fetch(`${activeTokenBase}/agents.md`)).text()
+      if (!md.includes("LOCAL NOTES for the test page.") || !md.includes("E2E REGISTRY NOTES")) throw new Error("agents.md not updated")
+      const snap = await swSnap()
+      if (snap.sourceLabel !== `${SITE_HOST} v2 from registry · 3 local`) throw new Error(`label: ${snap.sourceLabel}`)
+      await until(async () => (await popupText("#tools-source")) === `Tools: ${SITE_HOST} v2 from registry · 3 local`)
+      await until(async () => (await popupText("#pending-card")) !== null && await popupPage.evaluate(() => document.querySelector("#pending-card").hidden))
+      await until(async () => /3 tools/.test(await popupText(`#profiles-list li[data-host="${localHost}"]`) ?? ""))
+    })
+
+    await step("Discard drops a pending save without loading it", async () => {
+      const { json } = await callTool("/save_site_profile", { host: "elsewhere.example", tools: [{ path: "/nope", description: "x", code: "return 1" }] })
+      if (json.status !== "pending_user_approval") throw new Error(JSON.stringify(json))
+      await clickInPopup(`#pending-list li[data-host="elsewhere.example"] button[data-action="discard"]`)
+      await until(async () => !(await sendToSW(popupPage, { type: "list_profiles" })).pending.length)
+      const list = await sendToSW(popupPage, { type: "list_profiles" })
+      if (list.kept.map((k) => k.host).join() !== localHost) throw new Error(JSON.stringify(list))
+      if ((await toolPaths(activeTokenBase)).includes("/nope")) throw new Error("discarded tool is live")
+    })
+
+    await step("profiles saved by 0.2 (site_profiles) become pending, not loaded", async () => {
+      await popupPage.evaluate(() => chrome.storage.local.set({ site_profiles: { "legacy.example": { host: "legacy.example", tools: [{ path: "/old", description: "old", code: "return 1" }], notes: "", savedAt: 1 } } }))
+      const list = await sendToSW(popupPage, { type: "list_profiles" })
+      if (list.pending.map((p) => p.host).join() !== "legacy.example") throw new Error(JSON.stringify(list.pending))
+      if ((await popupPage.evaluate(() => chrome.storage.local.get("site_profiles"))).site_profiles) throw new Error("legacy key kept")
+      await sendToSW(popupPage, { type: "discard_profile", host: "legacy.example" })
+    })
+
+    await step("reconnect loads the kept profile at Connect", async () => {
       await sendToSW(popupPage, { type: "disconnect" })
       const r = await sendToSW(popupPage, { type: "connect" })
-      const expectedHost = `127.0.0.1:${STATIC_PORT}`
-      if (!r.ok || r.profile !== expectedHost) throw new Error(`profile=${r.profile} (want ${expectedHost}): ${JSON.stringify(r)}`)
-      const newBase = r.url.replace(/\/agents\.md.*$/, "")
-      activeTokenBase = newBase
-      const tools = await (await fetch(`${newBase}/tools.json`)).json()
-      const paths = tools.tools.map((t) => t.path)
-      if (!paths.includes("/get_counter")) throw new Error(`/get_counter missing: ${paths.join(",")}`)
-      if (!paths.includes("/inc_n")) throw new Error(`/inc_n missing`)
-      // Call the discovered tool
-      const r1 = await fetch(`${newBase}/get_counter`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })
-      const j1 = await r1.json()
-      if (typeof j1.value !== "number") throw new Error(`/get_counter: ${JSON.stringify(j1)}`)
-      // And the parameterized one
-      const r2 = await fetch(`${newBase}/inc_n`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ n: 3 }) })
-      const j2 = await r2.json()
-      if (typeof j2.value !== "number" || j2.value < j1.value + 3) {
-        throw new Error(`/inc_n didn't increment 3x: before=${j1.value} after=${j2.value}`)
+      if (!r.ok || r.source?.local?.count !== 3 || r.source.registry.status !== "ok") throw new Error(JSON.stringify(r))
+      activeTokenBase = r.url.replace(/\/agents\.md.*$/, "")
+      const paths = await toolPaths(activeTokenBase)
+      if (!paths.includes("/get_counter") || !paths.includes("/inc_n")) throw new Error(`tools: ${paths}`)
+      if (typeof (await callTool("/get_counter", {})).json?.value !== "number") throw new Error("/get_counter failed")
+    })
+
+    await step("deleting the kept profile removes its tools live", async () => {
+      const url = (await swSnap()).url
+      await clickInPopup(`#profiles-list li[data-host="${localHost}"] a[data-action="delete"]`)
+      await until(async () => !(await toolPaths(activeTokenBase)).includes("/get_counter"))
+      if (!sameSet(await toolPaths(activeTokenBase), [...BASE_PATHS, "/reg_counter", "/reg_title"])) throw new Error("tools not back to registry set")
+      if ((await callTool("/reg_counter", {})).json?.value?.from !== "registry") throw new Error("registry tool not restored")
+      if ((await swSnap()).url !== url) throw new Error("URL changed")
+    })
+
+    await step("a site without a profile gets the generic one", async () => {
+      const page = await browser.newPage()
+      await page.goto(`http://${GENERIC_SITE_HOST}:${STATIC_PORT}/test-page.html?generic`, { waitUntil: "load" })
+      const tabId = await popupPage.evaluate(async () => (await chrome.tabs.query({})).find((t) => t.url?.endsWith("?generic"))?.id)
+      registry.requests.length = 0
+      const r = await sendToSW(popupPage, { type: "connect", tabId })
+      if (!r.ok || r.source?.registry?.status !== "generic") throw new Error(JSON.stringify(r))
+      if (registry.requests.map((q) => q.path).join() !== `/v1/sites/${GENERIC_SITE_HOST},/v1/sites/*`) throw new Error(registry.requests.map((q) => q.path).join())
+      const base = r.url.replace(/\/agents\.md.*$/, "")
+      const md = await (await fetch(`${base}/agents.md`)).text()
+      if (!md.includes("E2E GENERIC NOTES") || !md.includes("generic profile")) throw new Error("generic notes missing")
+      if (!sameSet(await toolPaths(base), BASE_PATHS)) throw new Error(`tools: ${await toolPaths(base)}`)
+      await sendToSW(popupPage, { type: "disconnect" })
+      await page.close()
+    })
+
+    await step("registry down: Connect still works with base tools, popup says so", async () => {
+      await testPage.bringToFront()
+      registry.mode = "hang"
+      try {
+        const t0 = Date.now()
+        const r = await sendToSW(popupPage, { type: "connect" })
+        const took = Date.now() - t0
+        if (!r.ok || r.source?.registry?.status !== "unreachable") throw new Error(JSON.stringify(r))
+        if (took > 8000) throw new Error(`connect took ${took} ms`)
+        const base = r.url.replace(/\/agents\.md.*$/, "")
+        if (!sameSet(await toolPaths(base), BASE_PATHS)) throw new Error(`tools: ${await toolPaths(base)}`)
+        if (!/registry was unreachable/.test(await (await fetch(`${base}/agents.md`)).text())) throw new Error("agents.md doesn't say so")
+        await until(async () => (await popupText("#tools-source")) === "Tools: base only (registry unreachable)")
+        console.log(`       connect with registry hanging took ${took} ms`)
+      } finally {
+        registry.mode = "ok"
       }
+      const r = await sendToSW(popupPage, { type: "connect" })
+      if (r.status !== "already_connected") {
+        throw new Error(`expected already_connected: ${JSON.stringify(r)}`)
+      }
+      // Fresh session with the registry back, for the steps below.
+      await sendToSW(popupPage, { type: "disconnect" })
+      const fresh = await sendToSW(popupPage, { type: "connect" })
+      if (fresh.source?.registry?.status !== "ok") throw new Error(JSON.stringify(fresh))
+      activeTokenBase = fresh.url.replace(/\/agents\.md.*$/, "")
     })
 
     // ── 8. Negative paths ──────────────────────────────────────────

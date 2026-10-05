@@ -28,14 +28,15 @@ kills the URL.
 | `POST /get_text` | `innerText` of selector (or body), truncated. |
 | `POST /get_html` | `outerHTML` of selector. |
 | `POST /screenshot` | PNG/JPEG data-URL of the visible viewport. Refused (409) unless the connected tab is the selected tab of its window. |
-| `POST /save_site_profile` | Persist a discovered toolset keyed by hostname. After reconnect those tools are first-class. |
+| `POST /save_site_profile` | Save tools for a host on this computer as **pending**; they load only after the user clicks Keep in the popup. |
+| `POST /registry_search` | Search the shared registry (hosts, notes, tool names/descriptions); compact hits. |
+| `POST /registry_get` | A site's approved registry profile: notes + tool list (code only with `include_code: true`). Defaults to the tab's host. |
+| `POST /registry_submit` | Send `{ host, notes, tools }` to the registry as a submission (validated locally first); pending maintainer review. |
 
-**Site-specific tools** (loaded automatically based on the connected tab's host):
+**Site-specific tools** come from two places:
 
-- `tools-lib/_index.json` maps host patterns → tool files.
-- Bundled profiles: `github.com.json`, `x.com.json` (+ `twitter.com` alias), `news.ycombinator.com.json`, `reddit.com.json` (+ `www.reddit.com` alias), `docs.google.com.json`, plus a `generic.json` fallback.
-- User-saved profiles (via `/save_site_profile`) live in `chrome.storage.local`
-  under `site_profiles[host]` and take precedence over bundled ones.
+- **The registry** ([`registry/`](../registry), default `https://registry.agentsocket.dev`, configurable in the popup's Settings). On Connect the extension fetches `GET /v1/sites/<hostname>` and registers its tools and notes; if the site has none it uses the generic profile (`*`). The fetch has a 3 s budget: if the registry is unreachable the tab connects with the built-in tools and the popup says so. Hostnames that can't be in the registry (IPs, `localhost`, `.local`/`.lan`/`.internal` names) are never sent; those tabs get the generic profile. Starter profiles live in [`registry/seed/`](../registry/seed).
+- **Local profiles** the AI saved with `/save_site_profile`. A save is *pending*: the popup shows "AI saved N tools for <host>" with **Keep** / **Discard** and a Review of the code. Only kept profiles load (stored in `chrome.storage.local` `kept_profiles[host]`, matched on `host:port` then hostname). A kept tool replaces a registry tool with the same method + path. Keeping (or deleting) a profile for the connected tab's host updates the live session through `session.updateTools()`, so the new tools show up in `tools.json` on the same URL. Profiles saved by older versions (`site_profiles`) are moved to pending on upgrade.
 
 ## The agent flow
 
@@ -46,18 +47,21 @@ kills the URL.
 3. User copies the link, pastes into their AI chat.
 4. AI fetches `/agents.md` and `/tools.json`, then calls tools as it works.
 
-On a **new** site, the AI calls `POST /eval` to explore (find selectors, test
-that interactions work). When it finds something stable, it calls
-`POST /save_site_profile { host, tools: [...] }` to save it. On the next
-connection to that host the saved tools appear in `tools.json` automatically.
+On a **new** site, the AI first checks `/registry_search` / `/registry_get`,
+then calls `POST /eval` to explore (find selectors, test that interactions
+work). When it finds something stable, it calls `POST /save_site_profile
+{ host, tools: [...] }`; once the user clicks Keep, the tools appear in
+`tools.json` on the same URL and on later connections to that host. To share
+them, it calls `POST /registry_submit`, which queues them for review.
 
 ## Install (developer mode)
 
 1. Visit `chrome://extensions/`.
 2. Toggle **Developer mode** (top-right).
 3. Click **Load unpacked** → select this directory.
-4. (Optional) In the popup's **Settings**, set the relay base URL if you're
-   self-hosting (default is `https://agentsocket.dev`).
+4. (Optional) In the popup's **Settings**, set the relay base URL and the
+   tool registry URL if you're self-hosting (defaults:
+   `https://agentsocket.dev`, `https://registry.agentsocket.dev`).
 
 `/eval` and site tools run through `chrome.userScripts` so they work on
 CSP-strict sites. That needs **Allow User Scripts** turned on in the
@@ -72,8 +76,12 @@ popup shows how when it's off.
 ## Tests
 
 The E2E test launches Chromium under Xvfb with the extension loaded, runs a
-tiny `wrangler dev` relay, serves a local test page, and verifies the tools by
-hitting the agent token URL exactly like an external AI chat would.
+tiny `wrangler dev` relay, serves a local test page plus a mock registry
+(same JSON API as `registry/`, on the static server under `/registry`), and
+verifies the tools by hitting the agent token URL exactly like an external AI
+chat would. The page is opened as `http://e2e-site.test:<port>` (Chromium's
+`--host-resolver-rules` maps it to 127.0.0.1) because the registry only knows
+public-looking hostnames.
 
 ```bash
 # Requires xvfb-run + chromium (sudo apt install xvfb chromium).
@@ -83,15 +91,21 @@ CHROMIUM_PATH=/usr/bin/chromium npm run ext:test
 Coverage: connect/mint, meta endpoints, page info, eval (success/error/await),
 DOM query, click/fill/submit, wait_for, scroll, text/html, dynamic lists,
 screenshot (and its refusal when another tab is in front), navigate guard,
-save_site_profile + reconnect-loads-saved, badge + pill on the bound tab only,
+registry profile on Connect, generic fallback, connecting with the registry
+down, `/registry_search` / `/registry_get` / `/registry_submit`,
+`/save_site_profile` → pending → Keep (tools live on the same URL) /
+Discard / delete, kept tools loading on reconnect, legacy profile migration,
+badge + pill on the bound tab only,
 popup state, pill re-injection after reload, tab close and pill Stop ending
 the session, and connect being refused without site access. Puppeteer can't
 click Chrome's permission prompt, so the tests load a copy of the extension
 with site access granted at install (`test/ext-dir.mjs`).
 
 `npm run ext:test:unit` (no chromium) drives the vendored SDK's reconnect path
-(resume, then re-mint when the session is gone) against a mocked WebSocket and
-checks the `/navigate` URL guard. `npm run ext:test:reconnect` (chromium)
+(resume, then re-mint when the session is gone) against a mocked WebSocket,
+checks the `/navigate` URL guard, and tests profile validation, merging and
+agents.md (`test/profiles.unit.mjs`, which also checks the built-in tool paths
+match `registry/src/rules.ts`). `npm run ext:test:reconnect` (chromium)
 checks the same URL survives a relay-side WS drop and a service-worker stop,
 and that a new URL is minted once the session is gone.
 
@@ -99,8 +113,9 @@ and that a new URL is minted once the session is gone.
 
 `background.js` is an ES-module service worker. On `connect`, it imports
 `@agent-socket/sdk` (vendored at `lib/sdk/`; see `lib/sdk/VENDORED.md`),
-registers a toolset built from `lib/tools-base.js` (universal) plus the site
-profile (if any), mints an agent token, and marks the tab (badge + `pill.js`
+registers a toolset built from `lib/tools-base.js` + `lib/registry.js`
+(universal) plus the site profile from the registry and the user's kept local
+profile (`lib/profiles.js` merges them and writes agents.md), mints an agent token, and marks the tab (badge + `pill.js`
 injected into the page's isolated world). Each tool's handler runs in the
 service worker and forwards work into the page via
 `chrome.scripting.executeScript({ world: "MAIN", ... })`, which has full

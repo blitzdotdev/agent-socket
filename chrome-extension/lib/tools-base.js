@@ -4,6 +4,8 @@
 // Handlers receive { body } (string) and run in the SERVICE WORKER; they act
 // only on the bound tab (via `getTabId`), executing code in its MAIN world.
 
+import { normalizeLocalHost, validateProfile } from "./profiles.js"
+
 // ── helpers ─────────────────────────────────────────────────────────
 
 function parseBody(body) {
@@ -177,7 +179,18 @@ async function execInPage(getTabId, fn, args, opts) {
 
 // ── tool factories: produce tool objects bound to a getTabId fn ─────
 
-export function buildBaseTools({ getTabId }) {
+// Every built-in tool path (buildBaseTools + the registry tools). Site
+// profiles can't reuse these; registry/src/rules.ts BASE_TOOL_PATHS mirrors
+// this list (test/profiles.unit.mjs checks both).
+export const BASE_TOOL_PATHS = new Set([
+  "/eval", "/page_info", "/dom_query", "/click", "/fill", "/wait_for", "/navigate", "/scroll",
+  "/get_text", "/get_html", "/screenshot", "/save_site_profile",
+  "/registry_search", "/registry_get", "/registry_submit",
+])
+
+// savePendingProfile({ host, notes, tools }): stores an AI-saved profile for
+// the user to Keep or Discard (background.js).
+export function buildBaseTools({ getTabId, savePendingProfile }) {
   return [
     // ── 1. The escape hatch: raw eval ────────────────────────────────
     {
@@ -554,47 +567,55 @@ export function buildBaseTools({ getTabId }) {
       },
     },
 
-    // ── 12. Save profile ────────────────────────────────────────────
+    // ── 12. Save profile (pending until the user keeps it) ──────────
     {
       path: "/save_site_profile",
-      description: "Persist a discovered toolset (a list of tool definitions agents can later call) keyed by hostname. Use after exploring a new site with /eval. The profile is stored in chrome.storage and surfaced as extra tools on subsequent connections to that host. NOTE: this does NOT mutate the live session; the user must reconnect for new tools to be served by the relay.",
+      description: "Save tools you built for a site on the user's computer. Workflow: check /registry_search and /registry_get first; explore with /eval; then save here. The save is PENDING: the extension popup shows it to the user with Keep / Discard, and nothing loads until they click Keep. Once kept for this tab's host, the tools appear in tools.json on this same URL (re-fetch it) and on later connections; local tools replace registry tools with the same path. A save replaces any earlier local profile for that host, so include every tool you want. To share with everyone, also call /registry_submit.",
       input_schema: {
         type: "object",
-        required: ["host", "tools"],
+        required: ["tools"],
         properties: {
-          host: { type: "string", description: "Hostname e.g. 'github.com'. Matched against location.host." },
+          host: { type: "string", description: "Hostname, optionally with port, e.g. 'github.com' or 'localhost:3000'. Defaults to the connected tab's host (location.host)." },
           tools: {
             type: "array",
+            maxItems: 50,
             items: {
               type: "object",
               required: ["path", "description", "code"],
               properties: {
-                method: { type: "string" },
-                path: { type: "string", description: "URL path starting with /" },
+                method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], default: "POST" },
+                path: { type: "string", description: "URL path starting with /. Can't reuse a built-in tool's path." },
                 description: { type: "string" },
-                input_schema: {},
-                code: { type: "string", description: "JS body. Use args.<param> from input. Return value is the tool result." },
+                input_schema: { type: "object", description: "JSON Schema of the body; the code sees it as `args`." },
+                code: { type: "string", description: "JS function body run in the page's main world. Use args.<param>; `return` the result." },
               },
             },
           },
-          notes: { type: "string", description: "Optional markdown notes about the site, surfaced in agents.md." },
+          notes: { type: "string", description: "Optional markdown notes about the site, shown in agents.md." },
         },
       },
       handler: async ({ body }) => {
         const args = parseBody(body)
-        if (typeof args.host !== "string" || !Array.isArray(args.tools)) {
-          return bad("expected { host: string, tools: [...] }")
+        if (!args || args.__parse_error) return bad("body must be JSON: { host?, notes?, tools: [...] }")
+        let host = args.host
+        if (host === undefined) {
+          const tabId = await getTabId()
+          const tab = tabId ? await chrome.tabs.get(tabId).catch(() => null) : null
+          try { host = new URL(tab?.url).host } catch { host = null }
         }
-        const profile = {
-          host: args.host,
-          tools: args.tools,
-          notes: args.notes ?? "",
-          savedAt: Date.now(),
+        const key = normalizeLocalHost(host)
+        if (!key) return bad("host must be a hostname, optionally with a port (e.g. 'github.com', 'localhost:3000')")
+        const v = validateProfile({ notes: args.notes, tools: args.tools }, BASE_TOOL_PATHS)
+        if (!v.ok) return bad("profile failed validation; nothing was saved", { issues: v.issues.slice(0, 50) })
+        if (!v.tools.length) return bad("expected at least one tool")
+        await savePendingProfile({ host: key, notes: v.notes, tools: v.tools })
+        return {
+          saved: true,
+          status: "pending_user_approval",
+          host: key,
+          tool_count: v.tools.length,
+          message: "Saved as pending. Ask the user to click Keep in the Agent Socket popup; after that the tools appear in tools.json on this same URL (re-fetch it). To share them with everyone, call /registry_submit.",
         }
-        const all = (await chrome.storage.local.get("site_profiles")).site_profiles ?? {}
-        all[args.host] = profile
-        await chrome.storage.local.set({ site_profiles: all })
-        return { saved: true, host: args.host, tool_count: args.tools.length }
       },
     },
   ]

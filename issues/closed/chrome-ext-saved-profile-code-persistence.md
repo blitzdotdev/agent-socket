@@ -41,3 +41,7 @@ This turns untrusted remote input into auto-executing privileged code — a stor
 ## Provenance
 
 Found during a full line-by-line audit. Verified the store path (`/save_site_profile`, `tools-base.js:724-764`), the load path (`background.js:56-81`, `:134`), and the MAIN-world execution of `t.code` (`tools-base.js:786-797`). The popup only lists hostnames (`popup.js:59-71`), with no provenance/warning.
+
+## Resolution (extension 0.3.0)
+
+`/save_site_profile` now stores the profile as **pending** (`chrome.storage.local` `pending_profiles`). Pending profiles never load or run. The popup lists each one as "AI saved N tools for <host>" with **Keep** / **Discard** and a Review section showing every tool's method, path, description and code. Only after Keep does the profile move to `kept_profiles` and load (immediately, via `update_tools`, if that host is the connected tab, and on later connections). Kept profiles are listed in Settings with delete, separately from registry tools. Profiles saved by earlier versions (`site_profiles`) are moved to pending on upgrade, so they need a Keep too. Shared profiles now come only from the reviewed registry. Covered by `chrome-extension/test/e2e.mjs` (pending not loaded → Keep → live; Discard; legacy migration; delete).

@@ -20,7 +20,7 @@ describe('toolPathProblem (mirrors relay/src/relay-do.ts)', () => {
     test.each([
         ['no-slash', /must match/], ['/has space', /must match/], ['/q?x=1', /must match/], ['/', /must match/],
         ['/agents.md', /reserved/], ['/AGENTS.MD', /reserved/], ['/agents.md/en', /reserved/], ['/tools.json', /reserved/],
-        ['/tools.json/x', /reserved/], ['/_as_internal', /reserved/], ['/eval', /built-in/], ['/save_site_profile', /built-in/],
+        ['/tools.json/x', /reserved/], ['/_as_internal', /reserved/], ['/eval', /built-in/], ['/save_site_profile', /built-in/], ['/registry_submit', /built-in/],
         ['/' + 'a'.repeat(200), /longer/],
     ])('rejects %s', (p, re) => expect(toolPathProblem(p)).toMatch(re))
 })

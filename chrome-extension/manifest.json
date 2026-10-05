@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Agent Socket — Connect any site to AI",
   "short_name": "Agent Socket",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Let an AI chat (Claude, ChatGPT, Gemini) drive one browser tab you choose. Paste a session URL; the AI clicks, types, and reads.",
   "permissions": [
     "scripting",
