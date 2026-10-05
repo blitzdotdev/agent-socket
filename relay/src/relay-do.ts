@@ -568,9 +568,12 @@ export class RelayServer extends Server<Env> {
 
     const id = crypto.randomUUID()
     const headers: Record<string, string> = {}
-    // Forward only safe-to-share headers — content-type and any X-* headers.
+    // Forward content-type and the agent's own X-* headers, but not the
+    // proxy headers Cloudflare adds (x-real-ip, x-forwarded-*): they carry the
+    // agent's IP. cf-* never matches the x- rule.
     for (const [k, v] of req.headers.entries()) {
       const lk = k.toLowerCase()
+      if (lk === "x-real-ip" || lk.startsWith("x-forwarded-")) continue
       if (lk === "content-type" || lk.startsWith("x-")) headers[lk] = v
     }
 
