@@ -195,7 +195,39 @@ test("a refused resume falls back to a fresh session at once and re-mints", asyn
   assert.equal(changes[0].priorSessionId, "S1")
   assert.equal(changes[0].sessionId, "S2")
   assert.match(changes[0].tokensRemapped.get(link.url), /as_S2_/)
+  assert.equal(changes[0].reason, "resume_refused")
+  assert.equal(changes[0].closeCode, 4401)
+  assert.equal(typeof changes[0].offlineMs, "number")
   assert.equal(s.resumeSecret, "secret_S2")
+  s.close()
+})
+
+test("onSessionChanged reports how long the app was offline; onDisconnect gets the close code", async () => {
+  reset(() => "ok")
+  const changes = [], drops = []
+  let retry
+  const s = await connect({ ...base, onDisconnect: (i) => { drops.push(i); retry = i.reconnect }, onSessionChanged: (i) => changes.push(i) })
+  await s.mintAgentToken({ label: "L" })
+  sockets[0].serverClose(1006, "blip")
+  await waitFor(() => retry)
+  assert.equal(drops[0].code, 1006)
+  assert.equal(drops[0].reason, "blip")
+  expireSessions()
+  await sleep(150)  // the app stays away past the (mock) grace window
+  retry()
+  await waitFor(() => changes.length === 1)
+  assert.equal(changes[0].reason, "resume_refused")
+  assert.ok(changes[0].offlineMs >= 150 && changes[0].offlineMs < 1000, `offlineMs=${changes[0].offlineMs}`)
+  s.close()
+})
+
+test("a refused resume of a failed attempt reports its close code to onDisconnect", async () => {
+  reset((n) => (n === 2 ? "reject" : "ok"))
+  const drops = []
+  const s = await connect({ ...base, onDisconnect: (i) => { drops.push(i); quickRetry(i) } })
+  sockets[0].serverClose(1011, "down")
+  await waitFor(() => s.connected && sockets.length === 3)
+  assert.deepEqual(drops.map((d) => [d.attempt, d.code]), [[1, 1011], [2, undefined]])
   s.close()
 })
 
@@ -323,8 +355,11 @@ test("a drop mid-remint re-mints the rest on the next reconnect", async () => {
   const a2 = changes[0].tokensRemapped.get(a.url)
   assert.match(a2, /as_S2_/)
   assert.equal(changes[0].tokensRemapped.size, 1)
+  assert.equal(changes[0].reason, "resume_refused")
   assert.equal(changes[1].priorSessionId, "S2")
   assert.equal(changes[1].sessionId, "S2")
+  assert.equal(changes[1].reason, "remint", "same session, missed links minted")
+  assert.equal(changes[1].closeCode, undefined)
   assert.deepEqual([...changes[1].tokensRemapped.keys()], [b.url])
   assert.match(changes[1].tokensRemapped.get(b.url), /as_S2_/)
   assert.equal(sockets[3].resumeId, "S2")
@@ -370,6 +405,8 @@ test("replaced by another resume (4410): next reconnect starts a fresh session",
   await waitFor(() => changes.length === 1)
   assert.equal(sockets[1].resumeId, null, "did not try to take the session back")
   assert.equal(changes[0].sessionId, "S2")
+  assert.equal(changes[0].reason, "replaced")
+  assert.equal(changes[0].closeCode, 4410)
   s.close()
 })
 

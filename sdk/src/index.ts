@@ -12,6 +12,7 @@ export type {
   ReconnectHandler,
   ReconnectInfo,
   Session,
+  SessionChangeReason,
   SessionChangedHandler,
   SessionChangedInfo,
   Tool,

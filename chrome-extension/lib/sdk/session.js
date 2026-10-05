@@ -8,6 +8,11 @@ const DEFAULT_HEARTBEAT_INTERVAL_MS = 25_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 50_000;
 // The relay refused a resume: wrong secret, or the session already ended.
 class ResumeRejected extends Error {
+    closeCode;
+    constructor(closeCode) {
+        super("resume rejected");
+        this.closeCode = closeCode;
+    }
 }
 const RESUME_REJECTED_CLOSE = 4401;
 // The relay closed this socket because a resume with our secret replaced it.
@@ -23,6 +28,8 @@ export async function connect(opts) {
     // fallback to a fresh session can re-mint them.
     if (resumed)
         await session._adoptTokens().catch(() => { });
+    // A refused `resume` option shows as a new sessionId; nothing to report.
+    session._freshCause = null;
     return session;
 }
 class SessionImpl {
@@ -46,6 +53,11 @@ class SessionImpl {
     pendingRevokes = new Set();
     registered = false;
     giveUpReconnect = false;
+    // Why the next registration will be (or was) a fresh session rather than a
+    // resume. Reported via onSessionChanged once the reconnect lands.
+    _freshCause = null;
+    // When the relay last sent us anything; measures how long we were offline.
+    _lastSeenAt = 0;
     attempt = 0;
     pendingFrameReplies = new Map();
     // Tokens we've minted in *this* session (for autoReconnect remint)
@@ -99,7 +111,11 @@ class SessionImpl {
                     throw e;
                 this._resumeSecret = null;
                 this.pendingRevokes.clear(); // those tokens died with the session
+                this._freshCause = { reason: "resume_refused", closeCode: e.closeCode };
             }
+        }
+        else if (this._sessionId && !this._freshCause) {
+            this._freshCause = { reason: "no_resume_secret" };
         }
         await this._handshake(false);
         return { resumed: false };
@@ -126,7 +142,7 @@ class SessionImpl {
             const reply = await this._waitForRegisterReply(ws, 10_000);
             if (!reply.ok) {
                 if (resume && reply.error?.code === "resume_failed")
-                    throw new ResumeRejected("resume rejected");
+                    throw new ResumeRejected(RESUME_REJECTED_CLOSE);
                 throw new Error(`register failed: ${reply.error?.code ?? "unknown"}`);
             }
             if (this.giveUpReconnect)
@@ -138,7 +154,7 @@ class SessionImpl {
         }
         catch (e) {
             if (resume && e.closeCode === RESUME_REJECTED_CLOSE)
-                e = new ResumeRejected("resume rejected");
+                e = new ResumeRejected(RESUME_REJECTED_CLOSE);
             // Handlers aren't installed yet, so this close can't trigger a reconnect.
             try {
                 ws.close(this.giveUpReconnect ? 1000 : HANDSHAKE_ABORT_CLOSE, "handshake failed");
@@ -149,6 +165,7 @@ class SessionImpl {
             throw e;
         }
         this._installHandlers(ws);
+        this._lastSeenAt = Date.now();
         this.registered = true;
         this._scheduleNextPing();
         this._settleConnectedWaiters(null);
@@ -352,6 +369,7 @@ class SessionImpl {
         catch {
             return;
         }
+        this._lastSeenAt = Date.now();
         this._scheduleNextPing(); // any inbound traffic resets the idle timer
         switch (msg.type) {
             case "tool_call":
@@ -456,11 +474,12 @@ class SessionImpl {
         if (code === REPLACED_CLOSE) {
             this._resumeSecret = null;
             this.pendingRevokes.clear();
+            this._freshCause = { reason: "replaced", closeCode: REPLACED_CLOSE };
         }
-        this._disconnected(reason || "ws closed");
+        this._disconnected(reason || "ws closed", code);
     }
     // The single reconnect path: after a drop and after each failed attempt.
-    _disconnected(reason) {
+    _disconnected(reason, code) {
         if (this.giveUpReconnect)
             return;
         this.attempt += 1;
@@ -484,19 +503,24 @@ class SessionImpl {
             this.giveUpReconnect = true;
             this._settleConnectedWaiters(new Error("session closed"));
         };
-        void this.onDisconnect({ reason, attempt: this.attempt, reconnect, giveUp });
+        void this.onDisconnect({ reason, ...(code !== undefined ? { code } : {}), attempt: this.attempt, reconnect, giveUp });
     }
     async _reconnectAndRemint() {
         const priorSessionId = this._sessionId;
+        const lastSeenAt = this._lastSeenAt; // a successful handshake resets it
         let resumed;
         try {
             ({ resumed } = await this._connectAndRegister());
         }
         catch (e) {
-            this._disconnected(e instanceof Error ? e.message : "reconnect failed");
+            const code = e?.closeCode;
+            this._disconnected(e instanceof Error ? e.message : "reconnect failed", typeof code === "number" ? code : undefined);
             return;
         }
         this.attempt = 0;
+        const offlineMs = Math.max(0, Date.now() - lastSeenAt);
+        const cause = this._freshCause;
+        this._freshCause = null;
         // A resume keeps every token. A fresh session doesn't: re-mint the ones
         // still in myTokens (revoke removes them) under the new session-id. A
         // resume can still find stale ones when an earlier re-mint was cut short.
@@ -523,10 +547,14 @@ class SessionImpl {
             tokensRemapped.set(old.url, fresh.url);
         }
         if ((priorSessionId !== this._sessionId || tokensRemapped.size > 0) && this.onSessionChanged) {
+            const sessionChanged = priorSessionId !== this._sessionId;
             void this.onSessionChanged({
                 priorSessionId,
                 sessionId: this._sessionId,
                 tokensRemapped,
+                reason: sessionChanged ? cause?.reason ?? "resume_refused" : "remint",
+                ...(sessionChanged && cause?.closeCode !== undefined ? { closeCode: cause.closeCode } : {}),
+                offlineMs,
             });
         }
         if (this.onReconnect)
