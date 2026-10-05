@@ -10,7 +10,8 @@
 //      popup still shows it.
 //   6. Stop the extension's service worker (as Chrome does when it idles one
 //      out). The restarted worker resumes from chrome.storage.session: the
-//      SAME URL works, the in-page pill stays up.
+//      SAME URL works, the in-page pill stays up, and the session timer (changed
+//      before the restart) and allowed sites (a second one allowed) are kept.
 //   Before 5, the AI saves a site profile and the user keeps it, so the
 //   session's tools change (update_tools) on the same URL; both resumes
 //   must re-send that current tool set.
@@ -288,6 +289,34 @@ async function main() {
     if (val !== initialUrl) throw new Error(`popup shows ${val}, want ${initialUrl}`)
   })
 
+  // Timer + site lock are saved with the session: change both before the restart.
+  const firstOrigin = `http://127.0.0.1:${STATIC_PORT}`
+  const altOrigin = `http://localhost:${STATIC_PORT}`
+  let limitsBefore
+  await step("change the timer to 4 h and allow a second site", async () => {
+    const t = await sendToSW(popup, { type: "set_timer", minutes: 240 })
+    if (!t?.ok) throw new Error(JSON.stringify(t))
+    await page.goto(`${altOrigin}/`, { waitUntil: "domcontentloaded" })
+    const a = await sendToSW(popup, { type: "allow_origin", origin: altOrigin })
+    if (!a?.ok) throw new Error(JSON.stringify(a))
+    await page.goto(`${firstOrigin}/`, { waitUntil: "domcontentloaded" })
+    // Tools swap to the second site's and back; wait for the kept tool again.
+    await until(() => keptToolWorks(initialUrl).then(() => true, () => false), "kept tool back", 15000)
+    const snap = await sendToSW(popup, { type: "snapshot" })
+    if (JSON.stringify(snap.siteLock) !== JSON.stringify({ origins: [firstOrigin, altOrigin], any: false })) throw new Error(JSON.stringify(snap.siteLock))
+    limitsBefore = { endsAt: snap.endsAt, siteLock: snap.siteLock }
+  })
+  const assertLimitsKept = async () => {
+    const snap = await sendToSW(popup, { type: "snapshot" })
+    if (snap.endsAt !== limitsBefore.endsAt || JSON.stringify(snap.siteLock) !== JSON.stringify(limitsBefore.siteLock)) {
+      throw new Error(`limits changed: ${JSON.stringify({ endsAt: snap.endsAt, siteLock: snap.siteLock })} vs ${JSON.stringify(limitsBefore)}`)
+    }
+    const j = await (await callTool(initialUrl)).json()
+    if (j.session_ends_at !== new Date(limitsBefore.endsAt).toISOString() || j.allowed_origins.join() !== `${firstOrigin},${altOrigin}`) throw new Error(JSON.stringify(j))
+    const alarm = await popup.evaluate(() => chrome.alarms.get("as-session-end"))
+    if (alarm?.scheduledTime !== limitsBefore.endsAt) throw new Error(`alarm: ${JSON.stringify(alarm)}`)
+  }
+
   // ── 2. service-worker restart → resume from chrome.storage.session ──
   const swTarget = chrome.browser.targets().find((t) => t.type() === "service_worker" && t.url().startsWith(`chrome-extension://${extId}/`))
   await step("stop the extension service worker", async () => {
@@ -318,6 +347,10 @@ async function main() {
     if (snap?.status?.status !== "connected" || snap.url !== initialUrl || snap.boundTab?.id == null) {
       throw new Error(`bad snapshot: ${JSON.stringify({ status: snap?.status, url: snap?.url, bound: snap?.boundTab?.id })}`)
     }
+  })
+  await step("after the SW restart: timer, alarm and allowed sites kept; pill shows the time left", async () => {
+    await assertLimitsKept()
+    await until(async () => /· 4 h left/.test((await pill())?.html ?? ""), "pill time left")
   })
 
   // ── 2b. relay unreachable for a while + worker restart meanwhile ──
@@ -362,6 +395,7 @@ async function main() {
     }, "connected snapshot", 10000)
     if (snap.url !== initialUrl || snap.linkChanged) throw new Error(JSON.stringify({ url: snap.url, linkChanged: snap.linkChanged }))
     await until(async () => /has access/.test(await pillHtml()), "pill back to normal")
+    await assertLimitsKept()
   })
 
   // ── 3. session gone → resume refused → re-mint ──
