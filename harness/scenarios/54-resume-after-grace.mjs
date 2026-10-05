@@ -4,7 +4,7 @@
 // Needs a short grace (run.mjs boots the relay with 3000); SKIPs otherwise.
 
 import { Assert } from "../lib/assert.mjs"
-import { openRawWs, httpGet, httpPost, killWs, resumeGraceMs, RELAY_HTTP } from "../lib/relay.mjs"
+import { openRawWs, httpGet, httpPost, killWs, resumeGraceMs, RELAY_HTTP, sdkHeartbeat, until } from "../lib/relay.mjs"
 import { connect, noBackoff } from "@agent-socket/sdk"
 
 export default async function () {
@@ -43,13 +43,14 @@ export default async function () {
     baseUrl: RELAY_HTTP,
     onDisconnect: async (info) => { await gate; noBackoff()(info) },
     onSessionChanged: (i) => changes.push(i),
+    ...sdkHeartbeat(),
   })
   const link = await s.mintAgentToken({ label: "sdk" })
   const prior = s.sessionId
   await killWs(prior)
   await new Promise((r) => setTimeout(r, grace + 1000))
   release()
-  for (let i = 0; i < 50 && changes.length === 0; i++) await new Promise((r) => setTimeout(r, 100))
+  await until(() => changes.length > 0 && s.connected, "the fresh session")
   a.equal(changes.length, 1, "onSessionChanged fired once")
   a.ok(changes[0].priorSessionId === prior && changes[0].sessionId === s.sessionId && s.sessionId !== prior,
     "fresh session after the grace window", { info: changes[0] })

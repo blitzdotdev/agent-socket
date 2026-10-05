@@ -5,10 +5,9 @@
 // and leaves the live tools alone.
 
 import { Assert } from "../lib/assert.mjs"
-import { RELAY_HTTP, httpGet, httpPost, killWs, needsDebug } from "../lib/relay.mjs"
+import { RELAY_HTTP, httpGet, httpPost, killWs, needsDebug, sdkHeartbeat, until } from "../lib/relay.mjs"
 import { connect, noBackoff } from "@agent-socket/sdk"
 
-const until = async (cond) => { for (let i = 0; i < 50 && !cond(); i++) await new Promise((r) => setTimeout(r, 100)) }
 
 export default async function () {
   const skip = await needsDebug()
@@ -22,6 +21,7 @@ export default async function () {
     baseUrl: RELAY_HTTP,
     onDisconnect: noBackoff(),
     onReconnect: (i) => reconnects.push(i),
+    ...sdkHeartbeat(),
   })
   try {
     const { token } = await session.mintAgentToken({ label: "t" })
@@ -39,7 +39,7 @@ export default async function () {
 
     // A drop: the resume carries the updated set.
     a.equal((await killWs(session.sessionId)).status, 200, "kill-ws")
-    await until(() => reconnects.length === 1 && session.connected)
+    await until(() => reconnects.length === 1 && session.connected, "the resume")
     a.equal(reconnects[0]?.resumed, true, "resumed")
     a.equal(await paths(), ["/b", "/c"], "resume re-sent the updated tools")
     a.ok((await httpGet(`/v1/t/${token}/agents.md`)).body.includes("# after"), "resume re-sent the updated agents.md")

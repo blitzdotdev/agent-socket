@@ -117,6 +117,29 @@ export async function killWs(sessionId, { end = false } = {}) {
   return fetch(`${RELAY_HTTP}/_debug/kill-ws/${sessionId}${end ? "?end=1" : ""}`, { method: "POST" })
 }
 
+/** HEARTBEAT_TIMEOUT_MS of the relay under test (run.mjs exports it when it boots one). */
+export function heartbeatTimeoutMs() {
+  return parseInt(process.env.HEARTBEAT_TIMEOUT_MS ?? "50000", 10)
+}
+
+/**
+ * SDK heartbeat options for the relay under test. The SDK pings every 25 s by
+ * default, which only works against the production 50 s liveness window: the
+ * harness relay drops an app after 6 s of silence, so an SDK session that sits
+ * idle that long would be closed (4408) and resumed mid-scenario.
+ */
+export function sdkHeartbeat() {
+  return { heartbeatIntervalMs: Math.max(500, Math.floor(heartbeatTimeoutMs() / 3)) }
+}
+
+/** Poll `cond` every 50 ms; throws with `what` if it isn't true within `ms`. */
+export async function until(cond, what, ms = 10_000) {
+  for (const end = Date.now() + ms; !(await cond());) {
+    if (Date.now() > end) throw new Error(`timed out after ${ms} ms waiting for ${what}`)
+    await new Promise((r) => setTimeout(r, 50))
+  }
+}
+
 /** RESUME_GRACE_MS of the relay under test (run.mjs exports it when it boots one). */
 export function resumeGraceMs() {
   return parseInt(process.env.RESUME_GRACE_MS ?? "60000", 10)
