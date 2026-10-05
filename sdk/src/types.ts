@@ -64,12 +64,15 @@ export interface ConnectOptions {
    * When true (default), the SDK auto-reconnects after WS drops AND
    * re-mints any previously-minted agent-tokens under the new session.
    * The mapping {oldUrl → newUrl} is reported via onSessionChanged.
+   * When false, the SDK neither reconnects nor re-mints; onDisconnect
+   * (if given) still fires and may call reconnect() itself.
    */
   autoReconnect?: boolean
   /**
-   * Called when the WS drops. App decides when (or whether) to reconnect.
-   * Default: agentSocket.exponentialBackoff() — call reconnect() after a
-   * jittered exponential delay.
+   * Called when the WS drops, and again after each failed reconnect.
+   * App decides when (or whether) to reconnect. Not called when the
+   * initial connect() fails — that promise rejects instead.
+   * Default: exponentialBackoff() (or giveUp with autoReconnect:false).
    */
   onDisconnect?: DisconnectHandler
   /**

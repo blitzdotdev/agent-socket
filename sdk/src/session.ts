@@ -80,7 +80,7 @@ class SessionImpl implements Session {
       this.toolsByRoute.set(`${t.method} ${t.path}`, t.handler)
     }
     this.autoReconnect = opts.autoReconnect ?? true
-    this.onDisconnect = opts.onDisconnect ?? exponentialBackoff()
+    this.onDisconnect = opts.onDisconnect ?? (this.autoReconnect ? exponentialBackoff() : ({ giveUp }) => giveUp())
     this.onSessionChanged = opts.onSessionChanged
     this.heartbeatIntervalMs = opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
     this.heartbeatTimeoutMs = opts.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS
@@ -91,32 +91,34 @@ class SessionImpl implements Session {
 
   async _connectAndRegister(): Promise<void> {
     const wsUrl = this.baseUrl.replace(/^http/, "ws") + "/v1/_ws"
-    this.ws = await openWs(wsUrl)
-    await this._waitOpen(this.ws)
-    this._installHandlers(this.ws)
-
-    // Send register
-    const tools = this.toolDefs.map((t) => ({
-      method: t.method,
-      path: t.path,
-      description: t.description,
-      ...(t.input_schema !== undefined ? { input_schema: t.input_schema } : {}),
-    }))
-    this._sendFrame({
-      type: "register",
-      appId: this.appId,
-      agentsMd: this.agentsMd,
-      appDescription: this.appDescription,
-      tools,
-    })
-
-    // Wait for register_reply
-    const reply = await this._waitForFrame((m) => m.type === "register_reply", 10_000)
-    if (!reply.ok) {
-      const code = reply.error?.code ?? "unknown"
-      throw new Error(`register failed: ${code}`)
+    const ws = openWs(wsUrl)
+    this.ws = ws
+    try {
+      await this._waitOpen(ws)
+      const tools = this.toolDefs.map((t) => ({
+        method: t.method,
+        path: t.path,
+        description: t.description,
+        ...(t.input_schema !== undefined ? { input_schema: t.input_schema } : {}),
+      }))
+      this._sendFrame({
+        type: "register",
+        appId: this.appId,
+        agentsMd: this.agentsMd,
+        appDescription: this.appDescription,
+        tools,
+      })
+      const reply = await this._waitForRegisterReply(ws, 10_000)
+      if (!reply.ok) throw new Error(`register failed: ${reply.error?.code ?? "unknown"}`)
+      if (this.giveUpReconnect) throw new Error("session closed")
+      this._sessionId = reply.sessionId as string
+    } catch (e) {
+      // Handlers aren't installed yet, so this close can't trigger a reconnect.
+      try { ws.close(1000, "register failed") } catch {}
+      if (this.ws === ws) this.ws = null
+      throw e
     }
-    this._sessionId = reply.sessionId as string
+    this._installHandlers(ws)
     this.registered = true
     this._scheduleNextPing()
   }
@@ -144,11 +146,14 @@ class SessionImpl implements Session {
   }
 
   async revokeAgentToken(token: string): Promise<{ ok: boolean }> {
+    // Forget it first so a reconnect can't re-mint it. While disconnected the
+    // relay has already dropped it along with the old socket.
+    const known = this.myTokens.delete(token)
+    if (!this.connected) return { ok: known }
     const id = this._uid()
     this._sendFrame({ type: "revoke_agent_token", id, token })
     const reply = await this._awaitReply(id, 10_000)
-    this.myTokens.delete(token)
-    return { ok: !!reply.ok }
+    return { ok: !!reply.ok || known }
   }
 
   async listAgentTokens(): Promise<ListedToken[]> {
@@ -188,8 +193,10 @@ class SessionImpl implements Session {
 
   close(): void {
     this.giveUpReconnect = true
+    this.registered = false
     this._teardownHeartbeat()
-    this.ws?.close(1000, "client closed")
+    this._failPending()
+    try { this.ws?.close(1000, "client closed") } catch {}
     this.ws = null
   }
 
@@ -201,19 +208,24 @@ class SessionImpl implements Session {
     if (ws.readyState === READY_STATE_OPEN) return Promise.resolve()
     return new Promise((resolve, reject) => {
       const onOpen = () => { cleanup(); resolve() }
-      const onError = (e: unknown) => { cleanup(); reject(e instanceof Error ? e : new Error(String(e))) }
+      const onError = (e: unknown) => { cleanup(); reject(e instanceof Error ? e : new Error("ws failed to open")) }
+      const onClose = () => onError(null)
       const cleanup = () => {
         ws.removeListener("open", onOpen as any)
         ws.removeListener("error", onError as any)
+        ws.removeListener("close", onClose)
       }
       ws.addListener("open", onOpen as any)
       ws.addListener("error", onError as any)
+      ws.addListener("close", onClose)
     })
   }
 
   _installHandlers(ws: MinWS): void {
     ws.addListener("message", (data: any) => this._onMessage(String(data)))
-    ws.addListener("close", (...args: any[]) => this._onClose(args[0] as number ?? 1006, args[1] as string ?? ""))
+    ws.addListener("close", (...args: any[]) => {
+      if (ws === this.ws) this._onClose(args[0] as number ?? 1006, args[1] as string ?? "")
+    })
     ws.addListener("error", (_e: any) => { /* errors typically followed by close */ })
   }
 
@@ -316,13 +328,14 @@ class SessionImpl implements Session {
   _onClose(_code: number, reason: string): void {
     this.registered = false
     this._teardownHeartbeat()
-    // Fail any in-flight frame-reply waiters
-    for (const p of this.pendingFrameReplies.values()) p.reject(new Error("ws closed"))
-    this.pendingFrameReplies.clear()
+    this._failPending()
     this.ws = null
+    this._disconnected(reason || "ws closed")
+  }
 
+  // The single reconnect path: after a drop and after each failed attempt.
+  _disconnected(reason: string): void {
     if (this.giveUpReconnect) return
-
     this.attempt += 1
     let resolved = false
     const reconnect = (): void => {
@@ -340,49 +353,38 @@ class SessionImpl implements Session {
       resolved = true
       this.giveUpReconnect = true
     }
-    void this.onDisconnect({
-      reason: reason || "ws closed",
-      attempt: this.attempt,
-      reconnect,
-      giveUp,
-    })
+    void this.onDisconnect({ reason, attempt: this.attempt, reconnect, giveUp })
   }
 
   async _reconnectAndRemint(): Promise<void> {
-    if (this.giveUpReconnect) return  // close() raced with backoff timer
     const priorSessionId = this._sessionId
-    const priorTokens = Array.from(this.myTokens.values())
-    this.myTokens.clear()
-
     try {
       await this._connectAndRegister()
-      this.attempt = 0  // success: reset
     } catch (e) {
-      // Reconnect failed — schedule the next attempt by re-firing onDisconnect
-      this.attempt += 1
-      let resolved = false
-      const reconnect = () => { if (!resolved) { resolved = true; void this._reconnectAndRemint() } }
-      const giveUp = () => { if (!resolved) { resolved = true; this.giveUpReconnect = true } }
-      void this.onDisconnect({
-        reason: e instanceof Error ? e.message : "reconnect failed",
-        attempt: this.attempt,
-        reconnect,
-        giveUp,
-      })
+      this._disconnected(e instanceof Error ? e.message : "reconnect failed")
       return
     }
+    this.attempt = 0
 
+    // The relay drops every token with the old socket. Re-mint the ones still
+    // in myTokens (revoke removes them) under the new session-id.
     const tokensRemapped = new Map<string, string>()
-    if (this.autoReconnect && priorTokens.length > 0) {
-      // Re-mint all previously-active tokens under the new session-id.
-      for (const old of priorTokens) {
-        try {
-          const fresh = await this.mintAgentToken({ label: old.label })
-          tokensRemapped.set(old.url, fresh.url)
-        } catch {
-          // Skip — tokens that failed remint stay dead.
-        }
+    if (!this.autoReconnect) this.myTokens.clear()
+    for (const old of Array.from(this.myTokens.values())) {
+      if (!this.myTokens.has(old.token)) continue
+      let fresh: AgentToken
+      try {
+        fresh = await this.mintAgentToken({ label: old.label })
+      } catch {
+        if (!this.connected) break  // dropped again; the next reconnect retries the rest
+        this.myTokens.delete(old.token)
+        continue
       }
+      if (!this.myTokens.delete(old.token)) {
+        void this.revokeAgentToken(fresh.token).catch(() => {})  // revoked while re-minting
+        continue
+      }
+      tokensRemapped.set(old.url, fresh.url)
     }
 
     if (priorSessionId !== this._sessionId && this.onSessionChanged) {
@@ -394,27 +396,33 @@ class SessionImpl implements Session {
     }
   }
 
+  _failPending(): void {
+    for (const p of this.pendingFrameReplies.values()) p.reject(new Error("ws closed"))
+    this.pendingFrameReplies.clear()
+  }
+
   _sendFrame(frame: unknown): void {
     if (!this.ws) return
     try { this.ws.send(JSON.stringify(frame)) } catch {}
   }
 
-  _waitForFrame(predicate: (m: any) => boolean, timeoutMs: number): Promise<any> {
+  _waitForRegisterReply(ws: MinWS, timeoutMs: number): Promise<any> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.ws?.removeListener("message", listener as any)
-        reject(new Error(`waitForFrame timeout after ${timeoutMs}ms`))
-      }, timeoutMs)
-      const listener = (data: any) => {
+      const done = (err: Error | null, msg?: unknown) => {
+        clearTimeout(timer)
+        ws.removeListener("message", onMessage)
+        ws.removeListener("close", onClose)
+        err ? reject(err) : resolve(msg)
+      }
+      const onMessage = (data: unknown) => {
         let msg: any
         try { msg = JSON.parse(String(data)) } catch { return }
-        if (predicate(msg)) {
-          clearTimeout(timer)
-          this.ws?.removeListener("message", listener as any)
-          resolve(msg)
-        }
+        if (msg.type === "register_reply") done(null, msg)
       }
-      this.ws?.addListener("message", listener as any)
+      const onClose = (...args: unknown[]) => done(new Error(`ws closed before register_reply (${args[0] ?? 1006})`))
+      const timer = setTimeout(() => done(new Error(`register_reply timeout after ${timeoutMs}ms`)), timeoutMs)
+      ws.addListener("message", onMessage)
+      ws.addListener("close", onClose)
     })
   }
 

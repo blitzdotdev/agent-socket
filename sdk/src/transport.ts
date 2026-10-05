@@ -1,8 +1,5 @@
-// WebSocket transport. Uses globalThis.WebSocket where available (browsers,
-// Workers, Node 22+), falls back to dynamic import of `ws` for older Node.
-//
-// Returned object exposes a minimal cross-runtime surface — send/close/
-// addEventListener — to insulate the rest of the SDK from runtime differences.
+// WebSocket transport over the runtime's native WebSocket (browsers, Workers,
+// Node 22+). Wraps it in a minimal send/close/addListener surface.
 
 export interface MinWS {
   send(data: string): void
@@ -15,27 +12,10 @@ export interface MinWS {
 
 const READY_OPEN = 1
 
-export async function openWs(url: string, opts?: { headers?: Record<string, string> }): Promise<MinWS> {
-  // Browser / Workers / Node 22+: native WebSocket.
-  // The native API uses addEventListener and dispatches Event objects.
-  if (typeof (globalThis as any).WebSocket !== "undefined" && !(opts?.headers && Object.keys(opts.headers).length)) {
-    const Native = (globalThis as any).WebSocket as typeof WebSocket
-    const ws = new Native(url)
-    return wrapNative(ws)
-  }
-
-  // Node fallback (or when custom headers are needed — native doesn't support them).
-  let WSCtor: any
-  try {
-    const mod: any = await import("ws")
-    WSCtor = mod.WebSocket ?? mod.default
-  } catch {
-    throw new Error(
-      "No WebSocket implementation available. Install the `ws` package for Node, or run in a browser/Workers environment.",
-    )
-  }
-  const ws = new WSCtor(url, { headers: opts?.headers ?? {} })
-  return wrapNode(ws)
+export function openWs(url: string): MinWS {
+  const Native = (globalThis as any).WebSocket as typeof WebSocket | undefined
+  if (!Native) throw new Error("No global WebSocket — agent-socket needs a browser, Workers, or Node 22+.")
+  return wrapNative(new Native(url))
 }
 
 function wrapNative(ws: WebSocket): MinWS {
@@ -73,16 +53,6 @@ function wrapNative(ws: WebSocket): MinWS {
       const adapter = adapters.get(fn)
       if (adapter) ws.removeEventListener(event, adapter)
     },
-  }
-}
-
-function wrapNode(ws: any): MinWS {
-  return {
-    send: (data) => ws.send(data),
-    close: (code, reason) => ws.close(code, reason),
-    get readyState() { return ws.readyState },
-    addListener: (event, fn) => ws.on(event, fn),
-    removeListener: (event, fn) => ws.off(event, fn),
   }
 }
 
