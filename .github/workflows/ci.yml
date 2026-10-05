@@ -42,8 +42,7 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - run: npm ci
-      - name: Set up .dev.vars
-        run: cp relay/.dev.vars.example relay/.dev.vars
+      # Builds the SDK, then boots its own wrangler dev for the run.
       - run: npm run harness
 
   chrome-ext-unit:

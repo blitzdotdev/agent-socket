@@ -11,8 +11,8 @@
 //    the pixels match what was painted.
 // 7. Take a screenshot for manual inspection.
 //
-// Skipped (with PASS) if /usr/bin/chromium isn't installed — non-Alpine
-// hosts may not have it where expected.
+// Reports SKIP if /usr/bin/chromium isn't installed — non-Alpine hosts may
+// not have it where expected.
 
 import { Assert } from "../lib/assert.mjs"
 import { httpPost, RELAY_HTTP } from "../lib/relay.mjs"
@@ -27,8 +27,7 @@ export default async function () {
   const a = new Assert("50-pixel-art-visual")
 
   if (!fs.existsSync(CHROMIUM_PATH)) {
-    a.pass(`skipped — ${CHROMIUM_PATH} not present (set CHROMIUM_PATH or apk add chromium)`)
-    return
+    return { skip: `${CHROMIUM_PATH} not present (set CHROMIUM_PATH)` }
   }
 
   const server = await startStaticServer(0)
