@@ -18,7 +18,7 @@ labels: bug
 
 ## Environment
 
-- Component: relay / SDK / CLI / chrome-ext / harness / docs
+- Component: relay / SDK / chrome-ext / registry / harness / docs
 - Node version: `node -v`
 - OS:
 - Wrangler version (if relay): `npx wrangler --version`
