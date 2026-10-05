@@ -59,6 +59,42 @@ export async function connect(opts: ConnectOptions): Promise<Session> {
   return session
 }
 
+/**
+ * End a session the relay may be holding for a resume, given its id and
+ * resume secret (e.g. saved for `connect({ resume })`): every agent URL of
+ * the session stops working at once instead of when the relay's hold runs
+ * out. Resolves true when the relay confirmed, false when it refused (wrong
+ * secret, or the session had already ended) or couldn't be reached within
+ * 10 s. `session.close()` does this itself when it is called while
+ * disconnected.
+ */
+export function endSession(opts: { baseUrl?: string; sessionId: string; secret: string }): Promise<boolean> {
+  const base = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "")
+  return new Promise((resolve) => {
+    let ws: MinWS
+    try {
+      ws = openWs(base.replace(/^http/, "ws") + `/v1/_ws?session=${encodeURIComponent(opts.sessionId)}`)
+    } catch { return resolve(false) }
+    let ok = false
+    const done = (): void => {
+      clearTimeout(timer)
+      try { ws.close(1000, "session ended") } catch {}
+      resolve(ok)
+    }
+    const timer = setTimeout(done, 10_000)
+    ;(timer as { unref?: () => void }).unref?.()
+    ws.addListener("open", () => {
+      try { ws.send(JSON.stringify({ type: "end", sessionId: opts.sessionId, secret: opts.secret })) } catch { done() }
+    })
+    ws.addListener("message", (data: unknown) => {
+      try { ok = JSON.parse(String(data))?.ok === true } catch {}
+      done()
+    })
+    ws.addListener("close", () => done())
+    ws.addListener("error", () => {})
+  })
+}
+
 class SessionImpl implements Session {
   baseUrl: string
   appId: string
@@ -349,31 +385,9 @@ class SessionImpl implements Session {
     this._settleConnectedWaiters(new Error("session closed"))
     try { this.ws?.close(1000, "client closed") } catch {}
     this.ws = null
-    if (endHeld) this._endHeldSession()
+    if (endHeld) void endSession({ baseUrl: this.baseUrl, sessionId: this._sessionId, secret: this._resumeSecret! })
     this._resumeSecret = null
     this.pendingRevokes.clear()
-  }
-
-  // Best effort: prove the secret on a resume socket with an `end` frame; the
-  // relay wipes the session. If the relay can't be reached, the session ends
-  // when the relay's hold runs out.
-  _endHeldSession(): void {
-    const sessionId = this._sessionId
-    const secret = this._resumeSecret
-    let ws: MinWS
-    try {
-      ws = openWs(this.baseUrl.replace(/^http/, "ws") + `/v1/_ws?session=${encodeURIComponent(sessionId)}`)
-    } catch { return }
-    const done = (): void => {
-      clearTimeout(timer)
-      try { ws.close(1000, "session ended") } catch {}
-    }
-    const timer = setTimeout(done, 10_000)
-    ;(timer as { unref?: () => void }).unref?.()
-    ws.addListener("open", () => { try { ws.send(JSON.stringify({ type: "end", sessionId, secret })) } catch { done() } })
-    ws.addListener("message", () => done())
-    ws.addListener("close", () => clearTimeout(timer))
-    ws.addListener("error", () => {})
   }
 
   // ── Internals ───────────────────────────────────────────────────────

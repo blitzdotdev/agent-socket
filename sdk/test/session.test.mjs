@@ -3,7 +3,7 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { connect, exponentialBackoff } from "../dist/index.js"
+import { connect, endSession, exponentialBackoff } from "../dist/index.js"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -375,6 +375,20 @@ test("close() while disconnected ends the held session with an `end` frame", asy
   retry()  // a backoff timer firing after close() must not reconnect
   await sleep(20)
   assert.equal(open().length, 0)
+})
+
+test("endSession() ends a held session given its saved id + secret", async () => {
+  reset(() => "ok")
+  const s = await connect({ ...base })
+  const saved = { sessionId: s.sessionId, secret: s.resumeSecret }
+  sockets[0].serverClose(1006, "process restart")
+  s.giveUpReconnect = true
+  assert.equal(await endSession({ baseUrl: "http://mock", sessionId: saved.sessionId, secret: "wrong" }), false)
+  assert.ok(sessions.has("S1"), "a wrong secret changes nothing")
+  assert.equal(await endSession({ baseUrl: "http://mock", ...saved }), true)
+  assert.equal(sessions.has("S1"), false)
+  assert.equal(await endSession({ baseUrl: "http://mock", ...saved }), false, "already ended")
+  await waitFor(() => open().length === 0)
 })
 
 test("close() after a 4410 replace doesn't end the session it no longer owns", async () => {
