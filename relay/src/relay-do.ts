@@ -70,7 +70,6 @@ export class RelayServer extends Server<Env> {
   static options = { hibernate: false }
 
   appWs: Connection | null = null
-  sessionId: string | null = null
   appId: string | null = null
   appDescription: string = ""
   agentsMd: string = ""
@@ -85,27 +84,32 @@ export class RelayServer extends Server<Env> {
 
   // ── WS lifecycle ──────────────────────────────────────────────────
 
+  // The worker routes with idFromName(sessionId), so the DO's name is the session-id.
+  private get sessionId(): string {
+    return this.name
+  }
+
   onConnect(c: Connection, ctx: { request: Request }): void {
+    // The worker only forwards upgrades from /v1/_ws; re-check so no other
+    // route can ever attach a socket as the app.
+    if (new URL(ctx.request.url).pathname !== "/v1/_ws") {
+      c.close(4400, "websocket only on /v1/_ws")
+      return
+    }
     if (this.appWs) {
       c.close(4409, "already connected")
       return
     }
-    // The Worker generated our session-id and stuffed it into a header on
-    // the upgrade request. Stash it now; we hand it back in register_reply.
-    const sessionId = ctx.request.headers.get("x-as-session-id")
-    if (!sessionId) {
-      c.close(4500, "missing session-id header")
-      return
-    }
-    this.sessionId = sessionId
     // Stash the Origin header for the later origin-check on register.
     const origin = ctx.request.headers.get("origin")
     ;(c as Connection & { origin?: string | null }).origin = origin
     this.appWs = c
-    if (this.env.DEBUG === "1") console.log(`[DO] WS connected sessionId=${sessionId}, awaiting register`)
+    if (this.env.DEBUG === "1") console.log(`[DO] WS connected sessionId=${this.sessionId}, awaiting register`)
   }
 
-  onClose(): void {
+  onClose(c: Connection): void {
+    // A rejected extra connection closing must not tear down the live app.
+    if (!this.appWs || c.id !== this.appWs.id) return
     if (this.env.DEBUG === "1") console.log("[DO] WS closed; failing", this.pending.size, "pending")
     for (const p of this.pending.values()) {
       clearTimeout(p.timer)
@@ -116,14 +120,15 @@ export class RelayServer extends Server<Env> {
     // meaningfully again, so free them rather than pinning up to
     // MAX_TASKS_PER_SESSION × MAX_TASK_BODY_BYTES until CF evicts the DO.
     this.tasks.clear()
+    // The session ends with the app's socket: nothing registered or minted
+    // survives, so a later socket on this DO starts from scratch.
     this.appWs = null
-    // Don't clear validTokens here — orphan agent-token requests will
-    // still get routed to this DO (until CF evicts) and we want them to
-    // see token_invalid (no app_offline since the token isn't recognized
-    // either). Actually app_offline is correct because there's no WS.
-    // Keeping the validTokens around allows the (rare) reconnect-same-DO
-    // case to work without re-registering. But CF evicts ~70-140s; not
-    // designed for it.
+    this.appId = null
+    this.appDescription = ""
+    this.agentsMd = ""
+    this.tools = []
+    this.toolByRoute.clear()
+    this.validTokens.clear()
   }
 
   onError(_c: Connection, error: unknown): void {
@@ -132,7 +137,8 @@ export class RelayServer extends Server<Env> {
 
   // ── Frame dispatch ────────────────────────────────────────────────
 
-  onMessage(_c: Connection, raw: string | ArrayBuffer): void {
+  onMessage(c: Connection, raw: string | ArrayBuffer): void {
+    if (c.id !== this.appWs?.id) return
     const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw)
     let msg: Frame
     try { msg = JSON.parse(text) as Frame } catch {
@@ -268,11 +274,6 @@ export class RelayServer extends Server<Env> {
     }
 
     // 5. Store state, reply with the session-id assigned at WS handshake.
-    if (!this.sessionId) {
-      this.send({ type: "register_reply", ok: false, error: { code: "internal_error", message: "session-id not set" } })
-      this.appWs?.close(4500, "internal: no session-id")
-      return
-    }
     this.appId = msg.appId
     this.appDescription = typeof msg.appDescription === "string" ? msg.appDescription.slice(0, 1024) : ""
     this.agentsMd = msg.agentsMd
@@ -289,10 +290,6 @@ export class RelayServer extends Server<Env> {
   // ── Mint / Revoke / List agent-tokens ─────────────────────────────
 
   private handleMint(msg: { id: string; label: string }): void {
-    if (!this.sessionId) {
-      this.send({ type: "mint_agent_token_reply", id: msg.id, ok: false, error: { code: "protocol_error", message: "register first" } })
-      return
-    }
     if (this.validTokens.size >= MAX_TOKENS_PER_SESSION) {
       this.send({ type: "mint_agent_token_reply", id: msg.id, ok: false, error: { code: "too_many_tokens" } })
       return

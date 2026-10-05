@@ -46,5 +46,10 @@ export default async function () {
   a.equal(closeCode, 4409, "second WS closed with code 4409", { closeCode, closeReason })
   a.ok(/already connected/i.test(closeReason ?? ""), "close reason mentions 'already connected'", { closeReason })
 
+  // The rejected socket's close must not disconnect the first app.
+  c1.send({ type: "list_agent_tokens", id: "l1" })
+  const list = await c1.waitFor((m) => m.type === "list_agent_tokens_reply" && m.id === "l1", 3000)
+  a.ok(Array.isArray(list.tokens), "first WS still registered after the second is rejected", { list })
+
   c1.close()
 }

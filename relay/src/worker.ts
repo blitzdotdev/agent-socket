@@ -5,13 +5,10 @@
 //   GET  /_debug/sessions                     → list module-registered sessions (DEBUG=1)
 //   POST /_debug/sessions/<id>/kill-ws        → close that session's WS (DEBUG=1)
 //   WSS  /v1/_ws                              → upgrade, route to a fresh session DO
-//   *    /v1/t/<token>/<path>                 → route to existing session DO
+//   *    /v1/t/<token>/<path>                 → route to existing session DO (no WS upgrades)
 //
-// The WS upgrade path is special: we don't yet know the session-id (the
-// relay generates it on register). For the WS, we pick a temporary
-// routing key by generating a random session-id at the edge — this is
-// the same key the DO will return in register_reply. The DO uses
-// idFromName(sessionId) to derive a stable name.
+// The WS upgrade mints a random session-id at the edge and routes to
+// idFromName(sessionId); the DO reads it back as `this.name`.
 
 import { RelayServer } from "./relay-do"
 import type { Env } from "./types"
@@ -83,13 +80,7 @@ export default {
       } else {
         sessionId = generateSessionId()
       }
-      const id = env.RELAY.idFromName(sessionId)
-      // Forward the request to the DO. We rewrite the URL so the DO knows
-      // its session-id (DOs can't ask "what's my idFromName"). Use a
-      // header for clarity.
-      const fwd = new Request(req.url, req)
-      fwd.headers.set("x-as-session-id", sessionId)
-      return env.RELAY.get(id).fetch(fwd)
+      return env.RELAY.get(env.RELAY.idFromName(sessionId)).fetch(req)
     }
 
     // ── Agent HTTPS to a token-scoped path ────────────────────────
@@ -103,6 +94,11 @@ export default {
       const tokenStr = tokenMatch[1]!
       const parsed = parseAgentToken(env.TOKEN_PREFIX, tokenStr)
       if (!parsed) return errorResponse("not_found", "bad token format", 404)
+      // Only /v1/_ws may open a session's WebSocket. An upgrade here would let
+      // anyone holding an agent URL attach to the session as the app.
+      if (req.headers.get("upgrade")) {
+        return errorResponse("protocol_error", "websocket upgrade only on /v1/_ws", 400)
+      }
       const id = env.RELAY.idFromName(parsed.sessionId)
       return env.RELAY.get(id).fetch(req)
     }
