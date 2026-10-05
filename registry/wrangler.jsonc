@@ -1,0 +1,62 @@
+{
+    // Use `npx teeny ...` (see package.json scripts) rather than raw `wrangler`:
+    // teeny wraps wrangler with migrations + D1 auto-creation.
+    "$schema": "../node_modules/wrangler/config-schema.json",
+    "name": "agent-socket-registry",
+    "main": "src/index.ts",
+    "compatibility_date": "2026-03-01",
+    "compatibility_flags": ["nodejs_compat"],
+    // No account_id here: wrangler picks it from `wrangler login` / CLOUDFLARE_ACCOUNT_ID.
+
+    // Only reachable via the custom domain, which sits behind Cloudflare Access
+    // for /admin. A *.workers.dev URL would bypass Access entirely.
+    "workers_dev": false,
+    "preview_urls": false,
+    "routes": [
+        { "pattern": "registry.agentsocket.dev", "custom_domain": true }
+    ],
+
+    "observability": {
+        "enabled": true,
+        "logs": { "invocation_logs": true, "head_sampling_rate": 1 }
+    },
+
+    "vars": {
+        // Cloudflare Access (Zero Trust) settings for /admin. Fill these in from
+        // the Access application before deploying (see README "Deploy").
+        // Team domain, e.g. "myteam.cloudflareaccess.com".
+        "ACCESS_TEAM_DOMAIN": "",
+        // Application Audience (AUD) tag of the Access application.
+        "ACCESS_AUD": "",
+        // Abuse limits for anonymous POST /v1/submissions.
+        "SUBMISSIONS_PER_IP_PER_DAY": "20",
+        "MAX_PENDING_SUBMISSIONS": "500"
+        // DEV_BYPASS_ACCESS is deliberately NOT set here; only in .dev.vars.
+    },
+
+    // Burst limiter for POST /v1/submissions (per Cloudflare location, per IP hash).
+    // The per-day cap above is enforced in D1 and is exact.
+    "ratelimits": [
+        {
+            "name": "SUBMIT_LIMITER",
+            "namespace_id": "47001",
+            "simple": { "limit": 5, "period": 60 }
+        }
+    ],
+
+    "d1_databases": [
+        {
+            "binding": "PRIMARY_DB",
+            "database_name": "agent-socket-registry",
+            // `teeny deploy --remote` creates the database and fills this in.
+            "database_id": "TEENY_AUTO_CREATE",
+            "migrations_dir": "migrations"
+        }
+    ],
+
+    // Local dev only: `npm run dev` serves on 0.0.0.0:8795. Without `host`,
+    // wrangler dev rewrites request URLs to the first route's host
+    // (registry.agentsocket.dev), which the localhost-only DEV_BYPASS_ACCESS
+    // guard rightly refuses.
+    "dev": { "ip": "0.0.0.0", "port": 8795, "host": "localhost" }
+}

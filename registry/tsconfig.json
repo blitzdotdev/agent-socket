@@ -1,0 +1,18 @@
+{
+    "compilerOptions": {
+        "target": "ESNext",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "noEmit": true,
+        "jsx": "react-jsx",
+        "jsxImportSource": "hono/jsx",
+        "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers"],
+        "paths": {
+            "virtual:teenybase": ["./teenybase"]
+        }
+    },
+    "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "teenybase.ts", "worker-configuration.d.ts", "vitest.config.ts"]
+}

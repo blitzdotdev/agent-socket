@@ -1,0 +1,7 @@
+# Copy to .dev.vars for local development. Never commit real values.
+JWT_SECRET=dev-jwt-secret-change-in-production
+ADMIN_JWT_SECRET=dev-admin-jwt-secret-change-in-production
+ADMIN_SERVICE_TOKEN=dev-admin-token
+IP_HASH_SECRET=dev-ip-hash-secret
+# Skips the Cloudflare Access check on /admin. Only honoured on localhost / *.localhost hosts.
+DEV_BYPASS_ACCESS=1
