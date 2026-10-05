@@ -15,6 +15,7 @@ import type {
 } from "./types.js"
 import { openWs, READY_STATE_OPEN, type MinWS } from "./transport.js"
 import { exponentialBackoff } from "./backoff.js"
+import { HEARTBEAT_ID, HEARTBEAT_PING } from "./heartbeat.js"
 
 const DEFAULT_BASE_URL = "https://agentsocket.dev"
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 25_000
@@ -338,6 +339,9 @@ class SessionImpl implements Session {
   }
 
   close(): void {
+    // Not connected (offline, or mid-reconnect): the relay may be holding the
+    // session for a resume, so its links still answer. Ask it to end now.
+    const endHeld = !this.giveUpReconnect && !this.connected && !!this._resumeSecret && !!this._sessionId
     this.giveUpReconnect = true
     this.registered = false
     this._teardownHeartbeat()
@@ -345,6 +349,31 @@ class SessionImpl implements Session {
     this._settleConnectedWaiters(new Error("session closed"))
     try { this.ws?.close(1000, "client closed") } catch {}
     this.ws = null
+    if (endHeld) this._endHeldSession()
+    this._resumeSecret = null
+    this.pendingRevokes.clear()
+  }
+
+  // Best effort: prove the secret on a resume socket with an `end` frame; the
+  // relay wipes the session. If the relay can't be reached, the session ends
+  // when the relay's hold runs out.
+  _endHeldSession(): void {
+    const sessionId = this._sessionId
+    const secret = this._resumeSecret
+    let ws: MinWS
+    try {
+      ws = openWs(this.baseUrl.replace(/^http/, "ws") + `/v1/_ws?session=${encodeURIComponent(sessionId)}`)
+    } catch { return }
+    const done = (): void => {
+      clearTimeout(timer)
+      try { ws.close(1000, "session ended") } catch {}
+    }
+    const timer = setTimeout(done, 10_000)
+    ;(timer as { unref?: () => void }).unref?.()
+    ws.addListener("open", () => { try { ws.send(JSON.stringify({ type: "end", sessionId, secret })) } catch { done() } })
+    ws.addListener("message", () => done())
+    ws.addListener("close", () => clearTimeout(timer))
+    ws.addListener("error", () => {})
   }
 
   // ── Internals ───────────────────────────────────────────────────────
@@ -621,8 +650,10 @@ class SessionImpl implements Session {
 
   _sendPing(): void {
     if (!this.ws || this.ws.readyState !== READY_STATE_OPEN) return
-    this.pendingPingId = this._uid()
-    this._sendFrame({ type: "ping", id: this.pendingPingId })
+    // A fixed frame, so the relay's runtime can answer it without waking a
+    // hibernated session (see heartbeat.ts).
+    this.pendingPingId = HEARTBEAT_ID
+    try { this.ws.send(HEARTBEAT_PING) } catch {}
     if (this.heartbeatTimeoutTimer) clearTimeout(this.heartbeatTimeoutTimer)
     this.heartbeatTimeoutTimer = setTimeout(() => {
       // No pong in window — close as dead.

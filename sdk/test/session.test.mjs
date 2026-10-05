@@ -3,7 +3,7 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { connect } from "../dist/index.js"
+import { connect, exponentialBackoff } from "../dist/index.js"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -12,6 +12,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 //   "reject" — reply register_reply { ok:false } then close (like unknown_app_id)
 //   "drop"   — close right after open, before any reply
 //   "drop-after-mint" — accept, close right after the first mint reply
+//   "down"   — the relay is unreachable: the socket errors and closes (1006)
+//              without ever opening
 // Like the relay, a session (secret + tokens) outlives a dropped socket until
 // `expireSessions()` (the grace window running out) or a client close(1000).
 // A resume of an unknown session or with a bad secret gets resume_failed + 4401.
@@ -31,6 +33,12 @@ class MockWebSocket {
     this.session = null
     this.frames = []
     setTimeout(() => {
+      if (this.mode === "down") {
+        this.readyState = 3
+        this._fire("error", {})
+        this._fire("close", { code: 1006, reason: "" })
+        return
+      }
       this.readyState = 1
       this._fire("open", {})
       if (this.mode === "drop") this.serverClose(1011, "down")
@@ -43,6 +51,15 @@ class MockWebSocket {
     const m = JSON.parse(raw)
     this.frames.push(m)
     const reply = (o) => setTimeout(() => this.readyState === 1 && this._fire("message", { data: JSON.stringify(o) }), 1)
+    if (m.type === "end") {
+      // Like the relay: the secret ends the held session at once.
+      const sess = sessions.get(m.sessionId)
+      const ok = !!this.resumeId && !!sess && sess.secret === m.secret
+      if (ok) sessions.delete(m.sessionId)
+      reply({ type: "end_reply", ok })
+      setTimeout(() => this.serverClose(ok ? 1000 : 4401, ok ? "session ended" : "end rejected"), 2)
+      return
+    }
     if (m.type === "register" || m.type === "resume") {
       if (this.mode === "reject") {
         reply({ type: "register_reply", ok: false, error: { code: "unknown_app_id" } })
@@ -339,6 +356,94 @@ test("close() ends the session on the relay (clean 1000 close)", async () => {
   const s = await connect({ ...base })
   s.close()
   assert.equal(sessions.has("S1"), false)
+})
+
+test("close() while disconnected ends the held session with an `end` frame", async () => {
+  reset(() => "ok")
+  let retry
+  const s = await connect({ ...base, onDisconnect: (i) => { retry = i.reconnect } })
+  sockets[0].serverClose(1006, "blip")
+  await waitFor(() => retry)
+  assert.ok(sessions.has("S1"), "the relay holds the session while the app is away")
+  s.close()
+  await waitFor(() => !sessions.has("S1"))
+  const endSock = sockets[sockets.length - 1]
+  assert.equal(endSock.resumeId, "S1")
+  assert.deepEqual(endSock.frames, [{ type: "end", sessionId: "S1", secret: "secret_S1" }])
+  await waitFor(() => open().length === 0)
+  assert.equal(s.resumeSecret, null)
+  retry()  // a backoff timer firing after close() must not reconnect
+  await sleep(20)
+  assert.equal(open().length, 0)
+})
+
+test("close() after a 4410 replace doesn't end the session it no longer owns", async () => {
+  reset(() => "ok")
+  let retry
+  const s = await connect({ ...base, onDisconnect: (i) => { retry = i.reconnect } })
+  sockets[0].serverClose(4410, "replaced")
+  await waitFor(() => retry)
+  s.close()
+  await sleep(20)
+  assert.equal(sockets.length, 1, "no end socket")
+  assert.ok(sessions.has("S1"))
+})
+
+test("heartbeat sends the fixed frame the relay auto-answers", async () => {
+  reset(() => "ok")
+  const s = await connect({ ...base, heartbeatIntervalMs: 10, heartbeatTimeoutMs: 1000 })
+  const raw = []
+  const send = sockets[0].send.bind(sockets[0])
+  sockets[0].send = (p) => { raw.push(p); send(p) }
+  await waitFor(() => raw.length >= 2)
+  assert.equal(raw[0], '{"type":"ping","id":"as_hb"}')
+  assert.equal(raw[1], raw[0], "same bytes every time")
+  await sleep(30)
+  assert.equal(s.connected, true, "the pong (same id) keeps the session alive")
+  s.close()
+})
+
+test("default backoff: capped interval, never gives up", () => {
+  const delays = []
+  const realSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = (fn, ms) => { delays.push(ms); return 0 }
+  try {
+    const backoff = exponentialBackoff()
+    let gaveUp = false
+    for (let attempt = 1; attempt <= 5000; attempt++) backoff({ attempt, reason: "x", reconnect: () => {}, giveUp: () => { gaveUp = true } })
+    assert.equal(gaveUp, false)
+    assert.equal(delays.length, 5000, "every attempt schedules a reconnect")
+    assert.ok(delays.every((d) => Number.isFinite(d) && d >= 0 && d <= 30_000 * 1.25), "interval ≤ 37.5 s")
+    assert.ok(delays.slice(20).every((d) => d >= 30_000 * 0.75), "settles at ~30 s")
+    // 24 h of retries at the cap: about 2,900 attempts, each one a resume.
+    assert.ok(delays.reduce((a, b) => a + b, 0) > 24 * 3600_000, "5,000 attempts span more than a day")
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+  }
+})
+
+test("a long outage: keeps retrying, then resumes the same session", async () => {
+  let down = true
+  reset((n) => (n > 1 && down ? "down" : "ok"))
+  const changes = [], reconnects = [], attempts = []
+  const backoff = exponentialBackoff({ baseMs: 1, maxMs: 4 })
+  const s = await connect({
+    ...base,
+    onDisconnect: (i) => { attempts.push(i.attempt); backoff(i) },
+    onSessionChanged: (i) => changes.push(i),
+    onReconnect: (i) => reconnects.push(i),
+  })
+  const link = await s.mintAgentToken({ label: "L" })
+  sockets[0].serverClose(1006, "laptop asleep")
+  await waitFor(() => attempts.length >= 200, 5000)
+  assert.equal(reconnects.length, 0)
+  down = false
+  await waitFor(() => reconnects.length === 1, 1000)
+  assert.deepEqual(reconnects[0], { sessionId: "S1", resumed: true })
+  assert.equal(changes.length, 0, "same links")
+  assert.ok(tokensOf("S1").has(link.token))
+  assert.equal(sockets[sockets.length - 1].frames[0].type, "resume")
+  s.close()
 })
 
 test("a drop mid-remint re-mints the rest on the next reconnect", async () => {
