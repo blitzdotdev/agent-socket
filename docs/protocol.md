@@ -95,7 +95,7 @@ Relay errors have the body `{"error": {"code": "...", "message": "..."}}`.
 | 503 | `too_many_tasks` | 100 pending async tasks. |
 | 504 | `tool_timeout` | No reply within the sync timeout. |
 
-When a session does not exist, every request with a well-formed token gets `503 app_offline`, so the relay does not reveal which tokens once existed.
+When a session does not exist, every request with a well-formed token gets `503 app_offline`, so the relay does not reveal which tokens once existed. The message tells the agent what to do: "The app is not connected to this link. If this keeps happening, the link is probably stale: ask the user to reconnect the app (in the Agent Socket extension: open it and copy the current link) and share the new link." While the app is reconnecting within the grace window, the message is "The app is reconnecting. Retry in a few seconds."
 
 Errors the app returns are passed through as the app wrote them. The SDK replies `500 {"error": {"code": "handler_error"}}` when a handler throws, and `404 not_found` when no handler matches.
 
@@ -215,7 +215,7 @@ To resume, open `wss://agentsocket.dev/v1/_ws?session=<sessionId>` and send `res
 - A wrong secret, an ended session and an unknown session all get `ok: false, error: {code: "resume_failed"}` and close `4401`. The secret is compared in constant time.
 - A socket on `?session=` can do nothing else before it resumes. At most 4 such sockets can wait per session (`4409` beyond that).
 
-State lives only in memory. If Cloudflare evicts or restarts the Durable Object, the session is gone and resume gets `4401`. The client then registers a new session and mints new links.
+State lives only in memory. If Cloudflare evicts or restarts the Durable Object, the session is gone and resume gets `4401`. The client then registers a new session and mints new links. The old links answer `503 app_offline` from then on, so the app should show the user the new link and say the old one stopped working (the SDK's `onSessionChanged` reports the new URLs and a `reason`).
 
 ## Close codes
 

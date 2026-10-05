@@ -11,6 +11,16 @@
     <div class="dot" id="status-dot" data-status="idle"></div>
   </header>
 
+  <section id="changed-card" class="changed-banner" role="alert" hidden>
+    <div class="warn-title">Your link changed</div>
+    <div class="warn-body">The old one no longer works — copy this one into your AI chat.</div>
+    <div class="url-row">
+      <input id="changed-input" readonly />
+      <button id="changed-copy">Copy</button>
+    </div>
+    <div class="muted small" id="changed-reason"></div>
+  </section>
+
   <div id="user-scripts-warn" class="warn-banner" hidden>
     <div class="warn-title">/eval is disabled on CSP-strict sites</div>
     <div class="warn-body" id="user-scripts-hint"></div>
@@ -74,6 +84,10 @@
       <span class="muted small">Kept site profiles (load on this computer only):</span>
     </div>
     <ul id="profiles-list" class="profile-list"></ul>
+    <div class="row">
+      <span class="muted small">Recent connection events (kept in memory, cleared when the extension restarts):</span>
+    </div>
+    <ul id="events-list" class="profile-list"></ul>
   </details>
 
   <footer>

@@ -650,10 +650,20 @@ async function main() {
       const cdp = await page.createCDPSession()
       const { root } = await cdp.send("DOM.getDocument", { depth: -1, pierce: true })
       const find = (n, pred) => pred(n) ? n : [...(n.children ?? []), ...(n.shadowRoots ?? [])].map((c) => find(c, pred)).find(Boolean)
+      const attr = (n, k) => { const a = n.attributes ?? []; const i = a.findIndex((v, j) => j % 2 === 0 && v === k); return i === -1 ? null : a[i + 1] }
       const host = find(root, (n) => n.nodeName === "AGENT-SOCKET-INDICATOR")
-      const pill = host && find(host, (n) => n.attributes?.includes("pill"))
-      const button = host && find(host, (n) => n.nodeName === "BUTTON")
-      return { cdp, pill, button }
+      const pill = host && find(host, (n) => /^pill\b/.test(attr(n, "class") ?? ""))
+      const button = host && find(host, (n) => attr(n, "data-action") === "stop")
+      const copy = host && find(host, (n) => attr(n, "data-action") === "copy")
+      return { cdp, pill, button, copy, copyShown: !!copy && attr(copy, "hidden") === null }
+    }
+    const center = async (cdp, node) => {
+      const [x1, y1, , , x3, y3] = (await cdp.send("DOM.getBoxModel", { nodeId: node.nodeId })).model.content
+      return { x: (x1 + x3) / 2, y: (y1 + y3) / 2 }
+    }
+    const pillHtml = async (page) => {
+      const { cdp, pill } = await pillNodes(page)
+      return pill ? (await cdp.send("DOM.getOuterHTML", { nodeId: pill.nodeId })).outerHTML : ""
     }
     let other
     const snap0 = await swState()
@@ -713,7 +723,7 @@ async function main() {
       const a = await box()
       await testPage.mouse.move(a.x + 8, a.y + 8)
       await testPage.mouse.down()
-      await testPage.mouse.move(a.x + 208, a.y - 150, { steps: 8 })
+      await testPage.mouse.move(a.x + 8 + 200, a.y + 8 - 150, { steps: 8 })  // grabbed 8 px in
       await testPage.mouse.up()
       const b = await box()
       if (Math.abs(b.x - (a.x + 200)) > 3 || Math.abs(b.y - (a.y - 150)) > 3) throw new Error(`drag ${JSON.stringify({ a, b })}`)
@@ -727,6 +737,75 @@ async function main() {
       await testPage.reload({ waitUntil: "load" })
       await waitFor(() => hasPill(testPage))
       if (await badge(boundTabId) !== "AI") throw new Error("badge lost on reload")
+    })
+
+    // ── 10. Link changed: a refused resume puts the tab on a new link ──
+    // The test page is http://e2e-site.test (not a secure context), so the
+    // pill's Copy takes the copy-command fallback here.
+    const extOrigin = `chrome-extension://${extId}`
+    await browser.defaultBrowserContext().overridePermissions(extOrigin, ["clipboard-read", "clipboard-write"])
+    const readClipboard = async () => {
+      await popupPage.bringToFront()  // readText needs a focused document
+      try { return await popupPage.evaluate(() => navigator.clipboard.readText()) } finally { await testPage.bringToFront() }
+    }
+    const endSession = async (url) => {
+      const sid = url.match(/\/v1\/t\/as_([0-9A-Z]{8})_/)[1]
+      const r = await fetch(`${RELAY_BASE}/_debug/kill-ws/${sid}?end=1`, { method: "POST" })
+      if (!r.ok) throw new Error(`kill-ws ${r.status}`)
+      let next
+      await waitFor(async () => { const s = await swState(); next = s.url; return s.linkChanged && s.url && s.url !== url }, 15000)
+      return next
+    }
+    const assertChangedUi = async (url) => {
+      await waitFor(async () => /Link changed — paste the new link into your AI chat/.test(await pillHtml(testPage)) && (await pillNodes(testPage)).copyShown)
+      if ((await pillHtml(testPage)).includes(url)) throw new Error("link in the page DOM")
+      if (await badge(boundTabId) !== "NEW") throw new Error(`badge=${await badge(boundTabId)}`)
+      await waitFor(() => popupPage.evaluate((u) => !document.querySelector("#changed-card").hidden
+        && document.querySelector("#changed-input").value === u
+        && /new link was created/.test(document.querySelector("#changed-reason").textContent)
+        && document.querySelector("#link-card").hidden, url))
+    }
+    const assertNormalUi = async () => {
+      await waitFor(async () => !(await swState()).linkChanged)
+      await waitFor(async () => (await badge(boundTabId)) === "AI")
+      await waitFor(async () => !(await pillNodes(testPage)).copyShown && /AI has access to this tab/.test(await pillHtml(testPage)))
+      await waitFor(() => popupPage.evaluate(() => document.querySelector("#changed-card").hidden && !document.querySelector("#link-card").hidden))
+    }
+    let changedUrl
+    await step("refused resume: pill, NEW badge and popup banner show the new link", async () => {
+      await testPage.bringToFront()
+      const before = (await swState()).url
+      changedUrl = await endSession(before)
+      await assertChangedUi(changedUrl)
+      const r = await fetch(`${before.replace(/\/agents\.md.*$/, "")}/page_info`, { method: "POST", body: "{}" })
+      const j = await r.json()
+      if (r.status !== 503 || j.error?.code !== "app_offline" || !/ask the user to reconnect/.test(j.error.message)) throw new Error(`old link: ${r.status} ${JSON.stringify(j)}`)
+    })
+
+    await step("Copy link in the pill (http page) copies it and clears the state", async () => {
+      await testPage.bringToFront()
+      const { cdp, copy } = await pillNodes(testPage)
+      const at = await center(cdp, copy)
+      await testPage.mouse.click(at.x, at.y)
+      await assertNormalUi()
+      if (await readClipboard() !== changedUrl) throw new Error("clipboard doesn't hold the new link")
+    })
+
+    await step("a tool call on a changed link clears the state", async () => {
+      changedUrl = await endSession(changedUrl)
+      await assertChangedUi(changedUrl)
+      if (await agentStatus(changedUrl.replace(/\/agents\.md.*$/, "")) !== 200) throw new Error("new link doesn't work")
+      await assertNormalUi()
+    })
+
+    await step("Copy in the popup banner clears the state", async () => {
+      changedUrl = await endSession(changedUrl)
+      await assertChangedUi(changedUrl)
+      await popupPage.bringToFront()
+      await popupPage.click("#changed-copy")
+      await testPage.bringToFront()
+      await assertNormalUi()
+      if (await readClipboard() !== changedUrl) throw new Error("clipboard doesn't hold the new link")
     })
 
     await step("closing the bound tab ends the session", async () => {

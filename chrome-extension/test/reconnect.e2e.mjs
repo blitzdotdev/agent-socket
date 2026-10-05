@@ -17,6 +17,12 @@
 //   7. Kill the WS with ?end=1 (session gone, as if the grace window ran
 //      out): the resume is refused, the extension re-mints, the popup shows
 //      the new URL, the new URL works and the old one is dead.
+//   8. Link-changed state after that refused resume: the pill turns into
+//      "Link changed … [Copy link] [Stop]", the badge says NEW, the popup
+//      shows a banner with the new link and the reason, the diagnostics list
+//      the drop + refusal; the old link's 503 tells the AI what to do. Copy in
+//      the popup clears it; so does a tool call on the new link, and Copy in
+//      the pill. SHOT_DIR=<dir> saves screenshots of the pill and popup.
 //
 // Run: node chrome-extension/test/reconnect.e2e.mjs
 //
@@ -38,6 +44,7 @@ const CHROMIUM = process.env.CHROMIUM_PATH ?? "/usr/bin/chromium"
 const RELAY_PORT = parseInt(process.env.RELAY_PORT ?? "8796", 10)
 const RELAY_BASE = `http://127.0.0.1:${RELAY_PORT}`
 const STATIC_PORT = parseInt(process.env.STATIC_PORT ?? "8797", 10)
+const SHOT_DIR = process.env.SHOT_DIR ?? ""
 
 // ── small assert harness ────────────────────────────────────────
 let passed = 0, failed = 0
@@ -143,6 +150,13 @@ async function sendToSW(popupPage, msg, timeoutMs = 10000) {
   }, msg, timeoutMs)
 }
 
+// Clipboard read from the popup page (an extension page with clipboard-read).
+let readClipboard = async () => { throw new Error("clipboard reader not set up") }
+async function assertClipboard(want) {
+  const got = await readClipboard()
+  if (got !== want) throw new Error(`clipboard has ${JSON.stringify(got)}, want ${want}`)
+}
+
 function parseSessionId(url) {
   const m = url.match(/\/v1\/t\/as_([0-9A-HJKMNP-TV-Z]{8})_/)
   return m ? m[1] : null
@@ -175,6 +189,11 @@ async function main() {
 
   // Open popup.
   const popup = await openPopup(chrome.browser, extId)
+  await chrome.browser.defaultBrowserContext().overridePermissions(`chrome-extension://${extId}`, ["clipboard-read", "clipboard-write"])
+  readClipboard = async () => {
+    await popup.bringToFront()  // readText needs a focused document
+    return popup.evaluate(() => navigator.clipboard.readText())
+  }
 
   // Configure the extension to use our local relay.
   await step("set relay base to local wrangler dev", async () => {
@@ -313,11 +332,136 @@ async function main() {
   console.log(`  new paste URL:    ${newUrl}`)
   const newSession = parseSessionId(newUrl)
   if (newSession === initialSession) throw new Error("sessionId did NOT change after the session ended")
+
+  // ── 4. the user is told the link changed ──
+  // (before any tool call on the new URL: a tool call clears the state)
+  const snapNow = () => sendToSW(popup, { type: "snapshot" })
+  const boundTabId = (await snapNow()).boundTab?.id
+  const badge = () => popup.evaluate((id) => chrome.action.getBadgeText({ tabId: id }), boundTabId)
+  // The pill lives in a closed shadow root; CDP can still see inside it.
+  async function pill() {
+    const cdp = await page.createCDPSession()
+    try {
+      const { root } = await cdp.send("DOM.getDocument", { depth: -1, pierce: true })
+      const find = (n, pred) => pred(n) ? n : [...(n.children ?? []), ...(n.shadowRoots ?? [])].map((c) => find(c, pred)).find(Boolean)
+      const host = find(root, (n) => n.nodeName === "AGENT-SOCKET-INDICATOR")
+      if (!host) return null
+      const attr = (n, k) => { const a = n.attributes ?? []; const i = a.findIndex((v, j) => j % 2 === 0 && v === k); return i === -1 ? null : a[i + 1] }
+      const node = find(host, (n) => /^pill\b/.test(attr(n, "class") ?? ""))
+      const copy = find(host, (n) => attr(n, "data-action") === "copy")
+      const html = (await cdp.send("DOM.getOuterHTML", { nodeId: node.nodeId })).outerHTML
+      let copyBox = null
+      if (copy && attr(copy, "hidden") === null) {
+        const [x1, y1, , , x3, y3] = (await cdp.send("DOM.getBoxModel", { nodeId: copy.nodeId })).model.content
+        copyBox = { x: (x1 + x3) / 2, y: (y1 + y3) / 2 }
+      }
+      return { html, copyBox, changed: /class="pill changed"/.test(html) }
+    } finally { await cdp.detach().catch(() => {}) }
+  }
+  async function until(cond, what, ms = 8000) {
+    const end = Date.now() + ms
+    for (;;) {
+      const v = await cond()
+      if (v) return v
+      if (Date.now() > end) throw new Error(`timed out: ${what}`)
+      await sleep(200)
+    }
+  }
+  const popupUi = () => popup.evaluate(() => ({
+    banner: !document.querySelector("#changed-card").hidden,
+    link: document.querySelector("#changed-input").value,
+    reason: document.querySelector("#changed-reason").textContent,
+    linkCard: !document.querySelector("#link-card").hidden,
+    events: [...document.querySelectorAll("#events-list li")].map((li) => li.textContent),
+  }))
+  async function assertChanged(url, label) {
+    await step(`${label}: pill says the link changed, with Copy link + Stop`, async () => {
+      await page.bringToFront()
+      const p = await until(async () => { const p = await pill(); return p?.changed && p.copyBox ? p : null }, "pill link-changed state")
+      if (!/Link changed — paste the new link into your AI chat/.test(p.html)) throw new Error(p.html)
+      if (!/data-action="stop"/.test(p.html)) throw new Error("no Stop")
+      if (p.html.includes(url)) throw new Error("the link is in the page DOM")
+    })
+    await step(`${label}: badge says NEW`, async () => {
+      if (await badge() !== "NEW") throw new Error(`badge=${await badge()}`)
+    })
+    await step(`${label}: popup banner shows the new link and why`, async () => {
+      const ui = await until(async () => { const u = await popupUi(); return u.banner && u.link === url ? u : null }, "popup banner")
+      if (ui.linkCard) throw new Error("the plain link card is shown too")
+      if (!/new link was created/.test(ui.reason)) throw new Error(`reason: ${ui.reason}`)
+    })
+  }
+  async function assertCleared(label) {
+    await step(`${label}: pill, badge and popup back to normal`, async () => {
+      await until(async () => !(await snapNow()).linkChanged, "state cleared")
+      await until(async () => (await badge()) === "AI", "badge AI")
+      await until(async () => { const p = await pill(); return p && !p.changed && !p.copyBox }, "pill normal")
+      await until(async () => { const u = await popupUi(); return !u.banner && u.linkCard }, "popup normal")
+    })
+  }
+
+  await assertChanged(newUrl, "refused resume")
+  await step("popup diagnostics list the drop, the refusal and the new session", async () => {
+    const ev = (await popupUi()).events.join("\n")
+    for (const re of [/Connection dropped \(close 1011/, /Resume of \w{8} refused \(close 4401\)/, /New session \w{8}: the link changed/]) {
+      if (!re.test(ev)) throw new Error(`no ${re} in:\n${ev}`)
+    }
+  })
+  await step("old URL: 503 app_offline telling the AI to ask for the new link", async () => {
+    const r = await callTool(initialUrl)
+    const j = await r.json()
+    if (r.status !== 503 || j.error?.code !== "app_offline") throw new Error(`${r.status} ${JSON.stringify(j)}`)
+    if (!/ask the user to reconnect/.test(j.error.message)) throw new Error(j.error.message)
+  })
+  if (SHOT_DIR) {
+    fs.mkdirSync(SHOT_DIR, { recursive: true })
+    await page.bringToFront()
+    await sleep(300)
+    await page.screenshot({ path: path.join(SHOT_DIR, "pill-link-changed.png") })
+    await popup.bringToFront()
+    await popup.setViewport({ width: 384, height: 640 })
+    await popup.screenshot({ path: path.join(SHOT_DIR, "popup-link-changed.png"), clip: { x: 0, y: 0, width: 384, height: 640 } })
+    await popup.evaluate(() => { document.querySelector("#advanced").open = true })
+    await sleep(200)
+    await popup.screenshot({ path: path.join(SHOT_DIR, "popup-diagnostics.png"), fullPage: true })
+    await popup.evaluate(() => { document.querySelector("#advanced").open = false })
+    console.log(`  screenshots in ${SHOT_DIR}`)
+  }
+  await step("Copy in the popup banner copies the new link and clears the state", async () => {
+    await popup.bringToFront()
+    await popup.click("#changed-copy")
+    await assertClipboard(newUrl)
+  })
+  await assertCleared("after popup Copy")
   await step("new URL /page_info returns 200", () => waitWorks(newUrl))
   await step("old URL is dead (503 app_offline)", async () => {
     const r = await callTool(initialUrl)
     if (r.status !== 503) throw new Error(`expected 503, got ${r.status}`)
   })
+
+  // A tool call on the new link means the AI has it: clears the state too.
+  const nextUrl = async (prev) => {
+    const r = await fetch(`${RELAY_BASE}/_debug/kill-ws/${parseSessionId(prev)}?end=1`, { method: "POST" })
+    if (!r.ok) throw new Error(`kill-ws ${r.status}`)
+    return until(async () => { const s = await snapNow(); return s.linkChanged && s.url && s.url !== prev ? s.url : null }, "new link", 15000)
+  }
+  const thirdUrl = await step("end the session again: a new link", () => nextUrl(newUrl))
+  await assertChanged(thirdUrl, "second refusal")
+  await step("a tool call on the new link clears the state", () => waitWorks(thirdUrl))
+  await assertCleared("after a tool call")
+
+  // Copy in the pill (127.0.0.1 is a secure context: navigator.clipboard).
+  const fourthUrl = await step("end the session a third time: a new link", () => nextUrl(thirdUrl))
+  await assertChanged(fourthUrl, "third refusal")
+  await step("Copy link in the pill copies the new link and clears the state", async () => {
+    await page.bringToFront()
+    const p = await pill()
+    await page.mouse.click(p.copyBox.x, p.copyBox.y)
+    await until(async () => !(await snapNow()).linkChanged, "cleared by the pill")
+    await assertClipboard(fourthUrl)
+  })
+  await assertCleared("after pill Copy")
+  await step("the pill's link works", () => waitWorks(fourthUrl))
 
   console.log(`\n──  ${passed} passed, ${failed} failed`)
 }

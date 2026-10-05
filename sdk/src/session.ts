@@ -7,6 +7,7 @@ import type {
   ConnectOptions,
   ListedToken,
   Session,
+  SessionChangeReason,
   Tool,
   ToolCallContext,
   ToolHandler,
@@ -34,7 +35,9 @@ interface MintedTokenInfo {
 }
 
 // The relay refused a resume: wrong secret, or the session already ended.
-class ResumeRejected extends Error {}
+class ResumeRejected extends Error {
+  constructor(readonly closeCode: number) { super("resume rejected") }
+}
 
 const RESUME_REJECTED_CLOSE = 4401
 // The relay closed this socket because a resume with our secret replaced it.
@@ -50,6 +53,8 @@ export async function connect(opts: ConnectOptions): Promise<Session> {
   // Resumed from a saved secret: adopt the session's live tokens so a later
   // fallback to a fresh session can re-mint them.
   if (resumed) await session._adoptTokens().catch(() => {})
+  // A refused `resume` option shows as a new sessionId; nothing to report.
+  session._freshCause = null
   return session
 }
 
@@ -75,6 +80,11 @@ class SessionImpl implements Session {
   pendingRevokes: Set<string> = new Set()
   registered = false
   giveUpReconnect = false
+  // Why the next registration will be (or was) a fresh session rather than a
+  // resume. Reported via onSessionChanged once the reconnect lands.
+  _freshCause: { reason: SessionChangeReason; closeCode?: number } | null = null
+  // When the relay last sent us anything; measures how long we were offline.
+  _lastSeenAt = 0
 
   attempt = 0
   pendingFrameReplies: Map<string, PendingRequest> = new Map()
@@ -132,7 +142,10 @@ class SessionImpl implements Session {
         if (!(e instanceof ResumeRejected)) throw e
         this._resumeSecret = null
         this.pendingRevokes.clear()  // those tokens died with the session
+        this._freshCause = { reason: "resume_refused", closeCode: e.closeCode }
       }
+    } else if (this._sessionId && !this._freshCause) {
+      this._freshCause = { reason: "no_resume_secret" }
     }
     await this._handshake(false)
     return { resumed: false }
@@ -159,7 +172,7 @@ class SessionImpl implements Session {
         : { type: "register", ...registration })
       const reply = await this._waitForRegisterReply(ws, 10_000)
       if (!reply.ok) {
-        if (resume && reply.error?.code === "resume_failed") throw new ResumeRejected("resume rejected")
+        if (resume && reply.error?.code === "resume_failed") throw new ResumeRejected(RESUME_REJECTED_CLOSE)
         throw new Error(`register failed: ${reply.error?.code ?? "unknown"}`)
       }
       if (this.giveUpReconnect) throw new Error("session closed")
@@ -167,13 +180,14 @@ class SessionImpl implements Session {
       this._resumeSecret = typeof reply.resumeSecret === "string" ? reply.resumeSecret : null
       if (resume) this.pendingRevokes.clear()
     } catch (e) {
-      if (resume && (e as { closeCode?: number }).closeCode === RESUME_REJECTED_CLOSE) e = new ResumeRejected("resume rejected")
+      if (resume && (e as { closeCode?: number }).closeCode === RESUME_REJECTED_CLOSE) e = new ResumeRejected(RESUME_REJECTED_CLOSE)
       // Handlers aren't installed yet, so this close can't trigger a reconnect.
       try { ws.close(this.giveUpReconnect ? 1000 : HANDSHAKE_ABORT_CLOSE, "handshake failed") } catch {}
       if (this.ws === ws) this.ws = null
       throw e
     }
     this._installHandlers(ws)
+    this._lastSeenAt = Date.now()
     this.registered = true
     this._scheduleNextPing()
     this._settleConnectedWaiters(null)
@@ -365,6 +379,7 @@ class SessionImpl implements Session {
   _onMessage(data: string): void {
     let msg: any
     try { msg = JSON.parse(data) } catch { return }
+    this._lastSeenAt = Date.now()
     this._scheduleNextPing()  // any inbound traffic resets the idle timer
 
     switch (msg.type) {
@@ -468,12 +483,13 @@ class SessionImpl implements Session {
     if (code === REPLACED_CLOSE) {
       this._resumeSecret = null
       this.pendingRevokes.clear()
+      this._freshCause = { reason: "replaced", closeCode: REPLACED_CLOSE }
     }
-    this._disconnected(reason || "ws closed")
+    this._disconnected(reason || "ws closed", code)
   }
 
   // The single reconnect path: after a drop and after each failed attempt.
-  _disconnected(reason: string): void {
+  _disconnected(reason: string, code?: number): void {
     if (this.giveUpReconnect) return
     this.attempt += 1
     let resolved = false
@@ -493,19 +509,24 @@ class SessionImpl implements Session {
       this.giveUpReconnect = true
       this._settleConnectedWaiters(new Error("session closed"))
     }
-    void this.onDisconnect({ reason, attempt: this.attempt, reconnect, giveUp })
+    void this.onDisconnect({ reason, ...(code !== undefined ? { code } : {}), attempt: this.attempt, reconnect, giveUp })
   }
 
   async _reconnectAndRemint(): Promise<void> {
     const priorSessionId = this._sessionId
+    const lastSeenAt = this._lastSeenAt  // a successful handshake resets it
     let resumed: boolean
     try {
       ({ resumed } = await this._connectAndRegister())
     } catch (e) {
-      this._disconnected(e instanceof Error ? e.message : "reconnect failed")
+      const code = (e as { closeCode?: unknown } | null)?.closeCode
+      this._disconnected(e instanceof Error ? e.message : "reconnect failed", typeof code === "number" ? code : undefined)
       return
     }
     this.attempt = 0
+    const offlineMs = Math.max(0, Date.now() - lastSeenAt)
+    const cause = this._freshCause
+    this._freshCause = null
 
     // A resume keeps every token. A fresh session doesn't: re-mint the ones
     // still in myTokens (revoke removes them) under the new session-id. A
@@ -530,10 +551,14 @@ class SessionImpl implements Session {
     }
 
     if ((priorSessionId !== this._sessionId || tokensRemapped.size > 0) && this.onSessionChanged) {
+      const sessionChanged = priorSessionId !== this._sessionId
       void this.onSessionChanged({
         priorSessionId,
         sessionId: this._sessionId,
         tokensRemapped,
+        reason: sessionChanged ? cause?.reason ?? "resume_refused" : "remint",
+        ...(sessionChanged && cause?.closeCode !== undefined ? { closeCode: cause.closeCode } : {}),
+        offlineMs,
       })
     }
     if (this.onReconnect) void this.onReconnect({ sessionId: this._sessionId, resumed })

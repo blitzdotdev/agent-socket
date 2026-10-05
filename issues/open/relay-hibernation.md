@@ -36,3 +36,15 @@ grace window sits well inside a non-hibernating DO's idle lifetime).
 3. Drive register timeout, liveness and grace from a single alarm.
 4. Flip `hibernate: true`; harness 48, 51, 52–55 cover the behaviour that must
    not change.
+
+## Note: a longer resume grace needs this first
+
+Users lose their link when a drop outlasts the 60 s `RESUME_GRACE_MS` (laptop
+sleep, Chrome suspending the extension's worker), so raising it is tempting.
+Don't do it on the in-memory DO: only a `setTimeout` keeps a detached session's
+DO alive, and Cloudflare can evict a DO with no open socket or pending request
+regardless of timers, losing the session early. A grace window measured in
+minutes needs the session state in `ctx.storage` and the deadline in an alarm,
+i.e. the work above. Meanwhile the extension tells the user when the link
+changed (pill, popup banner, "NEW" badge) and the relay's `app_offline`
+message tells the AI to ask for the new link.

@@ -28,6 +28,11 @@ const userScriptsWarn = $("#user-scripts-warn")
 const userScriptsHint = $("#user-scripts-hint")
 const openExtDetailsBtn = $("#open-ext-details")
 const recheckUserScriptsBtn = $("#recheck-user-scripts")
+const changedCard = $("#changed-card")
+const changedInput = $("#changed-input")
+const changedCopy = $("#changed-copy")
+const changedReason = $("#changed-reason")
+const eventsList = $("#events-list")
 
 let shownTab = null  // { id, windowId } of the tab the card shows
 
@@ -37,12 +42,57 @@ function statusLabel(snap) {
   switch (snap.status?.status) {
     case "connecting": return "Connecting…"
     case "connected":
+      if (snap.linkChanged) return "Connected — the AI needs the new link"
       return snap.lastToolCallAt ? `AI active — last tool call ${ago(Date.now() - snap.lastToolCallAt)} ago` : "Connected — waiting for AI"
     case "disconnected":
     case "reconnect-failed": return "Reconnecting…"
     case "closed": return `Disconnected${snap.status.reason ? ` (${snap.status.reason})` : ""}`
     default: return "Not connected"
   }
+}
+
+const GRACE_MS = 60_000  // how long agentsocket.dev holds a dropped session
+const dur = (ms) => (ms < 90_000 ? `${Math.round(ms / 1000)} s` : ms < 5_400_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 3_600_000)} h`)
+
+// Why the link changed, in a sentence. See background.js `linkChanged`.
+function changeReason(c) {
+  switch (c.reason) {
+    case "resume_refused":
+      if (c.afterRestart) return "The extension restarted and the relay no longer had the old session (it keeps one for 60 s after a drop), so a new link was created."
+      if (c.offlineMs >= GRACE_MS) return `The connection was lost for about ${dur(c.offlineMs)}, longer than the 60 s the relay keeps a link, so a new link was created.`
+      return "The relay no longer had the old session (it may have restarted), so a new link was created."
+    case "replaced": return "Another connection took over the old session, so a new link was created."
+    case "no_resume_secret": return "The connection dropped and this relay can't resume sessions, so a new link was created."
+    case "relay_changed": return "The relay URL changed in Settings, so a new link was created."
+    default: return "The old link stopped working, so a new link was created."
+  }
+}
+
+const EVENT_TEXT = {
+  worker_start: () => "Extension background started",
+  connected: (e) => `Connected: new session ${e.sessionId}`,
+  resumed: (e) => `Resumed session ${e.sessionId}${e.afterRestart ? " after a background restart" : ""}`,
+  drop: (e) => `Connection dropped (close ${e.code ?? "?"}${e.reason ? `: ${e.reason}` : ""})`,
+  retry_failed: (e) => `Reconnect attempt ${e.attempt - 1} failed${e.code ? ` (close ${e.code})` : ""}: ${e.reason}`,
+  resume_refused: (e) => `Resume of ${e.sessionId} refused${e.code ? ` (close ${e.code})` : ""}${e.offlineMs != null ? `, offline ${dur(e.offlineMs)}` : ""}`,
+  replaced: (e) => `Session ${e.sessionId} taken over by another connection (close ${e.code ?? 4410})`,
+  no_resume: (e) => `Session ${e.sessionId} could not be resumed (no resume secret)`,
+  new_session: (e) => `New session ${e.sessionId}: the link changed`,
+  reminted: () => "Link re-minted on the same session",
+  link_acknowledged: (e) => `New link ${e.via === "tool_call" ? "used by the AI" : `copied (${e.via})`}`,
+  connect_failed: (e) => `Connect failed: ${e.reason}`,
+  stopped: () => "Stopped by the user",
+}
+
+let lastEventsJson = ""
+function renderEvents(evs) {
+  const json = JSON.stringify(evs ?? [])
+  if (json === lastEventsJson) return
+  lastEventsJson = json
+  const items = (evs ?? []).slice().reverse().map((e) => el("li", {},
+    el("span", { class: "when", text: new Date(e.at).toLocaleTimeString() }),
+    el("span", { text: EVENT_TEXT[e.type]?.(e) ?? e.type })))
+  eventsList.replaceChildren(...(items.length ? items : [el("li", { text: "none yet" })]))
 }
 
 function setError(msg) {
@@ -64,18 +114,23 @@ async function render() {
   const snap = await chrome.runtime.sendMessage({ type: "snapshot" })
   if (!snap?.ok) return
   const code = snap.status?.status ?? "idle"
-  statusDot.dataset.status = code === "connected" && snap.lastToolCallAt ? "active" : code
+  statusDot.dataset.status = code === "connected" && snap.linkChanged ? "changed" : code === "connected" && snap.lastToolCallAt ? "active" : code
   statusText.textContent = statusLabel(snap)
   if (snap.boundTab) showTab(snap.boundTab, true)
   else showTab((await chrome.tabs.query({ active: true, currentWindow: true }))[0], false)
   const bound = !!snap.boundTab
   connectBtn.hidden = bound
   disconnectBtn.hidden = !bound
-  linkCard.hidden = !(bound && snap.url)
-  if (snap.url && linkInput.value && linkInput.value !== snap.url) {
-    copyHint.textContent = "Link refreshed after a reconnect — re-paste it in your AI."
+  const changed = bound && snap.linkChanged
+  changedCard.hidden = !changed
+  linkCard.hidden = !(bound && snap.url) || !!changed
+  if (changed) {
+    changedInput.value = snap.url ?? ""
+    changedCopy.disabled = !snap.url
+    changedReason.textContent = changeReason(snap.linkChanged) + (snap.url ? "" : " Creating it failed: stop and connect again.")
   }
   linkInput.value = snap.url ?? ""
+  renderEvents(snap.events)
   toolsSource.hidden = !(bound && snap.sourceLabel)
   toolsSource.textContent = snap.sourceLabel ? `Tools: ${snap.sourceLabel}` : ""
   toolsSource.style.color = snap.source?.registry?.status === "unreachable" ? "var(--warn)" : ""
@@ -186,19 +241,19 @@ recheckUserScriptsBtn.addEventListener("click", async () => {
   try { await checkUserScripts() } finally { recheckUserScriptsBtn.disabled = false }
 })
 
-async function copyLinkToClipboard() {
+async function copyLinkToClipboard(input = linkInput) {
   try {
-    await navigator.clipboard.writeText(linkInput.value)
+    await navigator.clipboard.writeText(input.value)
     return true
   } catch {
-    linkInput.select()
+    input.select()
     return document.execCommand("copy")
   }
 }
 
-function flashCopied() {
-  copyBtn.textContent = "Copied!"
-  setTimeout(() => (copyBtn.textContent = "Copy"), 1500)
+function flashCopied(button = copyBtn) {
+  button.textContent = "Copied!"
+  setTimeout(() => (button.textContent = "Copy"), 1500)
 }
 
 connectBtn.addEventListener("click", async () => {
@@ -234,6 +289,16 @@ disconnectBtn.addEventListener("click", async () => {
 copyBtn.addEventListener("click", async () => {
   await copyLinkToClipboard()
   flashCopied()
+})
+
+// Copying the new link acknowledges the change: banner, pill and badge go back to normal.
+changedCopy.addEventListener("click", async () => {
+  if (!(await copyLinkToClipboard(changedInput))) { setError("Couldn't copy; select the link and copy it."); return }
+  await chrome.runtime.sendMessage({ type: "ack_link", via: "popup" })
+  linkInput.value = changedInput.value
+  flashCopied()
+  copyHint.textContent = "New link copied — paste it into your AI chat. The old one no longer works."
+  await render()
 })
 
 saveRelay.addEventListener("click", async () => {

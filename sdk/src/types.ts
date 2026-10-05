@@ -112,6 +112,13 @@ export interface ConnectOptions {
 
 export interface DisconnectInfo {
   reason: string
+  /**
+   * WebSocket close code, when a socket closed: the dropped connection's on
+   * the first call, a failed attempt's when its socket closed during the
+   * handshake. Absent when an attempt failed otherwise (timeout, network
+   * error, register refused).
+   */
+  code?: number
   /** Attempt number (1 for first reconnect attempt after a drop). */
   attempt: number
   /** Call this to attempt the next reconnect. */
@@ -130,7 +137,32 @@ export interface SessionChangedInfo {
    * With autoReconnect:false this is empty (SDK didn't re-mint).
    */
   tokensRemapped: Map<string, string>
+  /**
+   * Why the links changed:
+   * - "resume_refused": the relay refused the resume (close 4401). The
+   *   session had ended: the app was away longer than the relay's grace
+   *   window (60 s on agentsocket.dev), or the relay restarted. The relay
+   *   gives the same answer for a wrong secret.
+   * - "replaced": another connection resumed this session with its secret
+   *   (close 4410), so the SDK started a fresh one instead of taking it back.
+   * - "no_resume_secret": the relay never issued a resume secret, so there
+   *   was nothing to resume.
+   * - "remint": same session (a resume worked), but links an earlier,
+   *   interrupted re-mint missed were minted now.
+   */
+  reason: SessionChangeReason
+  /** The close code behind `reason`: 4401 for "resume_refused", 4410 for "replaced". */
+  closeCode?: number
+  /**
+   * Milliseconds from the last frame the relay sent on the old connection to
+   * the moment the new session was registered: roughly how long the app was
+   * unreachable (it can overstate a quiet connection by up to one heartbeat
+   * interval). Compare with the relay's grace window to tell an outage that
+   * outlasted it from a relay restart.
+   */
+  offlineMs: number
 }
+export type SessionChangeReason = "resume_refused" | "replaced" | "no_resume_secret" | "remint"
 export type SessionChangedHandler = (info: SessionChangedInfo) => void | Promise<void>
 
 export interface ReconnectInfo {

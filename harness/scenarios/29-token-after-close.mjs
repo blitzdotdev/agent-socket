@@ -24,8 +24,9 @@ export default async function () {
   const mint = await c.waitFor((m) => m.type === "mint_agent_token_reply" && m.id === "m1")
   const token = mint.token
 
-  // Close the WS cleanly, wait briefly for the close event to propagate.
-  c.close()
+  // Close the WS cleanly (1000 ends the session; a bare close() would only
+  // detach it for the resume grace window), wait for the close to propagate.
+  c.ws.close(1000)
   await new Promise((r) => setTimeout(r, 300))
 
   // Now hit the token URL. Should be app_offline (not token_invalid).
@@ -33,4 +34,13 @@ export default async function () {
   a.equal(r.status, 503, "post-close → 503")
   a.equal(r.json?.error?.code, "app_offline",
     "code is app_offline (not token_invalid — consistent error regardless of DO eviction state)")
+  // The message tells the agent what to do about a dead link.
+  a.ok(/ask the user to reconnect/.test(r.json?.error?.message ?? ""), `message guides the agent: ${r.json?.error?.message}`)
+
+  // A token for a session that never existed gets the very same answer.
+  const ids = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+  const sid = Array.from({ length: 8 }, () => ids[Math.floor(Math.random() * ids.length)]).join("")
+  const never = await httpPost(`/v1/t/as_${sid}_${"A".repeat(22)}/echo`, { x: 1 })
+  a.equal(never.status, 503, "never-existed session → 503")
+  a.equal(JSON.stringify(never.json), JSON.stringify(r.json), "same body as an ended session (no lifecycle leak)")
 }

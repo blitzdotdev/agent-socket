@@ -53,6 +53,10 @@ const DEFAULT_RESUME_GRACE_MS = 60_000
 const MAX_RESUME_CANDIDATES = 4
 // Retry-After (seconds) on a tool call that lands while the app is reconnecting.
 const RECONNECTING_RETRY_AFTER_S = "2"
+// Every request on a session with no app gets this, whether or not the session
+// ever existed, so it tells the agent what to do without revealing which.
+const APP_OFFLINE_MESSAGE =
+  "The app is not connected to this link. If this keeps happening, the link is probably stale: ask the user to reconnect the app (in the Agent Socket extension: open it and copy the current link) and share the new link."
 
 const TOOL_PATH_RE = /^\/[a-zA-Z0-9_\-/.]+$/
 const APP_ID_RE = /^[A-Za-z0-9_.-]{1,64}$/
@@ -585,7 +589,7 @@ export class RelayServer extends Server<Env> {
     // dropped app's session is held for resume, tokens are still checked and
     // the relay-served paths keep working; tool calls get 503 below.
     if (!this.appId) {
-      return errorResponse("app_offline", "no live WS for this session", 503)
+      return errorResponse("app_offline", APP_OFFLINE_MESSAGE, 503)
     }
 
     // Token verifier check — re-parse and check against our validTokens set.
@@ -696,7 +700,7 @@ export class RelayServer extends Server<Env> {
 
     // The app dropped and may resume within the grace window.
     if (!this.appWs) {
-      return errorResponse("app_offline", "app is reconnecting", 503, { "retry-after": RECONNECTING_RETRY_AFTER_S })
+      return errorResponse("app_offline", "The app is reconnecting. Retry in a few seconds.", 503, { "retry-after": RECONNECTING_RETRY_AFTER_S })
     }
 
     // User tool call

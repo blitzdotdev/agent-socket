@@ -44,9 +44,9 @@ Opens the WebSocket, registers, and resolves once the relay accepts. If this fir
 | `tools` | `{ method?, path, description, input_schema?, handler }[]`. `method` defaults to `POST`. `path` is static, e.g. `/set_pixel`; `/agents.md`, `/tools.json` and `/_as_*` are reserved. |
 | `baseUrl` | Relay URL. Default `https://agentsocket.dev`. |
 | `autoReconnect` | Default `true`. See [Reconnects](#reconnects). |
-| `onDisconnect` | `({ reason, attempt, reconnect, giveUp }) => void`. Called on a drop and after each failed attempt. Default: `exponentialBackoff()`, or `giveUp()` when `autoReconnect` is false. |
+| `onDisconnect` | `({ reason, code?, attempt, reconnect, giveUp }) => void`. Called on a drop and after each failed attempt. `code` is the WebSocket close code when a socket closed. Default: `exponentialBackoff()`, or `giveUp()` when `autoReconnect` is false. |
 | `onReconnect` | `({ sessionId, resumed }) => void`. Called after every successful reconnect. |
-| `onSessionChanged` | `({ priorSessionId, sessionId, tokensRemapped }) => void`. Called after a reconnect when links changed. `tokensRemapped` maps old URL to new URL. |
+| `onSessionChanged` | `({ priorSessionId, sessionId, tokensRemapped, reason, closeCode?, offlineMs }) => void`. Called after a reconnect when links changed. `tokensRemapped` maps old URL to new URL; `reason` says why (see [Reconnects](#reconnects)). |
 | `resume` | `{ sessionId, secret }` of an earlier session, to keep its links after a restart. See [Surviving a restart](#surviving-a-restart). |
 | `heartbeatIntervalMs` | Ping after this long without traffic. Default 25000. |
 | `heartbeatTimeoutMs` | Close and reconnect if no pong arrives within this. Default 50000. |
@@ -99,7 +99,18 @@ The agent gets `202 {"taskId": "..."}` and polls `<link base>/_as_tasks/<taskId>
 
 When the socket drops, the relay keeps the session for 60 s. With `autoReconnect` on (the default), the SDK backs off via `onDisconnect`, reconnects and resumes the same session with its secret. On success every link keeps working, `onReconnect` gets `resumed: true`, and `onSessionChanged` is not called. While the app is away, agents still get `agents.md` and `tools.json`, and tool calls get `503 app_offline` with `Retry-After: 2`.
 
-If the relay refuses the resume (the 60 s passed, or the relay restarted), the SDK opens a new session in the same attempt and re-mints each link it still holds with the same label. The old URLs stop working; `onSessionChanged` reports the new ones so you can show them to the user. Links revoked while offline are not re-minted.
+If the relay refuses the resume (the 60 s passed, or the relay restarted), the SDK opens a new session in the same attempt and re-mints each link it still holds with the same label. The old URLs stop working; `onSessionChanged` reports the new ones so you can show them to the user. Tell the user plainly that the link changed: an AI still holding the old one only gets `503 app_offline`. Links revoked while offline are not re-minted.
+
+`onSessionChanged`'s `reason` is one of:
+
+| `reason` | `closeCode` | Meaning |
+|---|---|---|
+| `resume_refused` | 4401 | The relay no longer had the session: the app was away longer than the grace window, or the relay restarted. (A wrong secret gets the same answer.) |
+| `replaced` | 4410 | Another connection resumed the session with its secret, so the SDK started a fresh one instead of taking it back. |
+| `no_resume_secret` | | The relay never issued a resume secret, so there was nothing to resume. |
+| `remint` | | Same session; links an earlier, interrupted re-mint missed were minted now. |
+
+`offlineMs` is the time from the last frame the relay sent on the old connection to the new registration, roughly how long the app was unreachable (it can overstate a quiet connection by up to one heartbeat interval). Over 60 s means the outage outlasted the grace window; much less points at a relay restart.
 
 With `autoReconnect: false` the SDK neither reconnects nor re-mints. Your `onDisconnect` can still call `reconnect()`, which resumes when possible; if it lands in a new session, the old links are gone and `tokensRemapped` is empty.
 
