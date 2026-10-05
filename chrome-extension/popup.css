@@ -92,8 +92,22 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 details summary { cursor: pointer; color: var(--muted); font-size: 11px; padding: 4px 0; }
 details > div, details > ul { margin-top: 6px; }
 
-#profiles-list { margin: 0; padding-left: 16px; font-size: 11px; }
-#profiles-list li { color: var(--muted); }
+#tools-source { margin-top: 2px; }
+.profile-list { margin: 4px 0 0; padding: 0; list-style: none; font-size: 11px; }
+.profile-list li { padding: 4px 0; border-top: 1px solid var(--border); }
+.profile-list li:first-child { border-top: 0; }
+#profiles-list li { color: var(--muted); display: flex; gap: 6px; align-items: center; }
+#profiles-list li .ellipsis { flex: 1; }
+.profile-head { display: flex; gap: 6px; align-items: center; }
+.profile-head .pending-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.profile-list details summary { padding: 2px 0; }
+.profile-list .tool { margin: 4px 0 0 8px; }
+.profile-list pre {
+  margin: 2px 0 0; padding: 4px 6px; max-height: 120px; overflow: auto;
+  background: #0a0a0d; border: 1px solid var(--border); border-radius: 3px;
+  font-size: 10px; white-space: pre-wrap; word-break: break-word;
+}
+a.link-danger { color: var(--err); }
 
 
 footer { margin-top: 4px; min-height: 18px; }

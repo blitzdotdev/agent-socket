@@ -18,6 +18,11 @@ const copyHint = $("#copy-hint")
 const relayInput = $("#relay-input")
 const saveRelay = $("#save-relay")
 const profilesList = $("#profiles-list")
+const toolsSource = $("#tools-source")
+const pendingCard = $("#pending-card")
+const pendingList = $("#pending-list")
+const registryInput = $("#registry-input")
+const saveRegistry = $("#save-registry")
 const errorMsg = $("#error-msg")
 const userScriptsWarn = $("#user-scripts-warn")
 const userScriptsHint = $("#user-scripts-hint")
@@ -71,26 +76,87 @@ async function render() {
     copyHint.textContent = "Link refreshed after a reconnect — re-paste it in your AI."
   }
   linkInput.value = snap.url ?? ""
+  toolsSource.hidden = !(bound && snap.sourceLabel)
+  toolsSource.textContent = snap.sourceLabel ? `Tools: ${snap.sourceLabel}` : ""
+  toolsSource.style.color = snap.source?.registry?.status === "unreachable" ? "var(--warn)" : ""
+  toolsSource.title = snap.source?.registry?.error ? `Registry: ${snap.source.registry.error}` : ""
+  await renderProfiles()
+}
+
+// ── local profiles: pending (Keep / Discard) and kept (delete) ─────────
+// Everything shown here was written by the AI, so it only ever goes in via
+// textContent.
+
+function el(tag, attrs, ...children) {
+  const n = document.createElement(tag)
+  for (const [k, v] of Object.entries(attrs ?? {})) {
+    if (k === "text") n.textContent = v
+    else if (k === "onclick") n.addEventListener("click", v)
+    else n.setAttribute(k, v)
+  }
+  for (const c of children) if (c) n.append(c)
+  return n
+}
+
+async function profileAction(type, host, button) {
+  setError("")
+  button.disabled = true
+  try {
+    const res = await chrome.runtime.sendMessage({ type, host })
+    if (!res?.ok) setError(res?.error ?? `${type} failed`)
+    else if (res.pending) setError("Saved; the tools go live once the connection is back.")
+  } finally {
+    button.disabled = false
+    lastProfilesJson = ""
+    await render()
+  }
+}
+
+function pendingItem(p) {
+  const n = p.tool_count
+  const keep = el("button", { class: "small", "data-action": "keep", text: "Keep" })
+  const discard = el("button", { class: "ghost small", "data-action": "discard", text: "Discard" })
+  keep.addEventListener("click", () => profileAction("keep_profile", p.host, keep))
+  discard.addEventListener("click", () => profileAction("discard_profile", p.host, discard))
+  const review = el("details", {}, el("summary", { text: "Review" }))
+  if (p.notes) review.append(el("div", { class: "tool muted", text: p.notes.slice(0, 2000) }))
+  for (const t of p.tools ?? []) {
+    review.append(el("div", { class: "tool" },
+      el("div", { text: `${t.method} ${t.path} — ${String(t.description ?? "").split("\n")[0].slice(0, 200)}` }),
+      el("pre", { text: String(t.code ?? "") })))
+  }
+  return el("li", { "data-host": p.host },
+    el("div", { class: "profile-head" },
+      el("span", { class: "pending-title", text: `AI saved ${n} tool${n === 1 ? "" : "s"} for ${p.host}` }),
+      keep, discard),
+    review)
+}
+
+function keptItem(p) {
+  const del = el("a", { href: "#", class: "link-danger", "data-action": "delete", text: "delete" })
+  del.addEventListener("click", (e) => { e.preventDefault(); void profileAction("delete_profile", p.host, del) })
+  return el("li", { "data-host": p.host },
+    el("span", { class: "ellipsis", title: p.host, text: `${p.host} · ${p.tool_count} tool${p.tool_count === 1 ? "" : "s"}` }),
+    del)
+}
+
+let lastProfilesJson = ""
+async function renderProfiles() {
+  const list = await chrome.runtime.sendMessage({ type: "list_profiles" })
+  if (!list?.ok) return
+  // Re-render only on change, so an open Review stays open.
+  const json = JSON.stringify([list.pending, list.kept])
+  if (json === lastProfilesJson) return
+  lastProfilesJson = json
+  pendingCard.hidden = !list.pending.length
+  pendingList.replaceChildren(...list.pending.map(pendingItem))
+  profilesList.replaceChildren(...(list.kept.length ? list.kept.map(keptItem) : [el("li", { text: "none" })]))
 }
 
 async function loadSettings() {
-  const stored = await chrome.storage.local.get("relay_base")
+  const stored = await chrome.storage.local.get(["relay_base", "registry_base"])
   relayInput.value = stored.relay_base ?? ""
-  const list = await chrome.runtime.sendMessage({ type: "list_profiles" })
-  profilesList.innerHTML = ""
-  for (const h of list?.saved ?? []) {
-    const li = document.createElement("li")
-    li.textContent = h + " "
-    const x = document.createElement("a")
-    x.href = "#"; x.textContent = "delete"; x.style.color = "var(--err)"
-    x.addEventListener("click", async (e) => {
-      e.preventDefault()
-      await chrome.runtime.sendMessage({ type: "delete_profile", host: h })
-      loadSettings()
-    })
-    li.appendChild(x)
-    profilesList.appendChild(li)
-  }
+  registryInput.value = stored.registry_base ?? ""
 }
 
 async function checkUserScripts() {
@@ -175,6 +241,14 @@ saveRelay.addEventListener("click", async () => {
   await chrome.runtime.sendMessage({ type: "set_relay_base", base: v })
   saveRelay.textContent = "Saved"
   setTimeout(() => (saveRelay.textContent = "Save"), 1500)
+})
+
+saveRegistry.addEventListener("click", async () => {
+  setError("")
+  const res = await chrome.runtime.sendMessage({ type: "set_registry_base", base: registryInput.value.trim() })
+  if (!res?.ok) { setError(res?.error ?? "could not save"); return }
+  saveRegistry.textContent = "Saved"
+  setTimeout(() => (saveRegistry.textContent = "Save"), 1500)
 })
 
 render()

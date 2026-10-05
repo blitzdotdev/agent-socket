@@ -11,6 +11,9 @@
 //   6. Stop the extension's service worker (as Chrome does when it idles one
 //      out). The restarted worker resumes from chrome.storage.session: the
 //      SAME URL works, the in-page pill stays up.
+//   Before 5, the AI saves a site profile and the user keeps it, so the
+//   session's tools change (update_tools) on the same URL; both resumes
+//   must re-send that current tool set.
 //   7. Kill the WS with ?end=1 (session gone, as if the grace window ran
 //      out): the resume is refused, the extension re-mints, the popup shows
 //      the new URL, the new URL works and the old one is dead.
@@ -202,6 +205,27 @@ async function main() {
     if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${await r.text()}`)
   })
 
+  // Kept profile → live tools; they must survive both kinds of resume.
+  const tokenBase = (u) => u.replace(/\/agents\.md$/, "")
+  const keptToolWorks = async (u) => {
+    const tools = (await (await fetch(`${tokenBase(u)}/tools.json`)).json()).tools.map((t) => t.path)
+    if (!tools.includes("/kept_tool")) throw new Error(`/kept_tool not in tools.json: ${tools}`)
+    const r = await fetch(`${tokenBase(u)}/kept_tool`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })
+    const j = await r.json()
+    if (j.value !== "test page") throw new Error(`/kept_tool → ${r.status} ${JSON.stringify(j)}`)
+  }
+  await step("save + Keep a profile: its tool goes live on the same URL", async () => {
+    const r = await fetch(`${tokenBase(initialUrl)}/save_site_profile`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tools: [{ path: "/kept_tool", description: "Read the heading.", code: "return document.getElementById('t').textContent" }] }),
+    })
+    const j = await r.json()
+    if (j.status !== "pending_user_approval") throw new Error(JSON.stringify(j))
+    const k = await sendToSW(popup, { type: "keep_profile", host: j.host })
+    if (!k?.ok || !k.live) throw new Error(JSON.stringify(k))
+    await keptToolWorks(initialUrl)
+  })
+
   const toolUrl = (u) => `${u.replace(/\/agents\.md$/, "")}/page_info`
   const callTool = (u) => fetch(toolUrl(u), { method: "POST", headers: {"content-type":"application/json"}, body: "{}" })
   // Poll until the URL answers 200 (the extension reconnects with backoff).
@@ -230,6 +254,7 @@ async function main() {
     if (r.status !== 503 || r.headers.get("retry-after") !== "2") throw new Error(`expected 503 + Retry-After, got ${r.status} ${r.headers.get("retry-after")}`)
   })
   await step("after the drop: the SAME URL works again", () => waitWorks(initialUrl))
+  await step("after the drop: the resume re-sent the kept tool", () => keptToolWorks(initialUrl))
   await step("relay log shows a resume", async () => {
     if (resumedCount() < 1) throw new Error("no 'resumed sessionId=' line in the relay log")
   })
@@ -256,6 +281,7 @@ async function main() {
     await page.bringToFront()  // the pill in the bound tab polls the SW, waking it
     await waitWorks(initialUrl, 20000)
   })
+  await step("after the SW restart: the kept tool is still served", () => keptToolWorks(initialUrl))
   await step("a new service worker resumed the session", async () => {
     const sw = chrome.browser.targets().find((t) => t.type() === "service_worker" && t.url().startsWith(`chrome-extension://${extId}/`))
     if (!sw || sw === swTarget) throw new Error("no new service worker target")
