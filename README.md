@@ -55,7 +55,7 @@ The AI reads the link's `agents.md`, fetches `tools.json`, and calls `POST .../i
 your app ──WebSocket──▶ relay (agentsocket.dev) ◀──HTTPS── AI chat
 ```
 
-The app opens a WebSocket to the relay, registers its tools and mints a link like `https://agentsocket.dev/v1/t/<token>/agents.md`. The AI calls tools as HTTP requests under that link; the relay forwards each call over the WebSocket and returns the app's reply. Each session lives in one Cloudflare Durable Object, in memory only. If the app's connection drops, it resumes within 60 seconds and the link keeps working. The Chrome extension is one such app, with tools for the bound tab.
+The app opens a WebSocket to the relay, registers its tools and mints a link like `https://agentsocket.dev/v1/t/<token>/agents.md`. The AI calls tools as HTTP requests under that link; the relay forwards each call over the WebSocket and returns the app's reply. Each session lives in one Cloudflare Durable Object, in its storage while the session lasts. If the app's connection drops (network loss, laptop sleep), the relay holds the session for 24 hours: the app resumes and the link keeps working. The Chrome extension is one such app, with tools for the bound tab.
 
 The relay is built on [PartyServer](https://github.com/cloudflare/partykit/tree/main/packages/partyserver). Wire format: [docs/protocol.md](docs/protocol.md).
 
