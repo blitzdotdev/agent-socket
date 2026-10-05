@@ -73,7 +73,7 @@ function startRelay() {
   const out = fs.openSync(logFile, "w")
   const child = spawn(
     "npx",
-    ["wrangler", "dev", "--port", String(RELAY_PORT), "--ip", "127.0.0.1", "--var", "DEBUG:1"],
+    ["wrangler", "dev", "--port", String(RELAY_PORT), "--ip", "127.0.0.1", "--var", "DEBUG:1", ...(process.env.INSPECTOR_PORT ? ["--inspector-port", process.env.INSPECTOR_PORT] : [])],
     { cwd: path.join(ROOT, "relay"), stdio: ["ignore", out, out], env: { ...process.env, FORCE_COLOR: "0" }, detached: true },
   )
   return {

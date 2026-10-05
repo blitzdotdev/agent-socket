@@ -6,7 +6,7 @@
 // handlers only ever touch the bound tab, which shows a toolbar badge and an
 // in-page pill (pill.js) while the session lasts.
 
-import { connect, exponentialBackoff } from "./lib/sdk/index.js"
+import { connect, endSession, exponentialBackoff } from "./lib/sdk/index.js"
 import { BASE_TOOL_PATHS, buildBaseTools, buildSiteTools, userScriptsAvailable } from "./lib/tools-base.js"
 import { buildAgentsMd, findLocalProfile, mergeSiteTools, sourceLabel } from "./lib/profiles.js"
 import { DEFAULT_REGISTRY_BASE, buildRegistryTools, fetchSiteProfile } from "./lib/registry.js"
@@ -236,9 +236,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // Chrome can stop this worker (and its WebSocket) at any time. The live
 // session is saved in chrome.storage.session (memory only, cleared when Chrome
 // exits; not readable by content scripts), so a restarted worker can resume
-// it: the relay holds a dropped session for a grace window, and with the
-// resume secret the SAME agent URL keeps working.
+// it: the relay holds a dropped session (24 h on agentsocket.dev), and with
+// the resume secret the SAME agent URL keeps working. If the relay can't be
+// reached yet (laptop just woke, network down), the saved session is kept and
+// retried with backoff, here and on every later worker start, until the relay
+// answers: it then resumes, or refuses and a new link is made.
 const SAVED_KEY = "as_session"  // { tabId, base, sessionId, secret, url, token, registry, linkChanged }
+let resumeRetry = null     // { timer, attempt }: pending retry of a saved session's resume
 
 async function saveSession() {
   if (!session || boundTabId == null) return
@@ -280,8 +284,34 @@ function startConnect(tabId, saved) {
   return connecting
 }
 
+function cancelResumeRetry() {
+  if (resumeRetry) clearTimeout(resumeRetry.timer)
+  resumeRetry = null
+}
+
+// Failures that retrying can't fix. Anything else (the socket didn't open,
+// dropped, or timed out before the relay answered) is the network or the relay.
+function isPermanent(e) {
+  return /^(no tab to bind|connect cancelled|site access not granted|register failed)/.test(e?.message ?? "")
+}
+
+// Retry a saved session's resume, backing off to 30 s between attempts.
+function scheduleResumeRetry(tabId, saved) {
+  const attempt = (resumeRetry?.attempt ?? 0) + 1
+  const delay = Math.min(30_000, 1000 * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.5)
+  if (resumeRetry) clearTimeout(resumeRetry.timer)
+  resumeRetry = {
+    attempt,
+    timer: setTimeout(() => {
+      if (boundTabId !== tabId || session) return
+      startConnect(tabId, saved).catch(() => {})
+    }, delay),
+  }
+}
+
 // `saved`: a session from before a worker restart, to resume rather than start.
 async function doConnect(tabId, saved) {
+  if (!saved) cancelResumeRetry()
   const tab = tabId != null
     ? await chrome.tabs.get(tabId).catch(() => null)
     : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
@@ -301,9 +331,12 @@ async function doConnect(tabId, saved) {
 
   boundTabId = tab.id
   lastToolCallAt = null
-  linkChanged = null
+  // While resuming a saved session, its link (and any unacknowledged change)
+  // stays on show: the relay is holding it.
+  linkChanged = saved?.linkChanged ?? null
+  if (saved?.url) { lastUrl = saved.url; lastToken = saved.token }
   const host = hostOf(tab.url)
-  emitStatus({ status: "connecting" })
+  emitStatus({ status: resumeRetry ? "reconnect-failed" : "connecting" })
 
   const reconnectBackoff = exponentialBackoff()
   let s, registry, toolSet
@@ -395,13 +428,24 @@ async function doConnect(tabId, saved) {
   } catch (e) {
     s?.close()
     logEvent("connect_failed", { reason: e?.message ?? String(e) })
+    if (saved && boundTabId === tab.id && !isPermanent(e)) {
+      // Can't reach the relay yet. Keep the saved session (and the pill, now
+      // "reconnecting…") and try again.
+      scheduleResumeRetry(tab.id, saved)
+      logEvent("resume_retry", { reason: e?.message ?? String(e), attempt: resumeRetry.attempt })
+      emitStatus({ status: "reconnect-failed", reason: e?.message ?? String(e), attempt: resumeRetry.attempt })
+      void showIndicator(tab.id)
+      throw e
+    }
     if (boundTabId === tab.id) {
+      lastUrl = lastToken = null
       boundTabId = null; void hideIndicator(tab.id)
       await chrome.storage.session.remove(SAVED_KEY).catch(() => {})
     }
     emitStatus({ status: "closed", reason: e?.message ?? String(e) })
     throw e
   }
+  cancelResumeRetry()
   await saveSession()
   emitStatus({ status: "connected", sessionId: session.sessionId })
   await showIndicator(tab.id)
@@ -411,7 +455,11 @@ async function doConnect(tabId, saved) {
 }
 
 async function stopConnect() {
+  cancelResumeRetry()
   const s = session, token = lastToken, tabId = boundTabId
+  // Stopped while still waiting to resume a saved session: the relay is
+  // holding it, so end it there too.
+  const held = !s && tabId != null ? (await chrome.storage.session.get(SAVED_KEY).catch(() => ({})))[SAVED_KEY] : null
   session = null
   lastUrl = lastToken = lastToolCallAt = null
   lastRegistry = lastSource = lastToolsKey = null
@@ -424,6 +472,8 @@ async function stopConnect() {
     // close() ends the session on the relay, killing every token; revoke first anyway.
     if (token && s.connected) await Promise.race([s.revokeAgentToken(token).catch(() => {}), new Promise((r) => setTimeout(r, 2000))])
     s.close()
+  } else if (held?.secret && held.sessionId) {
+    void endSession({ baseUrl: held.base, sessionId: held.sessionId, secret: held.secret })
   }
   if (tabId != null) await hideIndicator(tabId)
   return { status: "idle" }

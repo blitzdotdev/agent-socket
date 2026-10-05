@@ -3,6 +3,7 @@
 // Public API matches design doc §4.2.
 import { openWs, READY_STATE_OPEN } from "./transport.js";
 import { exponentialBackoff } from "./backoff.js";
+import { HEARTBEAT_ID, HEARTBEAT_PING } from "./heartbeat.js";
 const DEFAULT_BASE_URL = "https://agentsocket.dev";
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 25_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 50_000;
@@ -31,6 +32,55 @@ export async function connect(opts) {
     // A refused `resume` option shows as a new sessionId; nothing to report.
     session._freshCause = null;
     return session;
+}
+/**
+ * End a session the relay may be holding for a resume, given its id and
+ * resume secret (e.g. saved for `connect({ resume })`): every agent URL of
+ * the session stops working at once instead of when the relay's hold runs
+ * out. Resolves true when the relay confirmed, false when it refused (wrong
+ * secret, or the session had already ended) or couldn't be reached within
+ * 10 s. `session.close()` does this itself when it is called while
+ * disconnected.
+ */
+export function endSession(opts) {
+    const base = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    return new Promise((resolve) => {
+        let ws;
+        try {
+            ws = openWs(base.replace(/^http/, "ws") + `/v1/_ws?session=${encodeURIComponent(opts.sessionId)}`);
+        }
+        catch {
+            return resolve(false);
+        }
+        let ok = false;
+        const done = () => {
+            clearTimeout(timer);
+            try {
+                ws.close(1000, "session ended");
+            }
+            catch { }
+            resolve(ok);
+        };
+        const timer = setTimeout(done, 10_000);
+        timer.unref?.();
+        ws.addListener("open", () => {
+            try {
+                ws.send(JSON.stringify({ type: "end", sessionId: opts.sessionId, secret: opts.secret }));
+            }
+            catch {
+                done();
+            }
+        });
+        ws.addListener("message", (data) => {
+            try {
+                ok = JSON.parse(String(data))?.ok === true;
+            }
+            catch { }
+            done();
+        });
+        ws.addListener("close", () => done());
+        ws.addListener("error", () => { });
+    });
 }
 class SessionImpl {
     baseUrl;
@@ -322,6 +372,9 @@ class SessionImpl {
         this._sendPing();
     }
     close() {
+        // Not connected (offline, or mid-reconnect): the relay may be holding the
+        // session for a resume, so its links still answer. Ask it to end now.
+        const endHeld = !this.giveUpReconnect && !this.connected && !!this._resumeSecret && !!this._sessionId;
         this.giveUpReconnect = true;
         this.registered = false;
         this._teardownHeartbeat();
@@ -332,6 +385,10 @@ class SessionImpl {
         }
         catch { }
         this.ws = null;
+        if (endHeld)
+            void endSession({ baseUrl: this.baseUrl, sessionId: this._sessionId, secret: this._resumeSecret });
+        this._resumeSecret = null;
+        this.pendingRevokes.clear();
     }
     // ── Internals ───────────────────────────────────────────────────────
     _uid() { return Math.random().toString(36).slice(2, 12); }
@@ -624,8 +681,13 @@ class SessionImpl {
     _sendPing() {
         if (!this.ws || this.ws.readyState !== READY_STATE_OPEN)
             return;
-        this.pendingPingId = this._uid();
-        this._sendFrame({ type: "ping", id: this.pendingPingId });
+        // A fixed frame, so the relay's runtime can answer it without waking a
+        // hibernated session (see heartbeat.ts).
+        this.pendingPingId = HEARTBEAT_ID;
+        try {
+            this.ws.send(HEARTBEAT_PING);
+        }
+        catch { }
         if (this.heartbeatTimeoutTimer)
             clearTimeout(this.heartbeatTimeoutTimer);
         this.heartbeatTimeoutTimer = setTimeout(() => {
