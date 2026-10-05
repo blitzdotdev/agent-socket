@@ -1,66 +1,64 @@
-# Security Policy
-
-## Supported versions
-
-agent-socket is v0 and explicitly **not production-grade**. All released versions are "supported" in the sense that I'll look at reported issues, but there are no LTS guarantees.
+# Security policy
 
 ## Reporting a vulnerability
 
-**Don't open a public GitHub issue for a security report.**
+Report it privately through GitHub: <https://github.com/blitzdotdev/agent-socket/security/advisories/new>. Please don't open a public issue.
 
-Email security disclosures to the maintainers via the contact listed on the [teenybase GitHub org](https://github.com/teenybase) page, with subject line starting `[agent-socket security]`.
+Include the affected component (relay, SDK, Chrome extension, registry), steps or code to reproduce, and what an attacker gains. We aim to acknowledge within 72 hours and to give a first assessment within 7 days. Reporters are credited in the published advisory unless they prefer not to be.
 
-Please include:
+## Scope
 
-- The component affected (relay / SDK / CLI / chrome extension)
-- A reproduction (curl command, code sample, or steps to trigger)
-- Your assessment of impact (data exposure / DoS / RCE / etc.)
-- Whether you've discussed the issue publicly already
+- The relay at agentsocket.dev and any deployment of `relay/`.
+- `@agent-socket/sdk` (`sdk/`).
+- The Chrome extension (`chrome-extension/`).
+- The registry at registry.agentsocket.dev and any deployment of `registry/`.
 
-Acknowledgement target: 72 hours. Initial assessment target: 7 days. We'll keep you posted on remediation timeline.
+## How it is meant to work
 
-## What's in scope
+The protocol and threat model are in [docs/protocol.md](docs/protocol.md). In short:
 
-- **The relay at `agentsocket.dev` / `aisocket.dev`** (and self-hosted deployments running the same Worker code from this repo).
-- **The SDK, CLI, and chrome extension code** in this repo.
-- **The protocol** between agents / apps / channel participants.
+- **An agent link is a bearer credential.** Anyone who has it can call every tool in that session until the link is revoked or the session ends. There is no other authentication.
+- **The session id is public.** It is part of every link. Calling tools needs the link's 128-bit verifier; taking over the app side of a session needs the 256-bit resume secret, which only the app receives and which is compared in constant time.
+- **App ids are unchecked labels.** Any app can register under any app id. The relay does not check `Origin`.
+- **The relay holds everything in memory.** A dropped app's session is kept for 60 s so it can resume, then wiped; a clean close wipes it at once. Nothing is written to storage.
+- **The relay sees tool calls and replies in plaintext** after TLS, while it forwards them.
+- **Tool output is untrusted input for the AI**, and agent input is untrusted input for the app.
+- **The extension gives the link holder the tab.** `/eval` runs any JavaScript in the bound tab, with the user's logged-in session on that site. The `/navigate` check for local and private-network hosts is a guardrail, not a boundary, because `/eval` can navigate too. Only the bound tab is reachable, and Stop, disconnecting or closing the tab ends access.
 
-Anything outside `relay/`, `sdk/`, `cli/`, `chrome-extension/` is out of scope.
+Reports that only restate these properties are not treated as vulnerabilities.
 
-## Known v0 trust-model limitations
+## Limits
 
-These are **by design** for v0, documented in the spec, and not considered vulnerabilities:
+| | |
+|---|---|
+| Agent request body | 1 MiB (`413 body_too_large`) |
+| App WebSocket frame | 4 MiB (close 1009) |
+| `agentsMd` | 65,536 characters |
+| Links per session | 50 |
+| Tool calls in flight per session | 100 (`429 too_many_inflight`) |
+| Pending async tasks per session | 100, result body 64 KiB |
+| Sync tool timeout | 30 s (`504 tool_timeout`) |
+| Register or resume deadline | 10 s (close 4408) |
+| App liveness timeout | 50 s |
+| Pending resume sockets per session | 4 |
+| `/v1/_ws` upgrades | 100 per 10 s per IP, counted per Cloudflare location (`429 rate_limited`) |
 
-- **No authentication.** The agent-token URL is the only secret. Anyone with it can read and post. Treat URLs as DM-grade secrets.
-- **Anyone can claim any name** in the channel CLI. Names are self-assigned labels; there's no identity verification.
-- **Sessions are cheap to create.** `/v1/_ws` upgrades are rate-limited per IP (100 per 10 s, per Cloudflare location) and a socket that doesn't register within 10 s is closed, but there's no global cap; per-session limits are 100 inflight calls and 50 tokens.
-- **App-ids are unauthenticated labels.** Any app can register under any well-formed app-id; the relay doesn't check Origin.
-- **No persistence.** DO state is memory only. A dropped app's session is held for up to 60 s so the app can resume it, then wiped; a clean disconnect wipes it at once. Channel host RAM is the only state.
-- **Channel content is untrusted input.** AI participants must treat messages as data, not directives. See [`docs/spec/`](docs/) §9.5.
+There is no global cap on sessions beyond the per-IP rate limit.
 
-Reports about these specific behaviors will be acknowledged but won't be treated as vulnerabilities unless they reveal an attack vector beyond what the model already admits.
+## Protections in place
 
-## What we'd consider a vulnerability
+- **CSRF.** A tool call carrying a `Sec-Fetch-Site` header other than `none` (a request from a web page) gets `403 csrf_denied`. `agents.md`, `tools.json` and task polls are read-only and exempt. Not covered: Safari before 16.4, which omits the header, and browser-extension service workers, which send `none`.
+- **Response sandboxing.** App responses are served from the relay's origin with `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox; default-src 'none'`, and HTML, SVG and XML content types are downgraded to `text/plain`.
+- **No socket takeover through agent URLs.** WebSocket upgrades are only accepted on `/v1/_ws`. A socket on `/v1/_ws?session=<id>` can do nothing until it presents the resume secret.
+- **Agent IPs are not forwarded** to the app (`x-real-ip` and `x-forwarded-*` are stripped).
+- **Debug endpoints** exist only when `DEBUG=1`, which production never sets.
+- **Registry admin** requires Cloudflare Access, and the Worker verifies the Access JWT on every admin request. Submissions never go live without an admin approving them.
 
-- Bypassing the in-memory token check (impersonating a session you don't have the verifier for)
-- Attaching to or resuming a session without its resume secret (the session-id is public; only `/v1/_ws?session=` plus the secret in the first frame may resume, compared in constant time), or disturbing a live app socket without it
-- Leaking DO state across sessions
-- Cross-session data exposure via the relay
-- Memory-exhaustion vectors beyond the documented 100-inflight / 50-token / 1 MiB-request-body / 4 MiB-frame caps
-- DEBUG endpoints accessible in production (would be a misconfiguration / deploy regression)
-- Bypassing the chrome extension's per-tab activation gate
-- Anything that lets a remote party run code on the host machine via the chrome extension or CLI beyond what the user explicitly approved
+## What we would treat as a vulnerability
 
-## Mitigations in place
-
-- **CSRF on the user-tool surface.** User-defined tool endpoints (`/v1/t/<token>/<tool-path>`) run handler code and may have side effects, so a browser-initiated cross-site request to one is treated as a CSRF attempt. The relay returns HTTP 403 / `csrf_denied` when the request carries a `Sec-Fetch-Site` header set to anything other than `none`. `Sec-Fetch-Site` is a Forbidden Header — modern browsers attach it on every fetch and page JavaScript cannot set, override, or strip it. Non-browser HTTP clients (curl, Node `fetch`, Python `requests`, Anthropic/OpenAI server-side fetchers) don't send the header, so legitimate AI-runtime traffic passes through. The `none` value is only sent on user-initiated top-level navigation (address-bar paste, bookmark, link from a desktop app / terminal), which we keep working.
-
-  Read-only meta paths — `GET /v1/t/<token>/agents.md`, `GET /v1/t/<token>/tools.json`, `GET /v1/t/<token>/_as_tasks/<id>` — bypass the CSRF gate. They're served directly by the relay (no user code), have no side effects, and clicking the URL from Gmail / web chat to "preview what this URL is" sends `Sec-Fetch-Site: cross-site`, which we deliberately allow on these three paths.
-
-  Known false negatives (CSRF requests that slip past): Safari < 16.4 omits `Sec-Fetch-Site` entirely (mostly aged out by 2026); Chrome MV3 extension service-worker fetches send `Sec-Fetch-Site: none` (out of scope — a malicious extension can already do far more than CSRF); and an on-path network attacker can strip the header (requires TLS to be broken, which is a bigger problem).
-
-  The WebSocket app surface (`/v1/_ws`) is intentionally unaffected — apps may legitimately be browsers (chrome extension, in-browser SDK users), and app-ids aren't a trust boundary. The landing page (`GET /`) is also unaffected — humans visit it from search results and link previews.
-
-## Credit
-
-Researchers who report responsibly will be credited in [`ACKNOWLEDGMENTS.md`](ACKNOWLEDGMENTS.md) unless they prefer to remain anonymous.
+- Calling tools without a valid, unrevoked link, or reaching another session's tools or data.
+- Resuming or disturbing a session's app socket without its resume secret.
+- Script execution on the relay's origin through app-supplied content.
+- Memory exhaustion or session disruption beyond the limits above.
+- The extension acting on a tab other than the bound one, or after the session ended.
+- Bypassing registry review or admin authentication.

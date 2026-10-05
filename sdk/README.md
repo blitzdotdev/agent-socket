@@ -1,150 +1,121 @@
-# `@agent-socket/sdk`
+# @agent-socket/sdk
 
-JS/TS client for [agent-socket](https://github.com/blitzdotdev/agent-socket) — connect any web app to AI chats via paste-able URLs.
+Client for [Agent Socket](https://github.com/blitzdotdev/agent-socket). Your app registers tools and gets a link; an AI chat that has the link calls the tools over HTTPS, and the SDK runs your handlers.
 
-Works in Node 22+, Cloudflare Workers, and the browser (uses the native `WebSocket`; no dependencies). No MCP, no OAuth, no server-side AI integration — the AI calls plain HTTP endpoints you define.
-
-## Install
+Runs in browsers, Cloudflare Workers and Node 22+ on the built-in `WebSocket`. No dependencies.
 
 ```bash
-npm install @agent-socket/sdk
+npm i @agent-socket/sdk
 ```
 
-## Quick start
+In a page without a bundler: `import { connect } from "https://esm.sh/@agent-socket/sdk@0.1"`.
 
-```ts
+## Example
+
+```js
 import { connect } from "@agent-socket/sdk"
 
+let count = 0
 const session = await connect({
-  appId: "as_app_anon",  // anonymous mode; no registration required
-  appDescription: "32x32 pixel canvas the AI can paint.",
-  agentsMd: "# briefing for AIs that join this app",
-  tools: [
-    {
-      path: "/set_pixel",
-      description: "Paint one pixel (x, y, color).",
-      handler: async ({ body }) => {
-        const { x, y, color } = JSON.parse(body)
-        // ... your logic ...
-        return { ok: true }
-      },
-    },
-  ],
+  appId: "minimal-example",
+  agentsMd: "# Counter\nA process with one counter. Call /increment to add to it.",
+  tools: [{
+    path: "/increment",
+    description: "Add `by` (default 1) to the counter. Returns the new count.",
+    input_schema: { type: "object", properties: { by: { type: "integer" } } },
+    handler: ({ body }) => ({ count: (count += JSON.parse(body || "{}").by ?? 1) }),
+  }],
 })
-
-// Mint an agent-token URL to paste into an AI chat:
 const link = await session.mintAgentToken({ label: "user-42" })
-console.log("Paste this:", link.url)
+console.log(link.url)  // https://agentsocket.dev/v1/t/as_.../agents.md
 ```
 
-When the user pastes that URL into Claude/ChatGPT/Gemini/etc, the AI:
+The AI fetches `agents.md` and `tools.json` from the link, then calls `POST <link without /agents.md>/increment`. Each call reaches your handler over the WebSocket, and the return value goes back as the HTTP response. More examples: [examples/](https://github.com/blitzdotdev/agent-socket/tree/master/examples).
 
-1. Fetches `<URL>/agents.md` (your briefing) to learn the app.
-2. Fetches `<URL>/tools.json` for the machine-readable schema.
-3. POSTs to `<URL>/set_pixel` etc. as tool calls.
+## `connect(options): Promise<Session>`
 
-Each call is forwarded over the WebSocket to your `handler`, the result is returned over HTTPS to the AI.
+Opens the WebSocket, registers, and resolves once the relay accepts. If this first attempt fails, the promise rejects and nothing retries.
 
-## API surface
+| Option | |
+|---|---|
+| `appId` | Label shown in `tools.json`, `[A-Za-z0-9_.-]{1,64}`. Not a credential and not checked. |
+| `agentsMd` | Markdown briefing served at `<link>/agents.md`, up to 65,536 characters. Describe your app; the relay adds the calling instructions unless the text mentions `tools.json`. |
+| `appDescription` | Optional short description, shown in `tools.json`. |
+| `tools` | `{ method?, path, description, input_schema?, handler }[]`. `method` defaults to `POST`. `path` is static, e.g. `/set_pixel`; `/agents.md`, `/tools.json` and `/_as_*` are reserved. |
+| `baseUrl` | Relay URL. Default `https://agentsocket.dev`. |
+| `autoReconnect` | Default `true`. See [Reconnects](#reconnects). |
+| `onDisconnect` | `({ reason, attempt, reconnect, giveUp }) => void`. Called on a drop and after each failed attempt. Default: `exponentialBackoff()`, or `giveUp()` when `autoReconnect` is false. |
+| `onReconnect` | `({ sessionId, resumed }) => void`. Called after every successful reconnect. |
+| `onSessionChanged` | `({ priorSessionId, sessionId, tokensRemapped }) => void`. Called after a reconnect when links changed. `tokensRemapped` maps old URL to new URL. |
+| `resume` | `{ sessionId, secret }` of an earlier session, to keep its links after a restart. See [Surviving a restart](#surviving-a-restart). |
+| `heartbeatIntervalMs` | Ping after this long without traffic. Default 25000. |
+| `heartbeatTimeoutMs` | Close and reconnect if no pong arrives within this. Default 50000. |
 
-### `connect(opts: ConnectOptions): Promise<Session>`
+### Handlers
 
-Opens a WebSocket to the relay, registers your app + tools, returns a `Session`.
+A handler gets `{ method, path, body, headers }`. `body` is the raw request body as a string (usually JSON). `headers` has the `content-type` and the agent's `x-*` headers.
 
-Key `opts`:
+Return either:
 
-- **`appId`** — public, hardcoded in client code. Same role as a Google OAuth client ID or Supabase anon key. `as_app_anon` is the anonymous demo app; for production register your own.
-- **`agentsMd`** — markdown briefing served at `<URL>/agents.md`. Use `defaultAgentsMd({...})` for a template, or write your own.
-- **`appDescription`** — 1-3 sentence summary surfaced in `tools.json`.
-- **`tools[]`** — `{ method?, path, description, input_schema?, handler }`. Handler receives `{ method, path, body, headers }`, returns `{ status?, body?, headers? }` (or just a value — defaults to status 200, JSON body). If `headers["content-type"]` is set AND `body` is a string, the relay serves it verbatim with that content-type — useful for HTML/text/CSV/shell-script tools. Non-string bodies always JSON-encode in v0.
-- **`baseUrl`** — defaults to `https://agentsocket.dev`. Override for self-hosted relays or local dev.
-- **`autoReconnect`** — defaults to `true`. The SDK handles WS drops with exponential backoff and resumes the same session, so every agent URL keeps working. Only if the session is gone does it open a new one and re-mint the previously-issued tokens, reporting the remap via `onSessionChanged`. With `false` the SDK neither reconnects nor re-mints. See [Reconnect, resume and re-mint](#reconnect-resume-and-re-mint).
-- **`onReconnect`** — called after every successful reconnect with `{ sessionId, resumed }`.
-- **`resume`** — `{ sessionId, secret }` of a session this app opened earlier, to reattach after a page or worker restart. See below.
+- any value: sent as JSON with status 200, or
+- `{ status, body?, headers?, taskId? }`: any object with a numeric `status` is read this way. If `headers` sets `content-type` and `body` is a string, the body is sent as-is with that type (HTML and XML types are served as `text/plain`). Other headers are ignored.
 
-### `session.mintAgentToken({ label }): Promise<AgentToken>`
+A handler that throws produces `500 {"error": {"code": "handler_error", "message": ...}}`.
 
-Generates a fresh paste-able URL for one agent. Returns `{ token, url, label }`. The URL is what you copy into a "Connect with AI" button.
+## Session
 
-### `session.listAgentTokens()` / `session.revokeAgentToken(token)`
+| Member | |
+|---|---|
+| `sessionId` | Current session id. Changes only when a reconnect can't resume. |
+| `connected` | `true` while the socket is open and registered. |
+| `resumeSecret` | Secret for resuming this session. Treat it like the links. |
+| `mintAgentToken({ label })` | New link: `{ token, url, label, expiresAt: null }`. Up to 50 per session (rejects with `mint failed: too_many_tokens`). |
+| `listAgentTokens()` | Active links, with `mintedAt`. Needs a live connection. |
+| `revokeAgentToken(token)` | Kills a link. While disconnected, the revoke is sent with the next resume. |
+| `completeTask(taskId, { status?, body?, headers? })` | Finishes an async call. Throws if not connected. |
+| `ping()` | Sends a heartbeat now, e.g. from a `chrome.alarms` handler in an MV3 service worker. |
+| `close()` | Closes with code 1000. The relay ends the session at once and every link stops working. |
 
-Standard CRUD for the session's tokens.
+## Async tools
 
-### `session.completeTask(taskId, { status?, body? })`
+The relay waits up to 30 s for a reply. For longer work, return `202` with a task id and finish later:
 
-Completes an async task previously started by a handler that returned `{ status: 202, taskId }`. Fire-and-forget — no reply. Throws if the WS is closed or `taskId` is empty. `status` defaults to 200.
-
-Async tasks live in the relay's Durable Object memory. They survive a resumed reconnect, so a handler can still complete a task after a blip. They do **not** survive a new session: after `onSessionChanged` fires, taskIds from the prior session are dead — the agent's poll on the old paste-URL will already be returning errors.
-
-### `session.close()`
-
-Tear down the WS. Stops accepting tool calls.
-
-## Async tools (long-running work)
-
-If a tool exceeds the relay's `MAX_SYNC_TOOL_MS` (default 30 s), report it as async:
-
-```ts
-tools: [
-  {
-    path: "/render_report",
-    description: "Kick off a long-running report.",
-    handler: async ({ body }) => {
-      const taskId = crypto.randomUUID()
-      // start the work without awaiting it
-      queueMicrotask(async () => {
-        const result = await doExpensiveWork(body)
-        session.completeTask(taskId, { status: 200, body: result })
-      })
-      return { status: 202, taskId }
-    },
+```js
+{
+  path: "/render_report",
+  description: "Start a report. Poll the returned task.",
+  handler: ({ body }) => {
+    const taskId = crypto.randomUUID()
+    renderReport(body).then((result) => session.completeTask(taskId, { body: result }))
+    return { status: 202, taskId }
   },
-]
+}
 ```
 
-The agent gets `202 { taskId }` immediately, then polls `<URL>/_as_tasks/<taskId>` until it returns 200 with the body.
+The agent gets `202 {"taskId": "..."}` and polls `<link base>/_as_tasks/<taskId>` until it gets the result. Task ids must match `[A-Za-z0-9_-]{1,64}`. Tasks survive a resumed reconnect but not a new session.
 
-## Reconnect, resume and re-mint
+## Reconnects
 
-`register_reply` gives the SDK a resume secret (`session.resumeSecret`). When the WS drops, the relay holds the session (tools, tokens, async tasks) for a grace window (60 s on `agentsocket.dev`). On reconnect the SDK opens `/v1/_ws?session=<id>` and sends the secret in its first frame, with the current tools and `agentsMd`, which replace the old ones. If the relay accepts, nothing changes for agents: **the same URLs keep working**, `onSessionChanged` doesn't fire, and `onReconnect` reports `{ resumed: true }`.
+When the socket drops, the relay keeps the session for 60 s. With `autoReconnect` on (the default), the SDK backs off via `onDisconnect`, reconnects and resumes the same session with its secret. On success every link keeps working, `onReconnect` gets `resumed: true`, and `onSessionChanged` is not called. While the app is away, agents still get `agents.md` and `tools.json`, and tool calls get `503 app_offline` with `Retry-After: 2`.
 
-While the app is away, agents still get `agents.md` and `tools.json`; tool calls get `503 app_offline` with `Retry-After: 2`. A call in flight when the socket dropped fails with `503`.
+If the relay refuses the resume (the 60 s passed, or the relay restarted), the SDK opens a new session in the same attempt and re-mints each link it still holds with the same label. The old URLs stop working; `onSessionChanged` reports the new ones so you can show them to the user. Links revoked while offline are not re-minted.
 
-If the relay refuses the resume (close `4401`: the grace window ran out, the relay restarted, or the secret is wrong), the SDK opens a fresh session in the same attempt and re-mints every token still in use under the new session-id, keeping the labels. Old URLs become dead; the new ones are reported via `onSessionChanged({ priorSessionId, sessionId, tokensRemapped })`. If another connection resumes the session with this app's secret, the relay closes this socket with `4410`, and this SDK starts a fresh session instead of taking it back.
+With `autoReconnect: false` the SDK neither reconnects nor re-mints. Your `onDisconnect` can still call `reconnect()`, which resumes when possible; if it lands in a new session, the old links are gone and `tokensRemapped` is empty.
 
-`session.close()` closes with code 1000, which ends the session on the relay immediately — no grace window.
-
-If the initial `connect()` fails it rejects and nothing retries. After a drop, `onDisconnect` fires once per attempt (`attempt` 1, 2, …) until a reconnect succeeds; every attempt tries the resume first. Tokens survive failed attempts. A token revoked while disconnected is revoked on the relay as part of the resume (and isn't re-minted if the session is new).
-
-Override `onDisconnect` to control timing, or set `autoReconnect: false` for full manual control (the SDK doesn't reconnect; your `onDisconnect`, if any, may still call `reconnect()`, which resumes when it can and doesn't re-mint when it can't).
+Backoff helpers for `onDisconnect`: `exponentialBackoff({ baseMs = 1000, maxMs = 30000, jitter = 0.25 })`, `linearBackoff({ delayMs = 5000 })`, `noBackoff()`.
 
 ### Surviving a restart
 
-To keep URLs alive across a page reload or a Chrome MV3 service-worker restart, save `{ sessionId: session.sessionId, secret: session.resumeSecret }` and pass it back as `connect({ ..., resume })`. If the session is still held, `connect()` resolves with the same `sessionId` and adopts its live tokens; otherwise it opens a fresh session (compare `sessionId` to tell, then mint new URLs). The secret plus the session-id lets anyone take over the session, so store it no more widely than the agent URLs themselves — e.g. `sessionStorage` or `chrome.storage.session`, not `localStorage`.
+To keep links across a page reload or a service-worker restart, save `{ sessionId: session.sessionId, secret: session.resumeSecret }` and pass it as `resume` to the next `connect()`. If the session is still held, you get the same `sessionId` and its links keep working. If not, `connect()` opens a new session; compare `sessionId` to tell, and mint new links. Store the secret no more widely than the links themselves (`sessionStorage` or `chrome.storage.session`, not `localStorage`).
 
-## Threat model
+## `defaultAgentsMd(options)`
 
-agent-socket v0 has **no authentication beyond URL secrecy**. Anyone with an agent-token URL can call your tool handlers. Treat URLs as DM-grade secrets. Don't expose write-heavy tools without thinking about who you're handing the URL to.
+Builds a briefing with the calling instructions, a "save this URL" line and sections for what the AI can and cannot do: `{ appName, appDescription, agentsMdUrl, capabilities?, limitations?, conventions? }`. `agentsMdUrl` is shown to the AI as the URL to re-fetch; `"$BASE/agents.md"` works.
 
-The SDK doesn't add auth — that's a v1 concern at the relay layer.
+## Security
 
-See the main [`README.md`](https://github.com/blitzdotdev/agent-socket#readme) and [`SECURITY.md`](https://github.com/blitzdotdev/agent-socket/blob/master/SECURITY.md) for the full picture.
-
-## Examples
-
-- [`examples/pixel-art-canvas/`](https://github.com/blitzdotdev/agent-socket/tree/master/examples/pixel-art-canvas) — vanilla JS pixel-painting demo. Single HTML file, no build, ~120 lines of JS.
-- [`chrome-extension/`](https://github.com/blitzdotdev/agent-socket/tree/master/chrome-extension) — the chrome extension is itself an SDK consumer; the compiled SDK is vendored at `chrome-extension/lib/sdk/` (see `chrome-extension/scripts/vendor-sdk.sh`) so the extension can load-unpacked with no build step.
-
-## Browser usage
-
-The SDK works in browsers without polyfills.
-
-```js
-// In a <script type="module"> or via your bundler:
-import { connect } from "@agent-socket/sdk"
-// ... same API ...
-```
+Anyone with a link can call your tools until you revoke it or the session ends. Only register tools you are willing to give to whoever ends up with the link. See [SECURITY.md](https://github.com/blitzdotdev/agent-socket/blob/master/SECURITY.md) and the [protocol](https://github.com/blitzdotdev/agent-socket/blob/master/docs/protocol.md).
 
 ## License
 
-[Apache 2.0](LICENSE).
+[Apache 2.0](https://github.com/blitzdotdev/agent-socket/blob/master/LICENSE)

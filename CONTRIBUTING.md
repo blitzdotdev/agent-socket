@@ -1,67 +1,45 @@
-# Contributing to agent-socket
+# Contributing
 
-Bug reports, feature ideas, and pull requests are welcome. The project is small enough that there's no formal process — just a few conventions to make iteration smooth.
+Bug reports, ideas and pull requests are welcome. Use [GitHub issues](https://github.com/blitzdotdev/agent-socket/issues) for bugs, feature requests and design questions. For security problems, see [SECURITY.md](SECURITY.md) instead.
 
 ## Setup
 
+Node 22+.
+
 ```bash
 git clone https://github.com/blitzdotdev/agent-socket
-cd agentsocket
+cd agent-socket
 npm install
+npm test
 ```
 
-To run the integration harness locally:
+`npm test` type-checks every package and runs the SDK tests, the registry tests, the integration harness and the extension unit tests. The harness builds the SDK and starts its own `wrangler dev`, so nothing needs to be running first. To run part of it:
 
 ```bash
-node harness/run.mjs all
+npm run build -w sdk
+node harness/run.mjs 52       # one scenario
+node harness/run.mjs 40-49    # a range
 ```
 
-The harness spawns a real `wrangler dev` for the relay; nothing needs to be running ahead of time. ~50 seconds end-to-end on a typical machine.
-
-To run the chrome-extension unit tests (no chromium required):
+The Chrome extension's end-to-end tests need Chromium (`CHROMIUM_PATH`, default `/usr/bin/chromium`):
 
 ```bash
-node chrome-extension/test/reconnect.unit.mjs
+npm run ext:test:reconnect    # headless
+npm run ext:test              # full suite, needs xvfb-run
 ```
 
-To run the chrome-extension end-to-end (needs `/usr/bin/chromium` or `CHROMIUM_PATH=` set):
+To run the relay on its own: `npm run dev` (port 8787). Layout and deploy notes are in each package's README and in [docs/](docs/).
 
-```bash
-node chrome-extension/test/reconnect.e2e.mjs
-```
+## Changing the SDK
 
-## Layout
+The extension ships a copy of the compiled SDK in `chrome-extension/lib/sdk/`. After changing `sdk/src`, run `npm run build` and commit the updated copy; CI fails if it is stale.
 
-- `relay/` — the Cloudflare Worker (relay + Durable Object). `wrangler.jsonc` is the config of record.
-- `sdk/` — `@agent-socket/sdk`, the JS/TS client that registers app-side tool handlers.
-- `cli/` — `@agent-socket/cli`, the CLI that ships `channel host` / `channel join` and other tool packs.
-- `chrome-extension/` — the MV3 extension that exposes tab-driving tools to any AI chat.
-- `examples/` — example app(s) using the SDK (currently just `pixel-art-canvas/`).
-- `harness/` — runtime integration scenarios.
-- `scripts/` — operational scripts. `deploy.sh` deploys the relay (`deploy`, `smoke`, `dev`).
-- `docs/` — design + protocol docs.
-- `issues/` — historical / in-flight design notes (separate from GitHub Issues; tracks meta-decisions).
+## Pull requests
 
-## Conventions
+- One change per PR. Keep refactors apart from fixes.
+- Behavior changes need a test: a harness scenario, an SDK test or an extension test.
+- Update the relevant README or doc in the same PR.
+- Use `wrangler.jsonc`, not `wrangler.toml`.
+- Commit messages: a short subject saying what changed, and a body saying why when it isn't obvious.
 
-- **Deploy via `scripts/deploy.sh deploy`**, so the smoke test runs after every deploy.
-- **`wrangler.jsonc`, not `.toml`.** Comments matter; we keep them.
-- **Apache 2.0** license — every commit you make is contributed under that license.
-- **One concern per PR.** A bug fix shouldn't bundle a refactor. A doc tweak shouldn't bundle a behavior change.
-- **No emojis in code** unless the user asks for them.
-- **Commit messages**: short subject line stating what changed; body explaining why (when not obvious). Reference issues in the form `Closes <issue-name>` where the issue lives in `issues/open/`.
-- **Tests before merge**: any behavior change needs a harness scenario, unit test, or chrome-ext test exercising the new path.
-
-## What's worth a PR vs. an issue
-
-Open an **issue** for: doc gaps, bug reports, feature ideas, design discussions, threat-model concerns. Use the templates in `.github/ISSUE_TEMPLATE/`.
-
-Open a **PR** when you have a concrete change ready to review. Reference the issue it closes (if any). Small focused PRs land faster than sprawling ones.
-
-## Security
-
-If you find a security issue, **don't open a public issue**. See [`SECURITY.md`](SECURITY.md) for how to report.
-
-## Code of conduct
-
-See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). The short version: don't be a jerk.
+Contributions are licensed under [Apache 2.0](LICENSE). Participation is covered by the [Code of Conduct](CODE_OF_CONDUCT.md).

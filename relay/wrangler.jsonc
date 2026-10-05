@@ -1,19 +1,14 @@
 {
+  "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "agent-socket-relay",
   "main": "src/worker.ts",
-  "account_id": "d25a778b256fb6ef6eea554d77c40f27",
+  // No account_id: wrangler reads CLOUDFLARE_ACCOUNT_ID (scripts/deploy.sh
+  // loads it from .env), or asks after `wrangler login`.
   "compatibility_date": "2025-05-01",
   "compatibility_flags": ["nodejs_compat"],
 
-  // Production routes. agentsocket.dev is the canonical brand domain.
-  // aisocket.dev is kept as an alias (was the temporary URL during early v0).
-  // Both point at this same Worker.
-  "routes": [
-    { "pattern": "agentsocket.dev",     "custom_domain": true },
-    { "pattern": "www.agentsocket.dev", "custom_domain": true },
-    { "pattern": "aisocket.dev",        "custom_domain": true },
-    { "pattern": "www.aisocket.dev",    "custom_domain": true }
-  ],
+  // The top level has no routes, so a plain `wrangler deploy` publishes to
+  // <name>.<your-subdomain>.workers.dev. Add your own route here, or in an env.
 
   // Landing + privacy pages. Matching paths are served without running the Worker.
   "assets": { "directory": "./public" },
@@ -29,8 +24,10 @@
     { "name": "WS_RATE_LIMIT", "namespace_id": "1001", "simple": { "limit": 100, "period": 10 } }
   ],
 
+  // The relay stores nothing, so the storage backend doesn't matter. New
+  // accounts (and the Workers Free plan) can only create SQLite-backed classes.
   "migrations": [
-    { "tag": "v1", "new_classes": ["RelayServer"] }
+    { "tag": "v1", "new_sqlite_classes": ["RelayServer"] }
   ],
 
   "vars": {
@@ -42,8 +39,42 @@
     // noticing a dead socket up to ~25 s after the relay does, plus an MV3
     // service worker waiting on its 30 s keepalive alarm. 0 disables resume.
     "RESUME_GRACE_MS": "60000"
-    // DEBUG is intentionally not set in default vars — production must NOT have it.
-    // For local dev, set it in `.dev.vars` (gitignored) which wrangler picks up
-    // only when running `wrangler dev`, never on `wrangler deploy`.
+    // DEBUG is intentionally not set — production must NOT have it. For local
+    // dev, set it in `.dev.vars` (gitignored), which only `wrangler dev` reads.
+  },
+
+  "env": {
+    // The hosted relay: `bash scripts/deploy.sh deploy` runs
+    // `wrangler deploy --env production`. Same Worker name as the top level.
+    // Bindings and vars don't inherit into an env in wrangler, so they're
+    // repeated here; keep both copies in sync.
+    "production": {
+      "name": "agent-socket-relay",
+      // The hosted relay's class was created key-value backed; a migration
+      // can't change that, so production keeps its original v1 migration.
+      "migrations": [
+        { "tag": "v1", "new_classes": ["RelayServer"] }
+      ],
+      // agentsocket.dev is canonical; aisocket.dev is an alias on the same Worker.
+      "routes": [
+        { "pattern": "agentsocket.dev",     "custom_domain": true },
+        { "pattern": "www.agentsocket.dev", "custom_domain": true },
+        { "pattern": "aisocket.dev",        "custom_domain": true },
+        { "pattern": "www.aisocket.dev",    "custom_domain": true }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "RELAY", "class_name": "RelayServer" }
+        ]
+      },
+      "ratelimits": [
+        { "name": "WS_RATE_LIMIT", "namespace_id": "1001", "simple": { "limit": 100, "period": 10 } }
+      ],
+      "vars": {
+        "MAX_SYNC_TOOL_MS": "30000",
+        "HEARTBEAT_TIMEOUT_MS": "50000",
+        "RESUME_GRACE_MS": "60000"
+      }
+    }
   }
 }

@@ -1,135 +1,87 @@
-# agent-socket
+# Agent Socket
 
-A relay that lets any web app expose itself to AI chats via a paste-able URL.
+Give an AI chat a link, and it can use your web page or app through plain HTTPS tool calls. No MCP server, no plugin in the chat.
 
-```
-[your app] ──WS──▶ [agent-socket relay] ◀──HTTPS── [AI chat (Claude / ChatGPT / Gemini)]
-```
+## Let Claude use your browser tab
 
-The agent-side surface is plain HTTPS that any chat can hit via curl-like tool use. **No MCP support required from the chat.** Your end-users click "Connect with AI", paste one URL into their AI chat, and the AI can drive your app via tool calls.
+1. Download `agent-socket-extension.zip` from [Releases](https://github.com/blitzdotdev/agent-socket/releases/latest) (or <https://agentsocket.dev/download>) and unzip it.
+2. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and pick the unzipped folder.
+3. On the extension's **Details** page, turn on **Allow User Scripts** (Chrome 138+; on Chrome 135-137 Developer mode is enough).
+4. Open the tab you want help with, click the Agent Socket icon, then **Connect this tab**. The first time, Chrome asks for permission to access sites.
+5. Copy the link and paste it into Claude (ChatGPT and Gemini work too), then say what you want done.
 
-## Status
+The AI can read the page, click, type, scroll, navigate and take screenshots, in that tab only. While it has access, the page shows an "AI has access to this tab" bar with a **Stop** button and the toolbar icon shows an "AI" badge. **Stop**, **Stop & disconnect** in the popup, or closing the tab ends the session, and the link stops working.
 
-v0 — actively in development. 42 end-to-end scenarios passing across relay + SDK + chrome-extension demo + multi-AI channel. Protocol + SDK + reference demo + CLI chat-channel functional. Not production-ready (no auth on the relay; rate limits per-session only; no signup flow yet).
+More in [chrome-extension/README.md](chrome-extension/README.md).
 
-**Deployed at https://agentsocket.dev** (canonical) and https://aisocket.dev (alias) — both routes hit the same Worker.
-
-**Deploys go through one script.** `bash scripts/deploy.sh deploy` loads CF credentials from `.env` at the repo root (copy `.env.example` to `.env` and fill in `CLOUDFLARE_API_TOKEN`) so deployment is non-interactive and reproducible. The `account_id` is read from `relay/wrangler.jsonc` as the single source of truth.
-
-## Quick start
+## Add "Connect with AI" to your app
 
 ```bash
-npm install
-npm run dev          # wrangler dev on http://localhost:8787
-
-# In another terminal:
-cd examples/pixel-art-canvas
-python3 -m http.server 5173
-# open http://localhost:5173/ in a browser
+npm i @agent-socket/sdk
 ```
 
-Click "Connect with AI", copy the URL, paste into Claude / ChatGPT / Gemini, ask it to paint something. The AI will call `/set_pixel` repeatedly and you'll watch the image appear.
+From [examples/minimal/index.html](examples/minimal/index.html):
 
-## Build your own integration
+```js
+import { connect } from "https://esm.sh/@agent-socket/sdk@0.1"
 
-> **`agentsMd` = app-specific content only.** The relay automatically prepends a
-> standard "how to call tools" contract (`$BASE`, `GET $BASE/tools.json`, "call as
-> `POST $BASE/<path>`", "do **not** recite this doc") to every served `agents.md`
-> when your doc doesn't already include it. So just describe *what your app does and
-> its conventions* — don't restate the calling mechanics, and never end up with a doc
-> that an AI reads and recites instead of acting on. `defaultAgentsMd` already includes
-> the contract (and the relay won't double it up).
-
-```ts
-import { connect, defaultAgentsMd } from "@agent-socket/sdk"
-
-const session = await connect({
-  appId: "as_app_anon",       // anon mode; no signup required
-  appDescription: "What your app does in one sentence.",
-  agentsMd: defaultAgentsMd({  // or write your own markdown
-    appName: "My App",
-    appDescription: "...",
-    agentsMdUrl: "...",
-  }),
-  tools: [
-    {
-      path: "/do_thing",
-      description: "Does the thing.",
-      input_schema: { /* JSON Schema */ },
-      handler: async ({ body }) => {
-        const args = JSON.parse(body)
-        // ...do the thing
-        return { ok: true, result: "..." }
+let count = 0
+document.querySelector("#connect").onclick = async () => {
+  const session = await connect({
+    baseUrl: "https://agentsocket.dev",
+    appId: "minimal-example",
+    agentsMd: "# Counter\nA page with one counter. Call /increment to add to it.",
+    tools: [{
+      path: "/increment",
+      description: "Add `by` (default 1) to the counter. Returns the new count.",
+      input_schema: { type: "object", properties: { by: { type: "integer" } } },
+      handler: ({ body }) => {
+        count += JSON.parse(body || "{}").by ?? 1
+        document.querySelector("#count").textContent = count
+        return { count }
       },
-    },
-  ],
-  baseUrl: "http://localhost:8787",  // your relay
-})
-
-// Mint a token to share with an end-user
-const link = await session.mintAgentToken({ label: "user-42" })
-console.log("Paste in your AI chat:", link.url)
+    }],
+  })
+  const link = await session.mintAgentToken({ label: "minimal" })
+  document.querySelector("#link").textContent = `Paste this into your AI chat: ${link.url}`
+}
 ```
 
-## Layout
+The AI reads the link's `agents.md`, fetches `tools.json`, and calls `POST .../increment`. The handler runs in the page. The same app in Node is [examples/minimal/node.mjs](examples/minimal/node.mjs); a larger demo is [examples/pixel-art-canvas](examples/pixel-art-canvas). API reference: [sdk/README.md](sdk/README.md).
+
+## How it works
 
 ```
-agent-socket/
-├── relay/                # Cloudflare Worker + Durable Object via PartyServer
-│   ├── src/              # worker.ts, relay-do.ts, tokens.ts, errors.ts, privacy.ts, types.ts
-│   └── wrangler.jsonc    # CF config; default vars (no DEBUG)
-├── sdk/                  # @agent-socket/sdk — JS/TS client (Node + browser)
-│   └── src/              # index.ts, session.ts, transport.ts, backoff.ts, agents-md.ts
-├── chrome-extension/     # MV3 extension exposing one chosen tab as agent-socket tools
-│   ├── background.js     # service worker; vendored SDK in lib/sdk/
-│   ├── tools-lib/        # per-site tool profiles (github, x.com, reddit, docs.google, …)
-│   └── scripts/          # vendor-sdk.sh — pulls sdk/dist/*.js into lib/sdk/
-├── examples/
-│   └── pixel-art-canvas/ # vanilla JS demo, single HTML file
-├── harness/              # runtime end-to-end test scenarios (Node)
-│   ├── run.mjs           # entry: node harness/run.mjs <id|range|all>
-│   └── scenarios/        # 01-70, all passing
-├── issues/               # design + bug tracking; open/ vs closed/
-├── docs/                 # (TBD: protocol.md, self-hosting.md)
-├── PRIVACY.md            # privacy policy linked from the relay's /privacy page
-├── SECURITY.md           # disclosure policy + known v0 trust-model limits
-├── CONTRIBUTING.md       # how to file issues / open PRs
-├── CHANGELOG.md          # Unreleased / Added / Fixed / Changed
-└── LICENSE               # Apache 2.0
+your app ──WebSocket──▶ relay (agentsocket.dev) ◀──HTTPS── AI chat
 ```
 
-## Channel mode
+The app opens a WebSocket to the relay, registers its tools and mints a link like `https://agentsocket.dev/v1/t/<token>/agents.md`. The AI calls tools as HTTP requests under that link; the relay forwards each call over the WebSocket and returns the app's reply. Each session lives in one Cloudflare Durable Object, in memory only. If the app's connection drops, it resumes within 60 seconds and the link keeps working. The Chrome extension is one such app, with tools for the bound tab.
 
-The multi-AI chat room (`agent-socket channel host`) lives in its own repo:
-[blitzdotdev/agent-socket-channel](https://github.com/blitzdotdev/agent-socket-channel).
+The relay is built on [PartyServer](https://github.com/cloudflare/partykit/tree/main/packages/partyserver). Wire format: [docs/protocol.md](docs/protocol.md).
 
-## Architecture in one paragraph
+## Site profile registry
 
-Each WebSocket session lives in its own Durable Object (built on PartyServer's `Server` class). The DO holds the WS, validates registered tool definitions, and maintains a request-correlation map: agent HTTPS request → generate request id → forward `tool_call` frame over WS to the app → app's `tool_reply` frame matches by id → resolve the original HTTPS response. Token format `as_<sessionId>_<verifier>`: 35 chars, 40-bit session-id (Crockford base32) used for DO routing, 128-bit verifier (base64url) checked against the DO's in-memory set. No persistence in v0: state is DO memory. A dropped app can resume its session (same URLs) within a grace window using a secret from `register_reply`; after that, or on a clean close, the session is wiped.
+[`registry/`](registry/) is a shared library of per-site tool profiles (notes plus ready-made tools) for the extension, hosted at `registry.agentsocket.dev`. Anyone can submit a profile; it goes live only after the maintainer reviews it.
 
 ## Self-hosting
 
-```bash
-cd relay
-npx wrangler deploy
-```
+The relay is one Worker: `cd relay && npx wrangler deploy --env=""` puts it on your workers.dev subdomain, and `baseUrl` (SDK) or the extension's Settings point clients at it. The registry also needs D1 and Cloudflare Access. See [docs/self-hosting.md](docs/self-hosting.md).
 
-`appId` is a free-form label (`[A-Za-z0-9_.-]{1,64}`); there's no app registry.
+## Security model
 
-## Testing
+- **The link is the key.** Anyone with it can call the app's tools until it is revoked or the session ends. Share it only with the chat you mean to.
+- **Only what the app exposes.** An agent can call only the registered tools. With the extension, that means the one tab you connected, nothing else in the browser.
+- **You can end it.** Stop, Stop & disconnect, closing the tab, or `session.close()` in your app ends the session and kills every link it minted.
 
-```bash
-# Terminal 1
-cd relay && npm run dev
+Details and how to report a vulnerability: [SECURITY.md](SECURITY.md).
 
-# Terminal 2
-node harness/run.mjs all          # 42 scenarios
-node harness/run.mjs 22           # one scenario by id
-node harness/run.mjs 20-29        # range
-```
+## More
 
-Scenarios are layered: 01–09 smoke, 10–19 raw WS protocol, 20–29 SDK + concurrency, 30–39 auth/origin/heartbeat/async, 40+ failure modes / reconnect.
+- [docs/protocol.md](docs/protocol.md): URLs, frames, limits, threat model
+- [docs/self-hosting.md](docs/self-hosting.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md): `npm install`, `npm test`
+- [agent-socket-channel](https://github.com/blitzdotdev/agent-socket-channel): a chat room where several AIs talk through agent-socket
 
 ## License
 
-Apache 2
+[Apache 2.0](LICENSE)
