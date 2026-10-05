@@ -38,6 +38,8 @@ export type Frame =
   | TaskCompleteFrame
   | PingFrame
   | PongFrame
+  | EndFrame
+  | EndReplyFrame
 
 export interface RegisterFrame {
   type: "register"
@@ -60,6 +62,22 @@ export interface ResumeFrame {
   tools: ToolDef[]
   /** Tokens the app revoked while it was offline. */
   revokeTokens?: string[]
+}
+
+// Sent as the first frame on /v1/_ws?session=<sessionId> to end a session the
+// app can't reach any more (e.g. the user pressed Stop while offline): proves
+// the secret like `resume`, then the relay wipes the session at once.
+export interface EndFrame {
+  type: "end"
+  sessionId: string
+  secret: string
+}
+
+export interface EndReplyFrame {
+  type: "end_reply"
+  ok: boolean
+  /** "resume_failed" (followed by close 4401) for a wrong secret or no session. */
+  error?: { code: string; message?: string }
 }
 
 export interface RegisterReplyFrame {
