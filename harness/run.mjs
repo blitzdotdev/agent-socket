@@ -12,7 +12,8 @@
 // Without RELAY_URL, boots its own `wrangler dev` (with the vars below) on
 // HARNESS_PORT, or a free port, with Durable Object storage in a fresh temp
 // dir, and tears it down at the end. HARNESS_INSPECTOR_PORT pins wrangler's
-// inspector port. With RELAY_URL, uses that relay.
+// inspector port; HARNESS_ENV picks a wrangler env (e.g. production). With
+// RELAY_URL, uses that relay.
 // A scenario can return { skip: "reason" } to report SKIP.
 
 import { readdirSync, openSync, mkdtempSync, rmSync } from "node:fs"
@@ -51,7 +52,10 @@ async function bootRelay() {
   // Sessions persist in DO storage; a fresh dir keeps runs independent.
   const state = mkdtempSync(join(tmpdir(), "as-harness-state-"))
   const inspector = process.env.HARNESS_INSPECTOR_PORT ? ["--inspector-port", process.env.HARNESS_INSPECTOR_PORT] : []
-  const child = spawn(WRANGLER_BIN, ["dev", "--port", String(port), "--ip", "127.0.0.1", "--persist-to", state, ...inspector, ...vars], {
+  // HARNESS_ENV=production runs the production config, whose Durable Object
+  // class is key-value backed (the top level is SQLite backed).
+  const wenv = process.env.HARNESS_ENV ? ["--env", process.env.HARNESS_ENV] : []
+  const child = spawn(WRANGLER_BIN, ["dev", "--port", String(port), "--ip", "127.0.0.1", "--persist-to", state, ...inspector, ...wenv, ...vars], {
     cwd: RELAY_DIR,
     stdio: ["ignore", out, out],
     detached: true,  // own process group, so teardown also kills workerd
