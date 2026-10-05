@@ -1,17 +1,22 @@
-// 41-sdk-reconnect-remint — SDK with autoReconnect:true survives a forced
-// WS close, gets a new sessionId, re-mints all previously-active tokens,
-// emits onSessionChanged with the {oldUrl → newUrl} map. Old URL → 503,
-// new URL → 200.
+// 41-sdk-reconnect-remint — SDK with autoReconnect:true survives a forced WS
+// close by RESUMING: same sessionId, the SAME agent URL keeps working, no
+// onSessionChanged. Only when the session is gone (kill-ws ?end=1, as if the
+// grace window ran out) does it open a new session, re-mint every active
+// token and emit onSessionChanged with {oldUrl → newUrl}: old URL → 503, new
+// URL → 200.
 
 import { Assert } from "../lib/assert.mjs"
-import { RELAY_HTTP, httpPost } from "../lib/relay.mjs"
+import { RELAY_HTTP, httpPost, killWs } from "../lib/relay.mjs"
 import { connect, noBackoff } from "@agent-socket/sdk"
+
+const until = async (cond) => { for (let i = 0; i < 50 && !cond(); i++) await new Promise((r) => setTimeout(r, 100)) }
 
 export default async function () {
   const a = new Assert("41-sdk-reconnect-remint")
 
   let sessionChangeCount = 0
   let lastChangeInfo = null
+  const reconnects = []
 
   const session = await connect({
     appId: "as_app_anon",
@@ -24,6 +29,7 @@ export default async function () {
       sessionChangeCount++
       lastChangeInfo = info
     },
+    onReconnect: (info) => reconnects.push(info),
   })
 
   const priorSessionId = session.sessionId
@@ -31,23 +37,25 @@ export default async function () {
   const oldUrl = link.url
   const oldToken = link.token
 
-  // Verify the URL works pre-disconnect.
   const beforeR = await httpPost(`/v1/t/${oldToken}/echo`, {})
-  a.equal(beforeR.status, 200, "old URL works before disconnect")
+  a.equal(beforeR.status, 200, "URL works before disconnect")
 
-  // Force-close the WS via debug endpoint.
-  const killR = await fetch(`${RELAY_HTTP}/_debug/kill-ws/${priorSessionId}`, { method: "POST" })
-  a.equal(killR.status, 200, "kill-ws returned 200")
+  // 1. A drop: the SDK resumes the same session.
+  a.equal((await killWs(priorSessionId)).status, 200, "kill-ws returned 200")
+  await until(() => reconnects.length === 1)
+  a.ok(reconnects[0]?.resumed === true && reconnects[0]?.sessionId === priorSessionId, "onReconnect: resumed the same session", { reconnects })
+  a.equal(session.sessionId, priorSessionId, "sessionId unchanged")
+  a.equal(sessionChangeCount, 0, "onSessionChanged not fired on a resume")
+  const resumedR = await httpPost(`/v1/t/${oldToken}/echo`, {})
+  a.equal(resumedR.status, 200, "SAME URL works after the resume")
 
-  // Wait for SDK to reconnect, remint, and fire onSessionChanged.
-  for (let attempt = 0; attempt < 50; attempt++) {
-    if (sessionChangeCount > 0 && session.connected && session.sessionId !== priorSessionId) break
-    await new Promise((r) => setTimeout(r, 100))
-  }
+  // 2. The session is gone: the resume is refused, the SDK re-mints.
+  a.equal((await killWs(priorSessionId, { end: true })).status, 200, "kill-ws ?end=1 returned 200")
+  await until(() => sessionChangeCount > 0 && session.connected)
   a.equal(sessionChangeCount, 1, "onSessionChanged fired exactly once")
   a.ok(lastChangeInfo && lastChangeInfo.priorSessionId === priorSessionId,
     "priorSessionId matches", { lastChangeInfo })
-  a.ok(lastChangeInfo && lastChangeInfo.sessionId === session.sessionId,
+  a.ok(lastChangeInfo && lastChangeInfo.sessionId === session.sessionId && session.sessionId !== priorSessionId,
     "sessionId matches new session", { lastChangeInfo })
   a.ok(lastChangeInfo && lastChangeInfo.tokensRemapped instanceof Map,
     "tokensRemapped is a Map")
@@ -58,14 +66,16 @@ export default async function () {
   a.ok(newUrl && newUrl.startsWith(RELAY_HTTP) && newUrl !== oldUrl,
     "new URL is different and still under same base", { oldUrl, newUrl })
 
-  // Old URL is dead.
   const oldR = await httpPost(`/v1/t/${oldToken}/echo`, {})
   a.equal(oldR.status, 503, "old URL → 503 (app_offline)")
 
-  // New URL works.
   const newToken = newUrl.match(/\/v1\/t\/([^/]+)\/agents.md/)[1]
   const newR = await httpPost(`/v1/t/${newToken}/echo`, {})
   a.equal(newR.status, 200, "new URL → 200")
 
+  // 3. close() is a clean 1000 close: the relay ends the session at once.
   session.close()
+  await new Promise((r) => setTimeout(r, 300))
+  const afterClose = await httpPost(`/v1/t/${newToken}/agents.md`, null)
+  a.equal(afterClose.status, 503, "after close() the session is gone at once")
 }

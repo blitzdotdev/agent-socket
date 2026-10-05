@@ -13,13 +13,13 @@ node harness/run.mjs 28      # one specific scenario
 node harness/run.mjs 40-49   # a range
 ```
 
-Without `RELAY_URL`, `run.mjs` boots its own `wrangler dev` on a free port (`DEBUG=1`, `MAX_SYNC_TOOL_MS=3000`, `HEARTBEAT_TIMEOUT_MS=6000`) and stops it at the end. Set `RELAY_URL` (and `WRANGLER_LOG` for log slices on failure) to run against a relay you started yourself. SDK scenarios import `sdk/dist`, so run `npm run build -w sdk` first when calling `run.mjs` directly.
+Without `RELAY_URL`, `run.mjs` boots its own `wrangler dev` on a free port (`DEBUG=1`, `MAX_SYNC_TOOL_MS=3000`, `HEARTBEAT_TIMEOUT_MS=6000`, `RESUME_GRACE_MS=3000`) and stops it at the end. Set `RELAY_URL` (and `WRANGLER_LOG` for log slices on failure) to run against a relay you started yourself; also export the same `HEARTBEAT_TIMEOUT_MS` / `RESUME_GRACE_MS` it runs with, or 51 and 54 SKIP. SDK scenarios import `sdk/dist`, so run `npm run build -w sdk` first when calling `run.mjs` directly.
 
 ## Layout
 
 - `run.mjs` — entry point. Discovers `scenarios/NN-*.mjs` files, runs them in numbered order, stops on first failure unless `--continue`. A scenario that returns `{ skip: "reason" }` is reported as SKIP.
 - `lib/` — shared helpers:
-  - `relay.mjs` — `RELAY_HTTP` / `RELAY_WS`, `httpGet`, `httpPost(path, body)`, `openRawWs()`.
+  - `relay.mjs` — `RELAY_HTTP` / `RELAY_WS`, `httpGet`, `httpPost(path, body)`, `openRawWs({ forceSession?, resumeSession? })`, `killWs(sessionId, { end? })`, `resumeGraceMs()`.
   - `logs.mjs` — tails the wrangler log for failure output.
   - `browser.mjs` — Puppeteer helper for visual scenarios.
   - `assert.mjs` — tiny assertion harness.
@@ -28,9 +28,10 @@ Without `RELAY_URL`, `run.mjs` boots its own `wrangler dev` on a free port (`DEB
   - **10–19** Raw WS handshake + register + mint + tools.json + agents.md
   - **20–29** SDK happy path, concurrency limits, post-close behavior, tool timeout
   - **31–40** CSRF defense, tool round-trip, ping-pong, async tasks (raw + SDK), content-type
-  - **41–49** SDK reconnect, WS takeover, bad replies/registers, body cap, header passthrough, response sandbox, register timeout, frame cap
+  - **41–49** SDK reconnect (resume first, re-mint when the session is gone), WS takeover, bad replies/registers, body cap, header passthrough, response sandbox, register timeout, frame cap
   - **50** Puppeteer pixel-art-canvas visual test (SKIP without chromium)
   - **51** App liveness (SKIP unless `HEARTBEAT_TIMEOUT_MS` is short)
+  - **52–55** Session resume: raw protocol (same URL, gap behaviour, tools replaced), refused secrets, expiry after the grace window (SKIP unless `RESUME_GRACE_MS` is short), concurrent attempts vs. the live socket
   - **90** `/v1/_ws` rate limit (last, so its burst can't starve the others)
 
 ## Adding a scenario

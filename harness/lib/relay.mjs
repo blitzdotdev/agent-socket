@@ -35,11 +35,15 @@ export async function httpPost(path, body) {
  *   close()                — close the WS
  *   ws                     — the underlying ws instance
  *
+ *   closed                 — promise of { code, reason } once the WS closes
+ *
  * opts.headers — extra headers on the upgrade request (e.g. { origin: "..." })
  * opts.origin  — shorthand for setting the Origin header
+ * opts.resumeSession — open /v1/_ws?session=<id> (a resume attempt)
  */
 export function openRawWs(opts = {}) {
-  const qs = opts.forceSession ? `?force_session=${encodeURIComponent(opts.forceSession)}` : ""
+  const qs = opts.resumeSession ? `?session=${encodeURIComponent(opts.resumeSession)}`
+    : opts.forceSession ? `?force_session=${encodeURIComponent(opts.forceSession)}` : ""
   const url = `${RELAY_WS}/v1/_ws${qs}`
   const headers = { ...(opts.headers ?? {}) }
   if (opts.origin) headers.origin = opts.origin
@@ -47,6 +51,7 @@ export function openRawWs(opts = {}) {
 
   const inbox = []
   const waiters = []
+  const closed = new Promise((resolve) => ws.on("close", (code, reason) => resolve({ code, reason: reason?.toString() ?? "" })))
 
   ws.on("message", (data) => {
     let msg
@@ -97,5 +102,15 @@ export function openRawWs(opts = {}) {
     try { ws.close() } catch {}
   }
 
-  return { ws, send, waitFor, waitOpen, close, inbox }
+  return { ws, send, waitFor, waitOpen, close, inbox, closed }
+}
+
+/** Force-close a session's app WS (DEBUG relay). end: also end the session. */
+export async function killWs(sessionId, { end = false } = {}) {
+  return fetch(`${RELAY_HTTP}/_debug/kill-ws/${sessionId}${end ? "?end=1" : ""}`, { method: "POST" })
+}
+
+/** RESUME_GRACE_MS of the relay under test (run.mjs exports it when it boots one). */
+export function resumeGraceMs() {
+  return parseInt(process.env.RESUME_GRACE_MS ?? "60000", 10)
 }
