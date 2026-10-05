@@ -80,6 +80,19 @@ class MockWebSocket {
       reply({ type: "list_agent_tokens_reply", id: m.id, tokens: [...this.session.tokens].map((token) => ({ token, url: `__BASE__/v1/t/${token}/agents.md`, label: "", mintedAt: 1 })) })
     } else if (m.type === "ping") {
       reply({ type: "pong", id: m.id })
+    } else if (m.type === "update_tools") {
+      // Like the relay: a reserved or duplicate path refuses the whole update.
+      const keys = m.tools.map((t) => `${t.method} ${t.path}`)
+      if (m.tools.some((t) => t.path === "/agents.md")) {
+        reply({ type: "update_tools_reply", id: m.id, ok: false, error: { code: "reserved_path", message: "path is reserved: /agents.md" } })
+      } else if (new Set(keys).size !== keys.length) {
+        reply({ type: "update_tools_reply", id: m.id, ok: false, error: { code: "protocol_error" } })
+      } else if (this.mode === "drop-on-update") {
+        this.mode = "ok"
+        setTimeout(() => this.serverClose(1011, "blip"), 1)
+      } else {
+        reply({ type: "update_tools_reply", id: m.id, ok: true })
+      }
     }
   }
   close(code = 1000, reason = "") {
@@ -367,4 +380,144 @@ test("a frame arriving after close() doesn't re-arm the heartbeat", async () => 
   s.close()
   ws._fire("message", { data: JSON.stringify({ type: "pong", id: "x" }) })
   assert.equal(s.heartbeatPingTimer, null)
+})
+
+// ── updateTools ────────────────────────────────────────────────────────
+
+// Delivers a tool_call on `ws` and resolves with the app's tool_reply.
+async function callTool(ws, path) {
+  const id = `call_${Math.random().toString(36).slice(2, 8)}`
+  ws._fire("message", { data: JSON.stringify({ type: "tool_call", id, method: "POST", path, body: "{}", headers: {} }) })
+  await waitFor(() => ws.frames.some((f) => f.type === "tool_reply" && f.id === id))
+  return ws.frames.find((f) => f.type === "tool_reply" && f.id === id)
+}
+
+const tool = (path, value) => ({ path, description: path, handler: () => ({ value }) })
+
+test("updateTools replaces tools and agentsMd on the same session", async () => {
+  reset(() => "ok")
+  const s = await connect({ ...base, tools: [tool("/a", "a")] })
+  await s.updateTools([tool("/b", "b"), { ...tool("/c", "c"), method: "get", input_schema: { type: "object" } }], "# v2")
+  const f = sockets[0].frames.find((x) => x.type === "update_tools")
+  assert.deepEqual(f.tools, [
+    { method: "POST", path: "/b", description: "/b" },
+    { method: "GET", path: "/c", description: "/c", input_schema: { type: "object" } },
+  ])
+  assert.equal(f.agentsMd, "# v2")
+  assert.equal(s.sessionId, "S1")
+  assert.equal(sockets.length, 1, "no new socket")
+  assert.deepEqual((await callTool(sockets[0], "/b")).body, { value: "b" })
+  assert.equal((await callTool(sockets[0], "/a")).status, 404, "removed tool no longer routed")
+  s.close()
+})
+
+test("updateTools without agentsMd leaves it out of the frame and keeps the current one", async () => {
+  reset(() => "ok")
+  const s = await connect({ ...base, onDisconnect: quickRetry, tools: [] })
+  await s.updateTools([tool("/b", "b")])
+  assert.equal("agentsMd" in sockets[0].frames.find((x) => x.type === "update_tools"), false)
+  sockets[0].serverClose(1011, "blip")
+  await waitFor(() => s.connected && sockets.length === 2)
+  assert.equal(sockets[1].frames[0].agentsMd, "# t")
+  s.close()
+})
+
+test("a resume after updateTools re-sends the updated tools and agentsMd", async () => {
+  reset(() => "ok")
+  const s = await connect({ ...base, onDisconnect: quickRetry, tools: [tool("/a", "a")] })
+  await s.updateTools([tool("/b", "b")], "# v2")
+  sockets[0].serverClose(1011, "blip")
+  await waitFor(() => s.connected && sockets.length === 2)
+  const r = sockets[1].frames[0]
+  assert.equal(r.type, "resume")
+  assert.equal(r.agentsMd, "# v2")
+  assert.deepEqual(r.tools.map((t) => t.path), ["/b"])
+  assert.deepEqual((await callTool(sockets[1], "/b")).body, { value: "b" })
+  s.close()
+})
+
+test("a fresh session after updateTools registers the updated tools", async () => {
+  reset(() => "ok")
+  const s = await connect({ ...base, onDisconnect: quickRetry, tools: [tool("/a", "a")] })
+  await s.updateTools([tool("/b", "b")])
+  expireSessions()
+  sockets[0].serverClose(1011, "blip")
+  await waitFor(() => s.connected && s.sessionId === "S2")
+  const reg = sockets.at(-1).frames[0]
+  assert.equal(reg.type, "register")
+  assert.deepEqual(reg.tools.map((t) => t.path), ["/b"])
+  s.close()
+})
+
+test("a refused update rejects with the relay's code and keeps the old tools", async () => {
+  reset(() => "ok")
+  const s = await connect({ ...base, onDisconnect: quickRetry, tools: [tool("/a", "a")] })
+  await assert.rejects(s.updateTools([tool("/b", "b"), tool("/agents.md", "x")], "# bad"), (e) => e.code === "reserved_path" && /reserved/.test(e.message))
+  assert.deepEqual((await callTool(sockets[0], "/a")).body, { value: "a" })
+  assert.equal((await callTool(sockets[0], "/b")).status, 404, "new tool not routed after a refused update")
+  sockets[0].serverClose(1011, "blip")
+  await waitFor(() => s.connected && sockets.length === 2)
+  assert.deepEqual(sockets[1].frames[0].tools.map((t) => t.path), ["/a"], "resume sends the old set")
+  assert.equal(sockets[1].frames[0].agentsMd, "# t")
+  s.close()
+})
+
+test("updateTools rejects a tool without a handler before sending anything", async () => {
+  reset(() => "ok")
+  const s = await connect({ ...base })
+  await assert.rejects(s.updateTools([{ path: "/x", description: "x" }]), /has no handler/)
+  assert.equal(sockets[0].frames.some((f) => f.type === "update_tools"), false)
+  s.close()
+})
+
+test("updateTools while disconnected applies after the resume", async () => {
+  reset(() => "ok")
+  let retry
+  const s = await connect({ ...base, onDisconnect: (i) => { retry = i.reconnect }, tools: [tool("/a", "a")] })
+  sockets[0].serverClose(1011, "blip")
+  await waitFor(() => !s.connected && retry)
+  let done = false
+  const p = s.updateTools([tool("/b", "b")], "# v2").then(() => { done = true })
+  await sleep(30)
+  assert.equal(done, false, "waits for the reconnect")
+  retry()
+  await p
+  assert.equal(sockets[1].frames[0].type, "resume")
+  assert.deepEqual(sockets[1].frames[0].tools.map((t) => t.path), ["/a"], "resume carries the committed set")
+  assert.deepEqual(sockets[1].frames.find((f) => f.type === "update_tools").tools.map((t) => t.path), ["/b"])
+  assert.deepEqual((await callTool(sockets[1], "/b")).body, { value: "b" })
+  s.close()
+})
+
+test("a drop mid-update re-sends it on the resumed socket", async () => {
+  reset((n) => (n === 1 ? "drop-on-update" : "ok"))
+  const s = await connect({ ...base, onDisconnect: quickRetry, tools: [tool("/a", "a")] })
+  await s.updateTools([tool("/b", "b")])
+  assert.equal(sockets.length, 2)
+  assert.deepEqual(sockets[1].frames[0].tools.map((t) => t.path), ["/a"])
+  assert.deepEqual(sockets[1].frames.find((f) => f.type === "update_tools").tools.map((t) => t.path), ["/b"])
+  assert.deepEqual((await callTool(sockets[1], "/b")).body, { value: "b" })
+  s.close()
+})
+
+test("updateTools calls apply in order", async () => {
+  reset(() => "ok")
+  const s = await connect({ ...base })
+  await Promise.all([s.updateTools([tool("/one", 1)]), s.updateTools([tool("/two", 2)]), s.updateTools([tool("/three", 3)])])
+  assert.deepEqual(sockets[0].frames.filter((f) => f.type === "update_tools").map((f) => f.tools[0].path), ["/one", "/two", "/three"])
+  assert.deepEqual((await callTool(sockets[0], "/three")).body, { value: 3 })
+  assert.equal((await callTool(sockets[0], "/one")).status, 404)
+  s.close()
+})
+
+test("updateTools rejects once the session is closed, including while waiting", async () => {
+  reset(() => "ok")
+  let retry
+  const s = await connect({ ...base, onDisconnect: (i) => { retry = i.reconnect } })
+  sockets[0].serverClose(1011, "blip")
+  await waitFor(() => !s.connected && retry)
+  const waiting = s.updateTools([tool("/b", "b")])
+  s.close()
+  await assert.rejects(waiting, /session closed/)
+  await assert.rejects(s.updateTools([tool("/c", "c")]), /session closed/)
 })

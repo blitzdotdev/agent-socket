@@ -176,6 +176,20 @@ export interface Session {
   /** List currently-active agent-tokens. */
   listAgentTokens(): Promise<ListedToken[]>
   /**
+   * Replace the session's tools (and agents.md, if given) without changing
+   * any agent URL: the relay serves the new list in tools.json and routes
+   * calls to the new handlers. The relay validates the list exactly like
+   * connect()'s; if it refuses (e.g. a duplicate or reserved path) this
+   * rejects with an Error whose `code` is the relay's error code, and the
+   * old tools stay live. Once it resolves, later resumes and fresh sessions
+   * register the new set.
+   *
+   * Calls run one at a time in call order. While disconnected it waits for
+   * the reconnect and then applies; it rejects if the session is closed (or
+   * onDisconnect gives up) first.
+   */
+  updateTools(tools: Tool[], agentsMd?: string): Promise<void>
+  /**
    * Complete an async task. The handler must have previously returned
    * `{ status: 202, taskId }`. The agent's poll on `<URL>/_as_tasks/<taskId>`
    * will then return the supplied status + body.
