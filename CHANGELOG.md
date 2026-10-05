@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
+
+SDK `@agent-socket/sdk` 0.2.0, Chrome extension 0.4.0.
 
 - **Relay**: sessions are durable. A dropped app's session is held for 24 hours (was 60 s) in Durable Object storage, with an alarm for the deadline, so links survive laptop sleep, network loss and relay restarts. Storage keeps no resume secret or usable token (a derived check value, verifier hashes, sealed tokens). The relay hibernates between events: the runtime answers the SDK's heartbeat itself. New `end` frame ends a held session with the secret. Async results are capped at 64 KiB of UTF-8 (was characters) and their content-type at 256 characters. The held-session `app_offline` message says how long the app has been away. Deploying this drops sessions that are live at the time once (they were in memory); clients reconnect into new sessions.
 - **SDK**: the heartbeat is the fixed frame `{"type":"ping","id":"as_hb"}` (works with older relays too); `close()` while disconnected ends the held session; new `endSession()`.
-- **Chrome extension**: a worker that restarts while the relay can't be reached keeps the saved link and retries until the relay answers, instead of dropping it; Stop while waiting ends the held session.
+- **Chrome extension** (0.4.0): a worker that restarts while the relay can't be reached keeps the saved link and retries until the relay answers, instead of dropping it; Stop while waiting ends the held session. The access bar is draggable, and Stop can no longer leave a stale "AI" badge behind.
 - **Docs**: protocol.md gains Storage, `end`, and a Limits table with what happens at each limit; SECURITY.md and PRIVACY.md describe the 24-hour hold.
 
 ## 0.1.0

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Agent Socket — Connect any site to AI",
   "short_name": "Agent Socket",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Let an AI chat (Claude, ChatGPT, Gemini) drive one browser tab you choose. Paste a session URL; the AI clicks, types, and reads.",
   "permissions": [
     "scripting",
@@ -18,16 +18,16 @@
     "default_title": "Agent Socket",
     "default_popup": "popup.html",
     "default_icon": {
-      "16":  "icons/icon-16.png",
-      "32":  "icons/icon-32.png",
-      "48":  "icons/icon-48.png",
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
       "128": "icons/icon-128.png"
     }
   },
   "icons": {
-    "16":  "icons/icon-16.png",
-    "32":  "icons/icon-32.png",
-    "48":  "icons/icon-48.png",
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
   "optional_host_permissions": [

@@ -1,6 +1,6 @@
 {
   "name": "@agent-socket/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "license": "Apache-2.0",
   "description": "Client SDK for agent-socket — connect any web app to AI chats via paste-able URLs.",
@@ -24,7 +24,11 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
