@@ -37,6 +37,7 @@ const MAX_AGENTS_MD_BYTES = 64 * 1024
 // in-memory `tasks` Map until workerd OOM-kills the isolate.
 const MAX_TASKS_PER_SESSION = 100
 const MAX_TASK_BODY_BYTES = 64 * 1024
+const REGISTER_TIMEOUT_MS = 10_000
 
 const TOOL_PATH_RE = /^\/[a-zA-Z0-9_\-/.]+$/
 // Task IDs are app-supplied strings used as Map keys and echoed in HTTP
@@ -104,12 +105,25 @@ export class RelayServer extends Server<Env> {
     const origin = ctx.request.headers.get("origin")
     ;(c as Connection & { origin?: string | null }).origin = origin
     this.appWs = c
+    // Don't let a socket that never registers pin this DO.
+    setTimeout(() => {
+      if (this.appWs?.id === c.id && this.appId === null) this.dropApp(4408, "register timeout")
+    }, REGISTER_TIMEOUT_MS)
     if (this.env.DEBUG === "1") console.log(`[DO] WS connected sessionId=${this.sessionId}, awaiting register`)
   }
 
   onClose(c: Connection): void {
     // A rejected extra connection closing must not tear down the live app.
     if (!this.appWs || c.id !== this.appWs.id) return
+    this.dropApp()
+  }
+
+  // Close the app socket (if asked) and end the session. Doesn't wait for
+  // onClose: a dead peer may never complete the close handshake.
+  private dropApp(code?: number, reason?: string): void {
+    if (code !== undefined) {
+      try { this.appWs?.close(code, reason) } catch {}
+    }
     if (this.env.DEBUG === "1") console.log("[DO] WS closed; failing", this.pending.size, "pending")
     for (const p of this.pending.values()) {
       clearTimeout(p.timer)
