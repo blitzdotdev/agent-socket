@@ -189,7 +189,7 @@ async function doConnect(tabId) {
     lastToken = link.token
   } catch (e) {
     s?.close()
-    if (boundTabId === tab.id) { boundTabId = null; lastProfile = null }
+    if (boundTabId === tab.id) { boundTabId = null; lastProfile = null; void hideIndicator(tab.id) }
     emitStatus({ status: "closed", reason: e?.message ?? String(e) })
     throw e
   }

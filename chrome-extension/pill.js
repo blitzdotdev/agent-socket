@@ -26,7 +26,8 @@
     let s
     try { s = await chrome.runtime.sendMessage({ type: "pill_state" }) } catch { return remove() }  // extension gone
     if (!s?.bound) return remove()
-    const state = s.status === "connected" ? "AI has access to this tab" : "AI access: reconnecting…"
+    const state = s.status === "connected" ? "AI has access to this tab"
+      : s.status === "connecting" ? "AI access: connecting…" : "AI access: reconnecting…"
     text.textContent = state + (s.lastToolCallAt ? ` · last action ${ago(Date.now() - s.lastToolCallAt)} ago` : " · waiting for AI")
   }
 
