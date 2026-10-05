@@ -11,9 +11,12 @@ While a tab is connected it shows an in-page "AI has access to this tab" bar
 the popup's **Stop & disconnect**, or closing the tab ends the session and
 kills the URL.
 
-The relay holds a dropped connection's session for 60 s, so the URL survives
-network blips and service-worker restarts. If a drop outlasts that (laptop
-sleep, say), the extension gets a new URL and the old one is dead. It then
+The relay holds a dropped connection's session for 24 hours, so the URL
+survives network loss, laptop sleep and service-worker restarts: the bar
+says "AI access: reconnecting…" meanwhile, and a restarted worker that can't
+reach the relay yet keeps the link and keeps retrying. If a drop outlasts the
+24 hours (or the relay lost the session), the extension gets a new URL and
+the old one is dead. It then
 says so until you copy the new one or the AI uses it: the bar turns amber
 ("Link changed — paste the new link into your AI chat", with **Copy link**
 and **Stop**), the badge reads "NEW", and the popup shows a banner with the

@@ -51,15 +51,15 @@ function statusLabel(snap) {
   }
 }
 
-const GRACE_MS = 60_000  // how long agentsocket.dev holds a dropped session
+const GRACE_MS = 24 * 3_600_000  // how long agentsocket.dev holds a dropped session
 const dur = (ms) => (ms < 90_000 ? `${Math.round(ms / 1000)} s` : ms < 5_400_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 3_600_000)} h`)
 
 // Why the link changed, in a sentence. See background.js `linkChanged`.
 function changeReason(c) {
   switch (c.reason) {
     case "resume_refused":
-      if (c.afterRestart) return "The extension restarted and the relay no longer had the old session (it keeps one for 60 s after a drop), so a new link was created."
-      if (c.offlineMs >= GRACE_MS) return `The connection was lost for about ${dur(c.offlineMs)}, longer than the 60 s the relay keeps a link, so a new link was created.`
+      if (c.afterRestart) return "The extension restarted and the relay no longer had the old session (it keeps one for 24 hours after a drop), so a new link was created."
+      if (c.offlineMs >= GRACE_MS) return `The connection was lost for about ${dur(c.offlineMs)}, longer than the 24 hours the relay keeps a link, so a new link was created.`
       return "The relay no longer had the old session (it may have restarted), so a new link was created."
     case "replaced": return "Another connection took over the old session, so a new link was created."
     case "no_resume_secret": return "The connection dropped and this relay can't resume sessions, so a new link was created."
@@ -81,6 +81,7 @@ const EVENT_TEXT = {
   reminted: () => "Link re-minted on the same session",
   link_acknowledged: (e) => `New link ${e.via === "tool_call" ? "used by the AI" : `copied (${e.via})`}`,
   connect_failed: (e) => `Connect failed: ${e.reason}`,
+  resume_retry: (e) => `Relay not reachable (${e.reason}); keeping the link and retrying (attempt ${e.attempt})`,
   stopped: () => "Stopped by the user",
 }
 

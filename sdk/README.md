@@ -48,7 +48,7 @@ Opens the WebSocket, registers, and resolves once the relay accepts. If this fir
 | `onReconnect` | `({ sessionId, resumed }) => void`. Called after every successful reconnect. |
 | `onSessionChanged` | `({ priorSessionId, sessionId, tokensRemapped, reason, closeCode?, offlineMs }) => void`. Called after a reconnect when links changed. `tokensRemapped` maps old URL to new URL; `reason` says why (see [Reconnects](#reconnects)). |
 | `resume` | `{ sessionId, secret }` of an earlier session, to keep its links after a restart. See [Surviving a restart](#surviving-a-restart). |
-| `heartbeatIntervalMs` | Ping after this long without traffic. Default 25000. |
+| `heartbeatIntervalMs` | Ping after this long without traffic. Default 25000. The ping is the fixed frame `{"type":"ping","id":"as_hb"}`, which the relay's runtime answers without waking the session. |
 | `heartbeatTimeoutMs` | Close and reconnect if no pong arrives within this. Default 50000. |
 
 ### Handlers
@@ -75,7 +75,7 @@ A handler that throws produces `500 {"error": {"code": "handler_error", "message
 | `updateTools(tools, agentsMd?)` | Replaces the tool list (and `agentsMd` if given) on the live session; every link keeps working. Rejects if the relay refuses the list, and then nothing changes. Calls run in order; while disconnected it waits for the reconnect. |
 | `completeTask(taskId, { status?, body?, headers? })` | Finishes an async call. Throws if not connected. |
 | `ping()` | Sends a heartbeat now, e.g. from a `chrome.alarms` handler in an MV3 service worker. |
-| `close()` | Closes with code 1000. The relay ends the session at once and every link stops working. |
+| `close()` | Closes with code 1000. The relay ends the session at once and every link stops working. Called while disconnected, it sends the relay an `end` for the held session instead (best effort; if the relay can't be reached, the session ends when its hold runs out). |
 
 ## Async tools
 
@@ -97,28 +97,30 @@ The agent gets `202 {"taskId": "..."}` and polls `<link base>/_as_tasks/<taskId>
 
 ## Reconnects
 
-When the socket drops, the relay keeps the session for 60 s. With `autoReconnect` on (the default), the SDK backs off via `onDisconnect`, reconnects and resumes the same session with its secret. On success every link keeps working, `onReconnect` gets `resumed: true`, and `onSessionChanged` is not called. While the app is away, agents still get `agents.md` and `tools.json`, and tool calls get `503 app_offline` with `Retry-After: 2`.
+When the socket drops, the relay keeps the session for 24 hours (`RESUME_GRACE_MS` on a self-hosted relay), in Durable Object storage, so it also survives the relay restarting. With `autoReconnect` on (the default), the SDK backs off via `onDisconnect`, reconnects and resumes the same session with its secret. The default backoff never gives up and waits at most 30 s (±25%) between attempts, so an app coming back after hours offline (a laptop waking up) resumes within about 30 s of the network returning. On success every link keeps working, `onReconnect` gets `resumed: true`, and `onSessionChanged` is not called. While the app is away, agents still get `agents.md` and `tools.json`, and tool calls get `503 app_offline` with `Retry-After: 2`.
 
-If the relay refuses the resume (the 60 s passed, or the relay restarted), the SDK opens a new session in the same attempt and re-mints each link it still holds with the same label. The old URLs stop working; `onSessionChanged` reports the new ones so you can show them to the user. Tell the user plainly that the link changed: an AI still holding the old one only gets `503 app_offline`. Links revoked while offline are not re-minted.
+If the relay refuses the resume (the hold ran out, or the relay lost the session), the SDK opens a new session in the same attempt and re-mints each link it still holds with the same label. The old URLs stop working; `onSessionChanged` reports the new ones so you can show them to the user. Tell the user plainly that the link changed: an AI still holding the old one only gets `503 app_offline`. Links revoked while offline are not re-minted.
 
 `onSessionChanged`'s `reason` is one of:
 
 | `reason` | `closeCode` | Meaning |
 |---|---|---|
-| `resume_refused` | 4401 | The relay no longer had the session: the app was away longer than the grace window, or the relay restarted. (A wrong secret gets the same answer.) |
+| `resume_refused` | 4401 | The relay no longer had the session: the app was away longer than the hold (24 h on agentsocket.dev), or the session was ended or lost on the relay. (A wrong secret gets the same answer.) |
 | `replaced` | 4410 | Another connection resumed the session with its secret, so the SDK started a fresh one instead of taking it back. |
 | `no_resume_secret` | | The relay never issued a resume secret, so there was nothing to resume. |
 | `remint` | | Same session; links an earlier, interrupted re-mint missed were minted now. |
 
-`offlineMs` is the time from the last frame the relay sent on the old connection to the new registration, roughly how long the app was unreachable (it can overstate a quiet connection by up to one heartbeat interval). Over 60 s means the outage outlasted the grace window; much less points at a relay restart.
+`offlineMs` is the time from the last frame the relay sent on the old connection to the new registration, roughly how long the app was unreachable (it can overstate a quiet connection by up to one heartbeat interval). Longer than the relay's hold means the outage outlasted it; much less means the relay lost or ended the session.
 
 With `autoReconnect: false` the SDK neither reconnects nor re-mints. Your `onDisconnect` can still call `reconnect()`, which resumes when possible; if it lands in a new session, the old links are gone and `tokensRemapped` is empty.
 
-Backoff helpers for `onDisconnect`: `exponentialBackoff({ baseMs = 1000, maxMs = 30000, jitter = 0.25 })`, `linearBackoff({ delayMs = 5000 })`, `noBackoff()`.
+Backoff helpers for `onDisconnect`: `exponentialBackoff({ baseMs = 1000, maxMs = 30000, jitter = 0.25 })`, `linearBackoff({ delayMs = 5000 })`, `noBackoff()`. None of them gives up; a custom `onDisconnect` that calls `giveUp()` stops reconnecting for good. Keep the interval well under the relay's hold.
 
 ### Surviving a restart
 
-To keep links across a page reload or a service-worker restart, save `{ sessionId: session.sessionId, secret: session.resumeSecret }` and pass it as `resume` to the next `connect()`. If the session is still held, you get the same `sessionId` and its links keep working. If not, `connect()` opens a new session; compare `sessionId` to tell, and mint new links. Store the secret no more widely than the links themselves (`sessionStorage` or `chrome.storage.session`, not `localStorage`).
+To keep links across a page reload or a service-worker restart, save `{ sessionId: session.sessionId, secret: session.resumeSecret }` and pass it as `resume` to the next `connect()`. If the session is still held, you get the same `sessionId` and its links keep working. If not, `connect()` opens a new session; compare `sessionId` to tell, and mint new links. Store the secret no more widely than the links themselves (`sessionStorage` or `chrome.storage.session`, not `localStorage`). If the relay can't be reached yet, `connect()` rejects: keep what you saved and try again later rather than throwing it away, since the relay keeps the session for its hold.
+
+`endSession({ baseUrl, sessionId, secret })` ends a saved session without reconnecting to it (e.g. the user pressed Stop while offline): the links stop at once. It resolves `true` when the relay confirmed, `false` when it refused or couldn't be reached within 10 s.
 
 ## `defaultAgentsMd(options)`
 

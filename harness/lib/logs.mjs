@@ -21,3 +21,15 @@ export function tail(n = 20) {
 export function sliceSince(_sinceIso) {
   return tail(30)
 }
+
+/** Current end of the wrangler log, for logSince(). */
+export function logMark() {
+  const logPath = process.env.WRANGLER_LOG ?? "/tmp/as-wrangler.log"
+  return existsSync(logPath) ? readFileSync(logPath).byteLength : 0
+}
+
+/** Wrangler log text written since `mark` (from logMark()). */
+export function logSince(mark) {
+  const logPath = process.env.WRANGLER_LOG ?? "/tmp/as-wrangler.log"
+  return existsSync(logPath) ? readFileSync(logPath).subarray(mark).toString("utf8") : ""
+}

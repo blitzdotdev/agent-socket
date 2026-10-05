@@ -5,6 +5,8 @@
 //   GET  /download                            → latest Chrome extension zip on GitHub releases
 //   GET  /_debug/health                       → "ok" (DEBUG=1 only)
 //   POST /_debug/kill-ws/<sessionId>          → close that session's WS (DEBUG=1 only)
+//   GET  /_debug/state/<sessionId>            → what that session's DO holds (DEBUG=1 only)
+//   POST /_debug/evict/<sessionId>            → reset that session's DO (DEBUG=1 only)
 //   WSS  /v1/_ws                              → upgrade, route to a fresh session DO (rate-limited per IP)
 //   WSS  /v1/_ws?session=<sessionId>          → resume: route to that session's DO, which checks the secret
 //   *    /v1/t/<token>/<path>                 → route to existing session DO (no WS upgrades, body ≤ 1 MiB)
@@ -126,18 +128,24 @@ async function handleDebug(req: Request, env: Env, pathname: string): Promise<Re
   if (pathname === "/_debug/health") {
     return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } })
   }
-  // POST /_debug/kill-ws/<sessionId> — force-closes that session's WS, which
-  // leaves it resumable; ?end=1 also ends the session (as if the grace window
-  // ran out). Drives the harness's reconnect scenarios. Never enabled in prod.
-  const km = pathname.match(/^\/_debug\/kill-ws\/([0-9A-HJKMNP-TV-Z]{8})$/)
-  if (km && req.method === "POST") {
-    const sessionId = km[1]!
-    const id = env.RELAY.idFromName(sessionId)
-    // Forward to the DO via an internal-only path. Reuses /_as_kill-ws inside
-    // the DO so the public agent surface doesn't accidentally hit it.
+  // Per-session ops, forwarded to the session's DO at /_as_debug/<op>:
+  //   POST /_debug/kill-ws/<id>[?end=1|?hold=<ms>]  close the app's WS, leaving
+  //        the session resumable (?hold= overrides the hold time for this
+  //        drop); ?end=1 ends the session instead.
+  //   GET  /_debug/state/<id>   what the DO holds (no secrets): storage keys,
+  //        alarm, hold deadline, counts.
+  //   POST /_debug/evict/<id>   reset the DO like an eviction or restart:
+  //        memory and sockets gone, storage and alarm kept.
+  // Drive the harness's reconnect and durability scenarios. Never enabled in prod.
+  const m = pathname.match(/^\/_debug\/(kill-ws|state|evict)\/([0-9A-HJKMNP-TV-Z]{8})$/)
+  if (m && req.method === (m[1] === "state" ? "GET" : "POST")) {
+    const [, op, sessionId] = m
     const innerUrl = new URL(req.url)
-    innerUrl.pathname = "/_as_kill-ws"  // keeps ?end=1
-    return env.RELAY.get(id).fetch(new Request(innerUrl.toString(), { method: "POST" }))
+    innerUrl.pathname = `/_as_debug/${op}`  // keeps the query
+    const stub = env.RELAY.get(env.RELAY.idFromName(sessionId!))
+    const res = stub.fetch(new Request(innerUrl.toString(), { method: req.method }))
+    // An evicted object fails the request that evicted it.
+    return op === "evict" ? res.then(() => new Response("ok"), () => new Response("ok")) : res
   }
   return errorResponse("not_found", "unknown debug path", 404)
 }

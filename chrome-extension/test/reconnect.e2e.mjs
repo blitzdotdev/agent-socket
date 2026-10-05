@@ -14,6 +14,11 @@
 //   Before 5, the AI saves a site profile and the user keeps it, so the
 //   session's tools change (update_tools) on the same URL; both resumes
 //   must re-send that current tool set.
+//   6b. The relay goes away for a while (laptop asleep, network down) and
+//      Chrome stops the worker meanwhile: the pill says "reconnecting", the
+//      restarted worker can't reach the relay but keeps the saved session
+//      and retries, and once the relay is back (restarted, its Durable
+//      Object storage kept) the SAME URL works again with no link change.
 //   7. Kill the WS with ?end=1 (session gone, as if the grace window ran
 //      out): the resume is refused, the extension re-mints, the popup shows
 //      the new URL, the new URL works and the old one is dead.
@@ -71,7 +76,7 @@ function startRelay() {
   const out = fs.openSync(logFile, "w")
   const child = spawn(
     "npx",
-    ["wrangler", "dev", "--port", String(RELAY_PORT), "--ip", "127.0.0.1", "--var", "DEBUG:1"],
+    ["wrangler", "dev", "--port", String(RELAY_PORT), "--ip", "127.0.0.1", "--var", "DEBUG:1", ...(process.env.INSPECTOR_PORT ? ["--inspector-port", process.env.INSPECTOR_PORT] : [])],
     { cwd: path.join(ROOT, "relay"), stdio: ["ignore", out, out], env: { ...process.env, FORCE_COLOR: "0" }, detached: true },
   )
   return { child, stop: () => new Promise((resolve) => {
@@ -313,6 +318,50 @@ async function main() {
     if (snap?.status?.status !== "connected" || snap.url !== initialUrl || snap.boundTab?.id == null) {
       throw new Error(`bad snapshot: ${JSON.stringify({ status: snap?.status, url: snap?.url, bound: snap?.boundTab?.id })}`)
     }
+  })
+
+  // ── 2b. relay unreachable for a while + worker restart meanwhile ──
+  const OUTAGE_MS = parseInt(process.env.OUTAGE_MS ?? "20000", 10)
+  const pillHtml = async () => (await pill())?.html ?? ""
+  await step("the relay goes away (restart with storage kept)", async () => {
+    await relay.stop()
+    await page.bringToFront()
+    await until(async () => /reconnecting/.test(await pillHtml()), "pill says reconnecting", 15000)
+  })
+  await step("stop the service worker during the outage", async () => {
+    const sw = chrome.browser.targets().find((t) => t.type() === "service_worker" && t.url().startsWith(`chrome-extension://${extId}/`))
+    if (!sw) throw new Error("service worker target not found")
+    await (await sw.worker()).close()
+    const end = Date.now() + 10000
+    while (chrome.browser.targets().includes(sw)) {
+      if (Date.now() > end) throw new Error("service worker target still alive")
+      await sleep(100)
+    }
+  })
+  await step("restarted worker can't reach the relay: keeps the link, retries, pill says reconnecting", async () => {
+    await page.bringToFront()  // the pill polls the SW, waking it
+    const snap = await until(async () => {
+      const s = await sendToSW(popup, { type: "snapshot" }).catch(() => null)
+      return s?.events?.some((e) => e.type === "resume_retry") ? s : null
+    }, "a resume_retry event", 20000)
+    if (snap.url !== initialUrl || snap.boundTab?.id == null || snap.status?.status !== "reconnect-failed" || snap.linkChanged) {
+      throw new Error(`bad snapshot during the outage: ${JSON.stringify({ url: snap.url, bound: snap.boundTab?.id, status: snap.status, linkChanged: snap.linkChanged })}`)
+    }
+    await until(async () => /reconnecting/.test(await pillHtml()), "pill says reconnecting")
+  })
+  await sleep(OUTAGE_MS)
+  await step(`after a ${Math.round(OUTAGE_MS / 1000)} s outage the relay comes back`, async () => {
+    relay = startRelay()
+    await waitForRelay()
+  })
+  await step("after the outage: the SAME URL works", () => waitWorks(initialUrl, 60000))
+  await step("after the outage: connected, same link, no link-changed notice", async () => {
+    const snap = await until(async () => {
+      const s = await sendToSW(popup, { type: "snapshot" }).catch(() => null)
+      return s?.status?.status === "connected" ? s : null
+    }, "connected snapshot", 10000)
+    if (snap.url !== initialUrl || snap.linkChanged) throw new Error(JSON.stringify({ url: snap.url, linkChanged: snap.linkChanged }))
+    await until(async () => /has access/.test(await pillHtml()), "pill back to normal")
   })
 
   // ── 3. session gone → resume refused → re-mint ──

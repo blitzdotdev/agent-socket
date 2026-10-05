@@ -6,10 +6,8 @@
 // URL → 200.
 
 import { Assert } from "../lib/assert.mjs"
-import { RELAY_HTTP, httpPost, killWs, needsDebug } from "../lib/relay.mjs"
+import { RELAY_HTTP, httpPost, killWs, needsDebug, sdkHeartbeat, until } from "../lib/relay.mjs"
 import { connect, noBackoff } from "@agent-socket/sdk"
-
-const until = async (cond) => { for (let i = 0; i < 50 && !cond(); i++) await new Promise((r) => setTimeout(r, 100)) }
 
 export default async function () {
   const skip = await needsDebug()
@@ -27,6 +25,7 @@ export default async function () {
     baseUrl: RELAY_HTTP,
     autoReconnect: true,
     onDisconnect: noBackoff(),  // reconnect immediately for fast tests
+    ...sdkHeartbeat(),  // stay inside the harness relay's short liveness window
     onSessionChanged: (info) => {
       sessionChangeCount++
       lastChangeInfo = info
@@ -44,7 +43,10 @@ export default async function () {
 
   // 1. A drop: the SDK resumes the same session.
   a.equal((await killWs(priorSessionId)).status, 200, "kill-ws returned 200")
-  await until(() => reconnects.length === 1)
+  // Resumed = onReconnect fired AND the SDK is connected on the new socket;
+  // only then must the relay route calls to it.
+  await until(() => reconnects.length >= 1 && session.connected, "the resume")
+  a.equal(reconnects.length, 1, "exactly one reconnect (no second drop)", { reconnects })
   a.ok(reconnects[0]?.resumed === true && reconnects[0]?.sessionId === priorSessionId, "onReconnect: resumed the same session", { reconnects })
   a.equal(session.sessionId, priorSessionId, "sessionId unchanged")
   a.equal(sessionChangeCount, 0, "onSessionChanged not fired on a resume")
@@ -53,7 +55,7 @@ export default async function () {
 
   // 2. The session is gone: the resume is refused, the SDK re-mints.
   a.equal((await killWs(priorSessionId, { end: true })).status, 200, "kill-ws ?end=1 returned 200")
-  await until(() => sessionChangeCount > 0 && session.connected)
+  await until(() => sessionChangeCount > 0 && session.connected, "the fresh session")
   a.equal(sessionChangeCount, 1, "onSessionChanged fired exactly once")
   a.ok(lastChangeInfo && lastChangeInfo.priorSessionId === priorSessionId,
     "priorSessionId matches", { lastChangeInfo })
