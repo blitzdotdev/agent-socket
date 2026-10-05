@@ -16,5 +16,3 @@ coverage/
 core
 core.*
 
-# build artifacts — produced on demand by the release flow, not tracked
-agent-socket-extension.zip
