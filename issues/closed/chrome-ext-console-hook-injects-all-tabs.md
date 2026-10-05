@@ -38,3 +38,7 @@ The capture is only ever needed for a tab the user has explicitly bound, yet it 
 ## Provenance
 
 Found during a full line-by-line audit. Verified the unconditional `chrome.tabs.onUpdated` listener and MAIN-world `executeScript` (`background.js:446-472`), with no `boundTabId`/session/host gate.
+
+## Resolution (2026-10-05)
+
+Resolved on wt/sdk-ext by removing console capture (/console_recent, the hook and its alarm).

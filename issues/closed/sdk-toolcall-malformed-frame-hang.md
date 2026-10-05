@@ -35,3 +35,7 @@ The call site is fire-and-forget: `case "tool_call": void this._handleToolCall(m
 ## Provenance
 
 Found during a full line-by-line audit. Verified `_handleToolCall`'s route line (`session.ts:253`) is the first statement, outside the `try` at `:266`, and the dispatch is `void this._handleToolCall(msg)` at `:206`.
+
+## Resolution (2026-10-05)
+
+Already fixed before wt/sdk-ext: _handleToolCall validates method/path and replies 400 bad_tool_call.

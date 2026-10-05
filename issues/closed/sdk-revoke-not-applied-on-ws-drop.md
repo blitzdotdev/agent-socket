@@ -40,3 +40,7 @@ Revocation is the *only* way to invalidate a token (`expiresAt` is always `null`
 ## Provenance
 
 Found during a full line-by-line audit. Verified the await-then-delete ordering (`session.ts:148-150`), `_onClose` rejecting all pending (`:300-303`), the 10 s `_awaitReply` timeout (`:404-408`), `_sendFrame`'s swallowed catch (`:379-382`), and the remint loop re-minting from `myTokens` (`:358-370`).
+
+## Resolution (2026-10-05)
+
+Fixed on wt/sdk-ext: revokeAgentToken removes the token from myTokens before anything else and resolves at once while disconnected (the relay already dropped it with the socket); re-mint skips revoked tokens and revokes a fresh token whose original was revoked mid-remint. Not done: surfacing _sendFrame failures while the socket reports open.

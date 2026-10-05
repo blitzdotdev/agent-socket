@@ -47,3 +47,7 @@ If registration is rejected (`reply.ok === false`) or `register_reply` never arr
 ## Provenance
 
 Found during a full line-by-line audit. Verified the unconditional `_scheduleNextPing()` in `_onMessage` (`session.ts:223`) and that `_scheduleNextPing` (`:420`) has no `ws`/state guard; verified the register-failure (`:115-118`) and `_waitForFrame` timeout (`:114`) throw paths in `_connectAndRegister` do not close the socket.
+
+## Resolution (2026-10-05)
+
+Fixed on wt/sdk-ext: handlers are installed only after register succeeds, the socket is closed on any register failure, register waits reject on close, and frames from a socket that is no longer current are ignored (no heartbeat re-arm). Tests: sdk/test/session.test.mjs.

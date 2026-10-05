@@ -43,3 +43,7 @@ A remote AI gets privileged execution on an arbitrary user page simply by waitin
 ## Provenance
 
 Found during a full line-by-line audit. Verified `getActiveTabId` (`background.js:38-50`): the `catch {}` on the dead-bound-tab path falls through to `chrome.tabs.query({active:true})`, and all tool handlers resolve their target tab through it. Severity CRITICAL — it is a direct escape of the activation gate that is the extension's primary containment.
+
+## Resolution (2026-10-05)
+
+Already fixed (fail closed); on wt/sdk-ext tool calls use getBoundTabId, which never falls back to the active tab, and closing the bound tab ends the session.

@@ -42,3 +42,7 @@ This is distinct from the already-filed `sdk-reconnect-remint-race` (which is ab
 ## Provenance
 
 Found during a full line-by-line audit. Verified the clear-before-try ordering (`session.ts:336-337`), the catch-path `return` that discards `priorTokens` (`:343-356`), and that the remint loop only runs on the success path (`:358-370`).
+
+## Resolution (2026-10-05)
+
+Fixed on wt/sdk-ext: myTokens is no longer cleared before reconnecting. Test: "failed reconnects back off one attempt at a time and keep tokens".

@@ -39,3 +39,7 @@ Combine option 1 with a tiny popup.js change to also surface the `attempt` numbe
 ## Provenance
 
 Surfaced 2026-06-05 by an extra-high-effort `/code-review` of the deploy that landed the SDK consolidation. Not deploy-blocking — the relay is fine — but real UX cost for chrome-ext users.
+
+## Resolution (2026-10-05)
+
+Fixed on wt/sdk-ext: every status has a dot colour and a popup label (reconnecting / disconnected).

@@ -20,11 +20,14 @@ Pre-launch polish toward the first public OSS release at `github.com/blitzdotdev
 - **`Session.ping()`** in `@agent-socket/sdk` — exposes the existing heartbeat with the in-flight-guard so MV3 service workers can keep their WS warm from `chrome.alarms` without setTimeout (which the SW idle-killer cancels).
 - **CSRF defense on `/v1/t/<token>/<tool-path>`** — rejects browser-initiated cross-site requests via `Sec-Fetch-Site` (`csrf_denied` / 403). Read-only meta paths (`/agents.md`, `/tools.json`, `/_as_tasks/<id>`) are carved out so address-bar previews still work.
 - **`agent-bridge/`** (merged from `claude/agent-website-extension-VsA69`) — per-user Node service exposing a local AI harness (`/run`, `/cancel`, `/health`) and fanning the mint URL out to Blitz campaigns. Not yet documented in detail; see `agent-bridge/index.mjs`.
-- **Keybind-driven background-tab connect** in the chrome extension — `chrome.commands` shortcuts (`connect-slot-1..4`) open a configured URL in a background tab, mint a session, and copy the URL via an MV3 offscreen document (`offscreen.html`, `offscreen.js`).
 - **Tools-lib profiles**: `reddit.com.json`, `docs.google.com.json`.
 - **`/privacy`** route on the relay — static HTML served at `https://agentsocket.dev/privacy` for the Chrome Web Store submission.
 
 ### Fixed
+
+- **SDK reconnect**: a failed `connect()` no longer starts a reconnect storm (was ~1000 sockets/s); tokens survive failed reconnect attempts; `autoReconnect: false` really disables reconnecting; tokens revoked while disconnected aren't re-minted; `close()` during a reconnect leaves no socket or timer. The `ws` fallback is gone (Node 22+ native WebSocket). Regression tests in `sdk/test/`.
+- **Chrome extension**: `/screenshot` refuses unless the bound tab is in front (it used to capture whatever tab was visible); closing the bound tab ends the session; reconnecting can no longer leave a second session alive; the `/navigate` local-network guard is rewritten (it blocked fcc.gov and allowed `[::ffff:127.0.0.1]`, 100.64/10, `.lan`, bare hostnames).
+- **Chrome extension trimmed**: removed keybind slots + offscreen clipboard, console capture, `/tabs_list` + `/tabs_switch`; permissions down to `scripting`, `storage`, `alarms`, `userScripts`, with `<all_urls>` now optional and requested on Connect. Added an in-page "AI has access" bar with Stop, a per-tab badge, and a popup showing the bound tab + AI activity. `npm run ext:zip` builds the release zip.
 
 - **Chrome ext WS dropped after 3-10 calls** → ported `autoReconnect` from `@agent-socket/sdk` (originally into `chrome-extension/lib/as-client.js`; that file has since been deleted as part of the SDK consolidation). Replaced the no-op keepalive alarm body with a real WS-ping that exercises the SW.
 - **`channel watch` died after host restart** → stat-poll-based detection of inode change / size decrease replaces the inode-bound `fs.watch`. Three-agent verification + harness scenario 70.
@@ -61,7 +64,6 @@ Pre-launch polish toward the first public OSS release at `github.com/blitzdotdev
 - `agent-bridge-token-in-repo` — `agent-bridge/campaigns.json` ships a live-looking bearer token (from the merged bridge commit); needs rotation + `.gitignore`.
 - `agent-bridge-tokensRemapped-map-as-array` — bridge treats SDK's `Map` as an array, so reconnect fanout silently throws.
 - `agent-bridge-run-no-auth` — `/run` spawns the local Claude harness with `--dangerously-skip-permissions`; needs a shared-secret auth layer.
-- `chrome-ext-keybind-url-scheme` — `/configure_keybind` accepts arbitrary URL schemes (`file://`, `data:`); needs an `http(s):` allowlist + private-network blocklist.
 
 ---
 

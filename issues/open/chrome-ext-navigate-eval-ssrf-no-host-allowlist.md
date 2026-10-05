@@ -39,3 +39,7 @@ The driver of these tools is a **remote** party (the AI, reached through the pub
 ## Provenance
 
 Found during a full line-by-line audit. Verified `/navigate` (`tools-base.js:485-490`) validates only `typeof args.url === "string"` before `chrome.tabs.update`, and that `/eval` injects arbitrary MAIN-world code (`:177-184`) which can call `fetch`. Manifest grants `<all_urls>`.
+
+## Status (wt/sdk-ext)
+
+/navigate now allows only http(s) and refuses loopback/private/link-local/CGNAT/multicast/IPv4-mapped/NAT64 literals and single-label/.local/.lan/.internal/.home.arpa names (test/nav-guard.unit.mjs). Still open: no DNS check, no host allowlist, and /eval (or a click) can navigate or fetch anywhere — the tool description says so.

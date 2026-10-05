@@ -43,3 +43,7 @@ Option 1 is ~10 LOC and forward-compatible. Recommend it.
 ## Provenance
 
 Surfaced 2026-06-05 by an extra-high-effort `/code-review` of the SDK-consolidation deploy. Latent — not user-visible today, only relevant when a multi-mint feature lands.
+
+## Status (wt/sdk-ext)
+
+lastToken is now refreshed with lastUrl after a reconnect. Still single-token; multi-mint remains open.

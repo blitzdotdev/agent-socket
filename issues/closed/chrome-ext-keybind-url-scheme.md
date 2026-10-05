@@ -79,3 +79,7 @@ Same shape works for any local file the user's browser can read.
 ## Provenance
 
 Caught 2026-06-04 during the post-merge audit. The keybind flow was added in commit `79897da` ("bridge") with no scheme/host validation.
+
+## Resolution (2026-10-05)
+
+Resolved on wt/sdk-ext by removing keybind slots (/configure_keybind, /list_keybinds, commands, offscreen).

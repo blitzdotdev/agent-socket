@@ -38,3 +38,7 @@ Net: the AI calls `/console_recent` expecting the bound tab's recent logs and si
 ## Provenance
 
 Found during a full line-by-line audit. Verified `getRecentConsole` reads `consoleByTab` (`background.js:52-54`); the only writer is the `as-pull-console` alarm keyed on `getActiveTabId()` (`:501-508`); the handler's own comment (`:488-500`) notes the on-demand refresh was abandoned.
+
+## Resolution (2026-10-05)
+
+Resolved on wt/sdk-ext by removing console capture.

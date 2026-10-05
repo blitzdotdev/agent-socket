@@ -1,10 +1,15 @@
 # Agent Socket — Chrome Extension
 
-Connect any AI chat (Claude, ChatGPT, Gemini, …) to **whatever website you're
-looking at**. The extension acts as an agent-socket *app*: it opens a WebSocket
-to the relay, registers a toolset that targets the active tab, and gives you a
+Connect any AI chat (Claude, ChatGPT, Gemini, …) to **one browser tab you
+choose**. The extension acts as an agent-socket *app*: it opens a WebSocket
+to the relay, registers a toolset bound to that tab, and gives you a
 paste-able URL. Paste the URL into your AI chat and the AI can click, fill,
 read, evaluate, and screenshot the page on your behalf.
+
+While a tab is connected it shows an in-page "AI has access to this tab" bar
+(last action time + **Stop**) and an "AI" badge on the toolbar icon. Stop,
+the popup's **Stop & disconnect**, or closing the tab ends the session and
+kills the URL.
 
 ## What it exposes
 
@@ -18,19 +23,14 @@ read, evaluate, and screenshot the page on your behalf.
 | `POST /click` | Click first element matching a selector. |
 | `POST /fill` | Fill an `<input>` / `<textarea>` / `contenteditable`. Dispatches input+change so React/Vue notice. |
 | `POST /wait_for` | Poll a selector until present (or absent), with timeout. |
-| `POST /navigate` | Navigate the active tab. Waits for load by default. |
+| `POST /navigate` | Navigate the connected tab to an http(s) URL; refuses local/private-network hosts (a guardrail — `/eval` can still navigate). Waits for load by default. |
 | `POST /scroll` | Scroll into view by selector, or to absolute/relative pixels. |
 | `POST /get_text` | `innerText` of selector (or body), truncated. |
 | `POST /get_html` | `outerHTML` of selector. |
-| `POST /screenshot` | PNG/JPEG data-URL of the visible viewport. |
-| `POST /tabs_list` | List open tabs in the current window. |
-| `POST /tabs_switch` | Switch the active tab. |
-| `POST /console_recent` | Last N console messages from the page. |
-| `POST /configure_keybind` | Bind a URL to keybind slot 1–4. Pressing the assigned shortcut later opens that URL in a background tab and connects a fresh agent-socket session to it. |
-| `POST /list_keybinds` | Return the current slot → URL map plus the user's configured shortcuts (`chrome.commands.getAll`). |
+| `POST /screenshot` | PNG/JPEG data-URL of the visible viewport. Refused (409) unless the connected tab is the selected tab of its window. |
 | `POST /save_site_profile` | Persist a discovered toolset keyed by hostname. After reconnect those tools are first-class. |
 
-**Site-specific tools** (loaded automatically based on the active tab's host):
+**Site-specific tools** (loaded automatically based on the connected tab's host):
 
 - `tools-lib/_index.json` maps host patterns → tool files.
 - Bundled profiles: `github.com.json`, `x.com.json` (+ `twitter.com` alias), `news.ycombinator.com.json`, `reddit.com.json` (+ `www.reddit.com` alias), `docs.google.com.json`, plus a `generic.json` fallback.
@@ -40,8 +40,9 @@ read, evaluate, and screenshot the page on your behalf.
 ## The agent flow
 
 1. User clicks the toolbar icon → popup opens.
-2. User clicks **Connect this tab** → background opens the WS, registers the
-   tools (base + site profile), mints a paste link.
+2. User clicks **Connect this tab** → Chrome asks once for site access
+   (an optional permission, not granted at install) → background opens the
+   WS, registers the tools (base + site profile), mints a paste link.
 3. User copies the link, pastes into their AI chat.
 4. AI fetches `/agents.md` and `/tools.json`, then calls tools as it works.
 
@@ -58,37 +59,50 @@ connection to that host the saved tools appear in `tools.json` automatically.
 4. (Optional) In the popup's **Settings**, set the relay base URL if you're
    self-hosting (default is `https://agentsocket.dev`).
 
-## End-to-end test
+`/eval` and site tools run through `chrome.userScripts` so they work on
+CSP-strict sites. That needs **Allow User Scripts** turned on in the
+extension's details page (Chrome 138+; Developer mode on Chrome 135–137); the
+popup shows how when it's off.
 
-The E2E test launches Chromium (Playwright's build) under Xvfb with the
-extension loaded, runs a tiny `wrangler dev` instance for the relay, serves a
-local test page, and verifies all the tools by hitting the agent token URL
-exactly like an external AI chat would.
+## Packaging
+
+`npm run ext:zip` rebuilds + re-vendors the SDK and writes
+`chrome-extension/dist/agent-socket-extension.zip` (runtime files only).
+
+## Tests
+
+The E2E test launches Chromium under Xvfb with the extension loaded, runs a
+tiny `wrangler dev` relay, serves a local test page, and verifies the tools by
+hitting the agent token URL exactly like an external AI chat would.
 
 ```bash
-# Requires xvfb-run (sudo apt install xvfb).
-xvfb-run -a -s "-screen 0 1280x900x24" \
-  node chrome-extension/test/e2e.mjs
+# Requires xvfb-run + chromium (sudo apt install xvfb chromium).
+CHROMIUM_PATH=/usr/bin/chromium npm run ext:test
 ```
 
 Coverage: connect/mint, meta endpoints, page info, eval (success/error/await),
-DOM query, click/fill/submit, wait_for, scroll, text/html, dynamic lists, tabs,
-screenshot, save_site_profile, reconnect-loads-saved, and the negative paths.
+DOM query, click/fill/submit, wait_for, scroll, text/html, dynamic lists,
+screenshot (and its refusal when another tab is in front), navigate guard,
+save_site_profile + reconnect-loads-saved, badge + pill on the bound tab only,
+popup state, pill re-injection after reload, tab close and pill Stop ending
+the session, and connect being refused without site access. Puppeteer can't
+click Chrome's permission prompt, so the tests load a copy of the extension
+with site access granted at install (`test/ext-dir.mjs`).
 
-A separate **unit** test at `test/reconnect.unit.mjs` (23 assertions, ~3s, no
-chromium needed) drives the SDK's reconnect path against a mocked WebSocket
-to catch regressions in the vendored `lib/sdk/`.
+`npm run ext:test:unit` (no chromium) drives the vendored SDK's reconnect path
+against a mocked WebSocket and checks the `/navigate` URL guard.
 
 ## Architecture in one paragraph
 
 `background.js` is an ES-module service worker. On `connect`, it imports
 `@agent-socket/sdk` (vendored at `lib/sdk/`; see `lib/sdk/VENDORED.md`),
 registers a toolset built from `lib/tools-base.js` (universal) plus the site
-profile (if any), and mints an agent token. Each tool's handler runs in the
+profile (if any), mints an agent token, and marks the tab (badge + `pill.js`
+injected into the page's isolated world). Each tool's handler runs in the
 service worker and forwards work into the page via
 `chrome.scripting.executeScript({ world: "MAIN", ... })`, which has full
 access to page globals. Tool input is parsed from the JSON body the relay
 forwards; output is whatever the handler returns. The popup (`popup.html`)
 is a thin client that exchanges `chrome.runtime.sendMessage` calls with the
-SW. A `chrome.alarms` keepalive fires every 20s and calls `session.ping()`
+SW. A `chrome.alarms` keepalive fires every 30s and calls `session.ping()`
 to keep the WS warm against MV3 service-worker idle-kill.

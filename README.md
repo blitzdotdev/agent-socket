@@ -81,7 +81,7 @@ agent-socket/
 │   └── wrangler.jsonc    # CF config; default vars (no DEBUG)
 ├── sdk/                  # @agent-socket/sdk — JS/TS client (Node + browser)
 │   └── src/              # index.ts, session.ts, transport.ts, backoff.ts, agents-md.ts
-├── chrome-extension/     # MV3 extension exposing the active tab as agent-socket tools
+├── chrome-extension/     # MV3 extension exposing one chosen tab as agent-socket tools
 │   ├── background.js     # service worker; vendored SDK in lib/sdk/
 │   ├── tools-lib/        # per-site tool profiles (github, x.com, reddit, docs.google, …)
 │   └── scripts/          # vendor-sdk.sh — pulls sdk/dist/*.js into lib/sdk/

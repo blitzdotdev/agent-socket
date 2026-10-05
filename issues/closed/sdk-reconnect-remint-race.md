@@ -35,3 +35,7 @@ Option 1 is the cleanest. ~15 LOC.
 ## Provenance
 
 Surfaced 2026-06-05 by an extra-high-effort `/code-review`. Edge-case; not deploy-blocking. Worth landing whenever the chrome-ext or a future consumer ships multi-mint flows.
+
+## Resolution (2026-10-05)
+
+Fixed on wt/sdk-ext: tokens stay in myTokens until re-minted; if the socket drops mid-loop the loop stops and the next reconnect re-mints the rest, so the reported remaps chain (old→S2, S2→S3). Test: "a drop mid-remint re-mints the rest on the next reconnect".
