@@ -178,7 +178,11 @@ test("fetchSiteProfile: site, generic fallback, none, unreachable, timeout", asy
 
   mockFetch((_url, init) => new Promise((_, rej) => init.signal.addEventListener("abort", () => rej(init.signal.reason))))
   const t0 = Date.now()
+  // AbortSignal.timeout's timer doesn't hold Node's event loop open; without
+  // this the runner can exit before the abort fires (seen on Node 22).
+  const keepAlive = setInterval(() => {}, 50)
   r = await fetchSiteProfile("https://reg.example", "example.org", 150)
+  clearInterval(keepAlive)
   assert.equal(r.status, "unreachable")
   assert.match(r.error, /no answer in 150 ms/)
   assert.ok(Date.now() - t0 < 1000)
