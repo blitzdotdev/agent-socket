@@ -58,12 +58,12 @@ function startRelay() {
   const child = spawn(
     "npx",
     ["wrangler", "dev", "--port", String(RELAY_PORT), "--ip", "127.0.0.1", "--var", "DEBUG:1"],
-    { cwd: path.join(ROOT, "relay"), stdio: ["ignore", out, out], env: { ...process.env, FORCE_COLOR: "0" } },
+    { cwd: path.join(ROOT, "relay"), stdio: ["ignore", out, out], env: { ...process.env, FORCE_COLOR: "0" }, detached: true },
   )
   return { child, stop: () => new Promise((resolve) => {
     child.on("exit", () => resolve())
-    try { child.kill("SIGTERM") } catch {}
-    setTimeout(() => { try { child.kill("SIGKILL") } catch {}; resolve() }, 3000)
+    try { process.kill(-child.pid, "SIGTERM") } catch {}
+    setTimeout(() => { try { process.kill(-child.pid, "SIGKILL") } catch {}; resolve() }, 3000)
   })}
 }
 
