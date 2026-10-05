@@ -48,7 +48,7 @@ Then deploy as above.
 
 ### Things to check
 
-- `ratelimits[0].namespace_id` (`1001`) must be unique within your Cloudflare account. Change it if another Worker already uses that number.
+- `ratelimits[0].namespace_id` (`48001`) must be unique within your Cloudflare account. Change it if another Worker already uses that number.
 - Settings are in `vars`: `MAX_SYNC_TOOL_MS`, `HEARTBEAT_TIMEOUT_MS`, `RESUME_GRACE_MS`. See [relay/README.md](../relay/README.md).
 - Never set `DEBUG` in `wrangler.jsonc`. It enables endpoints that close other people's sessions.
 - The relay does not know its own hostname. Minted links use the base URL the app connected with.
