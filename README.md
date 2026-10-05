@@ -76,8 +76,7 @@ console.log("Paste in your AI chat:", link.url)
 ```
 agent-socket/
 ├── relay/                # Cloudflare Worker + Durable Object via PartyServer
-│   ├── src/              # worker.ts, relay-do.ts, tokens.ts, apps.ts, errors.ts, privacy.ts, types.ts
-│   ├── apps.json         # registered app-ids + allowed origins
+│   ├── src/              # worker.ts, relay-do.ts, tokens.ts, errors.ts, privacy.ts, types.ts
 │   └── wrangler.jsonc    # CF config; default vars (no DEBUG)
 ├── sdk/                  # @agent-socket/sdk — JS/TS client (Node + browser)
 │   └── src/              # index.ts, session.ts, transport.ts, backoff.ts, agents-md.ts
@@ -115,7 +114,7 @@ cd relay
 npx wrangler deploy
 ```
 
-`apps.json` registers app-ids and their allowed origins. Edit, redeploy. `TOKEN_PREFIX` (default `as`) is configurable via `wrangler.jsonc` `vars` for self-hosters who want a branded prefix.
+`appId` is a free-form label (`[A-Za-z0-9_.-]{1,64}`); there's no app registry. `TOKEN_PREFIX` (default `as`) is configurable via `wrangler.jsonc` `vars` for self-hosters who want a branded prefix.
 
 ## Testing
 

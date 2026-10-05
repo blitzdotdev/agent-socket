@@ -47,7 +47,7 @@ export type ToolResult =
 export type ToolHandler = (ctx: ToolCallContext) => Promise<ToolResult> | ToolResult
 
 export interface ConnectOptions {
-  /** Public app-id matching an entry in the relay's apps.json. */
+  /** Free-form app label, [A-Za-z0-9_.-]{1,64} (e.g. "as_app_anon"); shown in tools.json. */
   appId: string
   /** Markdown briefing served at GET /v1/t/<token>/agents.md. */
   agentsMd: string

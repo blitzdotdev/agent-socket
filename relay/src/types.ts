@@ -18,14 +18,6 @@ export interface ToolDef {
   input_schema?: unknown  // JSON Schema, optional
 }
 
-// App entry from apps.json
-export interface AppEntry {
-  allowedOrigins: string[]  // exact origins or "*"
-  label: string
-}
-
-export type AppsRegistry = Record<string, AppEntry>
-
 // Wire frames — app ↔ relay (both directions)
 
 export type Frame =

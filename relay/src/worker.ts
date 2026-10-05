@@ -14,7 +14,6 @@ import { RelayServer } from "./relay-do"
 import type { Env } from "./types"
 import { generateSessionId, parseAgentToken, validateTokenPrefix } from "./tokens"
 import { errorResponse } from "./errors"
-import { lookupApp } from "./apps"
 import { PRIVACY_HTML } from "./privacy"
 
 export { RelayServer }
@@ -149,13 +148,6 @@ async function readBodyCapped(stream: ReadableStream<Uint8Array>, max: number): 
 async function handleDebug(req: Request, env: Env, pathname: string): Promise<Response> {
   if (pathname === "/_debug/health") {
     return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } })
-  }
-  if (pathname === "/_debug/apps") {
-    const sample = lookupApp("as_app_anon")
-    return new Response(JSON.stringify({ as_app_anon: sample }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    })
   }
   // POST /_debug/kill-ws/<sessionId> — force-closes that session's WS.
   // Drives the harness's reconnect scenarios. Never enabled in prod.

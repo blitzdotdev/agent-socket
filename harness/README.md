@@ -27,7 +27,7 @@ Without `RELAY_URL`, `run.mjs` boots its own `wrangler dev` on a free port (`DEB
   - **01–03** Relay boots, bad URLs, token format
   - **10–19** Raw WS handshake + register + mint + tools.json + agents.md
   - **20–29** SDK happy path, concurrency limits, post-close behavior, tool timeout
-  - **30–40** Origin/CSRF defenses, tool round-trip, ping-pong, async tasks (raw + SDK), content-type
+  - **31–40** CSRF defense, tool round-trip, ping-pong, async tasks (raw + SDK), content-type
   - **41–49** SDK reconnect, WS takeover, bad replies/registers, body cap, header passthrough, response sandbox, register timeout, frame cap
   - **50** Puppeteer pixel-art-canvas visual test (SKIP without chromium)
   - **51** App liveness (SKIP unless `HEARTBEAT_TIMEOUT_MS` is short)

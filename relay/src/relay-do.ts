@@ -2,7 +2,7 @@
 //
 // Holds:
 //   - the app's WebSocket connection
-//   - the registered app-id, agentsMd, tools list
+//   - the registered app-id (a label), agentsMd, tools list
 //   - the set of valid agent-tokens (verifiers) minted in this session
 //   - the pending-request correlation map for in-flight tool calls
 //
@@ -20,7 +20,6 @@ import type {
   ListAgentTokensReplyFrame,
 } from "./types"
 import { generateVerifier, makeAgentToken, parseAgentToken } from "./tokens"
-import { lookupApp, checkOrigin } from "./apps"
 import { errorResponse } from "./errors"
 // Source of truth for the framework's "how to call tools" reference card
 // lives in the SDK so the constant doesn't drift between served bytes and
@@ -41,6 +40,7 @@ const REGISTER_TIMEOUT_MS = 10_000
 const MAX_FRAME_BYTES = 4 * 1024 * 1024
 
 const TOOL_PATH_RE = /^\/[a-zA-Z0-9_\-/.]+$/
+const APP_ID_RE = /^[A-Za-z0-9_.-]{1,64}$/
 // Task IDs are app-supplied strings used as Map keys and echoed in HTTP
 // responses. Bound the shape so an app can't store control chars, oversized
 // keys, or non-strings.
@@ -105,9 +105,6 @@ export class RelayServer extends Server<Env> {
       c.close(4409, "already connected")
       return
     }
-    // Stash the Origin header for the later origin-check on register.
-    const origin = ctx.request.headers.get("origin")
-    ;(c as Connection & { origin?: string | null }).origin = origin
     this.appWs = c
     // Don't let a socket that never registers pin this DO.
     setTimeout(() => {
@@ -230,36 +227,28 @@ export class RelayServer extends Server<Env> {
 
   private handleRegister(msg: RegisterFrame): void {
     // 0. Already-registered guard. A second register can't change app-id /
-    //    origin allowlist / tools mid-session.
+    //    tools mid-session.
     if (this.appId !== null) {
       this.send({ type: "register_reply", ok: false, error: { code: "protocol_error", message: "already registered" } })
       return
     }
 
-    // 1. Look up app-id.
-    const app = lookupApp(msg.appId)
-    if (!app) {
-      this.send({ type: "register_reply", ok: false, error: { code: "unknown_app_id" } })
-      this.appWs?.close(4001, "unknown app_id")
+    // 1. app-id is a free-form label shown in tools.json, not a credential:
+    //    any app can claim any id, so there's nothing to look up.
+    if (typeof msg.appId !== "string" || !APP_ID_RE.test(msg.appId)) {
+      this.send({ type: "register_reply", ok: false, error: { code: "invalid_app_id", message: "use [A-Za-z0-9_.-]{1,64}" } })
+      this.appWs?.close(4001, "invalid app_id")
       return
     }
 
-    // 2. Origin check (browsers only — non-browsers skip via "*" or absent origin).
-    const origin = (this.appWs as Connection & { origin?: string | null }).origin ?? null
-    if (!checkOrigin(app, origin)) {
-      this.send({ type: "register_reply", ok: false, error: { code: "origin_denied" } })
-      this.appWs?.close(4003, "origin denied")
-      return
-    }
-
-    // 3. Validate agentsMd size.
+    // 2. Validate agentsMd size.
     if (typeof msg.agentsMd !== "string" || msg.agentsMd.length > MAX_AGENTS_MD_BYTES) {
       this.send({ type: "register_reply", ok: false, error: { code: "agents_md_too_large" } })
       this.appWs?.close(4413, "agents.md too large")
       return
     }
 
-    // 4. Validate + index tools.
+    // 3. Validate + index tools.
     if (msg.tools !== undefined && !Array.isArray(msg.tools)) {
       this.send({ type: "register_reply", ok: false, error: { code: "protocol_error", message: "tools must be an array" } })
       this.appWs?.close(4400, "invalid tools")
@@ -315,7 +304,7 @@ export class RelayServer extends Server<Env> {
       validatedTools.push(validated)
     }
 
-    // 5. Store state, reply with the session-id assigned at WS handshake.
+    // 4. Store state, reply with the session-id assigned at WS handshake.
     this.appId = msg.appId
     this.appDescription = typeof msg.appDescription === "string" ? msg.appDescription.slice(0, 1024) : ""
     this.agentsMd = msg.agentsMd
@@ -515,7 +504,7 @@ export class RelayServer extends Server<Env> {
         version: "1.0",
         app: {
           id: this.appId,
-          name: lookupApp(this.appId ?? "")?.label ?? this.appId,
+          name: this.appId,
           description: this.appDescription,
         },
         tools: this.tools.map((t) => ({

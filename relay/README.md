@@ -64,6 +64,6 @@ bash scripts/deploy.sh deploy
 
 All wrangler operations go through `scripts/deploy.sh`. **Do not run `npx wrangler ...` directly.** See `scripts/deploy.sh --help` for subcommands.
 
-## Apps registry
+## App-ids
 
-`apps.json` lists the registered app-ids. v0 has three: `as_app_anon` (anonymous, wide-open), `as_app_pixel_art` (the demo), `as_app_test_strict` (harness fixture). Add new apps by editing this file and redeploying. A signup flow is a v1 item.
+`appId` in the register frame is a free-form label (`[A-Za-z0-9_.-]{1,64}`, e.g. `as_app_anon`), echoed in `tools.json`. It isn't a credential and there's no registry: Origin can't be trusted outside browsers, so the relay doesn't check it.
