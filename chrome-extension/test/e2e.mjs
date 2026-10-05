@@ -20,11 +20,11 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import puppeteer from "puppeteer-core"
+import { EXT_DIR, testExtensionDir } from "./ext-dir.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, "../..")
-const EXT_DIR = path.resolve(__dirname, "..")
-const CHROMIUM = process.env.CHROMIUM_PATH ?? "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
+const CHROMIUM = process.env.CHROMIUM_PATH ?? "/usr/bin/chromium"
 const RELAY_PORT = parseInt(process.env.RELAY_PORT ?? "8794", 10)
 const STATIC_PORT = parseInt(process.env.STATIC_PORT ?? "8795", 10)
 const RELAY_BASE = `http://127.0.0.1:${RELAY_PORT}`
@@ -105,7 +105,7 @@ function startStatic() {
 }
 
 // ── chrome ────────────────────────────────────────────────────────────
-async function launchChrome() {
+async function launchChrome(extDir) {
   const userDataDir = fs.mkdtempSync("/tmp/as-ext-profile-")
   const browser = await puppeteer.launch({
     executablePath: CHROMIUM,
@@ -116,8 +116,8 @@ async function launchChrome() {
       "--disable-features=Translate,InterestFeedContentSuggestions",
       "--no-first-run",
       "--no-default-browser-check",
-      `--disable-extensions-except=${EXT_DIR}`,
-      `--load-extension=${EXT_DIR}`,
+      `--disable-extensions-except=${extDir}`,
+      `--load-extension=${extDir}`,
       `--user-data-dir=${userDataDir}`,
       "--window-size=1280,900",
     ],
@@ -166,13 +166,13 @@ function sendToSW(popupPage, msg) {
 async function main() {
   console.log(`\n[setup] launching\n        relay  → ${RELAY_BASE}\n        static → http://127.0.0.1:${STATIC_PORT}`)
   const relay = startRelay()
-  let staticSrv, browser, userDataDir
+  let staticSrv, browser, userDataDir, userDataDir2, extDir
   try {
     staticSrv = await startStatic()
     await waitForRelay()
     console.log("[setup] relay ready")
 
-    const launch = await launchChrome()
+    const launch = await launchChrome(extDir = testExtensionDir())
     browser = launch.browser; userDataDir = launch.userDataDir
     const extId = await waitForExtensionId(browser)
     console.log(`[setup] extension id: ${extId}`)
@@ -235,13 +235,12 @@ async function main() {
       if (!/page_info/.test(t)) throw new Error("missing tool list")
     })
 
-    await step("GET /tools.json lists all universal tools", async () => {
+    await step("GET /tools.json lists exactly the universal tools", async () => {
       const j = await (await fetch(`${tokenBase}/tools.json`)).json()
-      const have = new Set(j.tools.map((t) => t.path))
-      for (const p of ["/eval", "/page_info", "/dom_query", "/click", "/fill", "/wait_for", "/navigate", "/screenshot", "/save_site_profile"]) {
-        if (!have.has(p)) throw new Error(`missing ${p}`)
-      }
-      if (j.tools.length < 15) throw new Error(`expected ≥15 tools, got ${j.tools.length}`)
+      const have = j.tools.map((t) => t.path).sort().join(",")
+      const want = ["/eval", "/page_info", "/dom_query", "/click", "/fill", "/wait_for", "/navigate", "/scroll",
+        "/get_text", "/get_html", "/screenshot", "/save_site_profile"].sort().join(",")
+      if (have !== want) throw new Error(`tools: ${have}`)
     })
 
     // ── 3. Page info / DOM tools ──────────────────────────────────
@@ -348,15 +347,6 @@ async function main() {
       if (!json.scrolled) throw new Error(JSON.stringify(json))
     })
 
-    // ── 5. Tabs ────────────────────────────────────────────────────
-    await step("POST /tabs_list lists the test tab", async () => {
-      const { json } = await callTool("/tabs_list", {})
-      if (!Array.isArray(json)) throw new Error(`array? ${typeof json}`)
-      if (!json.find((t) => (t.url ?? "").includes("test-page.html"))) {
-        throw new Error(`test tab not in list`)
-      }
-    })
-
     // ── 6. Screenshot ──────────────────────────────────────────────
     await step("POST /screenshot returns a PNG data URL", async () => {
       const { status, json } = await callTool("/screenshot", {})
@@ -428,10 +418,119 @@ async function main() {
       if (r.status !== 404) throw new Error(`status ${r.status}`)
     })
 
-    // ── 9. Cleanup ─────────────────────────────────────────────────
-    await step("disconnect cleanly", async () => {
-      const r = await sendToSW(popupPage, { type: "disconnect" })
-      if (r.status !== "idle") throw new Error(JSON.stringify(r))
+    // ── 9. Indicator, screenshot/navigate guards, session end ──────
+    const swState = () => sendToSW(popupPage, { type: "snapshot" })
+    const badge = (tabId) => popupPage.evaluate((id) => chrome.action.getBadgeText({ tabId: id }), tabId)
+    const hasPill = (page) => page.evaluate(() => !!document.querySelector("agent-socket-indicator"))
+    const agentStatus = async (base) => (await fetch(`${base}/page_info`, { method: "POST", body: "{}" })).status
+    const waitFor = async (cond, ms = 5000) => {
+      const end = Date.now() + ms
+      while (!(await cond())) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 100)) }
+    }
+    // The pill lives in a closed shadow root; CDP can still see inside it.
+    async function pillNodes(page) {
+      const cdp = await page.createCDPSession()
+      const { root } = await cdp.send("DOM.getDocument", { depth: -1, pierce: true })
+      const find = (n, pred) => pred(n) ? n : [...(n.children ?? []), ...(n.shadowRoots ?? [])].map((c) => find(c, pred)).find(Boolean)
+      const host = find(root, (n) => n.nodeName === "AGENT-SOCKET-INDICATOR")
+      const pill = host && find(host, (n) => n.attributes?.includes("pill"))
+      const button = host && find(host, (n) => n.nodeName === "BUTTON")
+      return { cdp, pill, button }
+    }
+    let other
+    const snap0 = await swState()
+    const boundTabId = snap0.boundTab?.id
+
+    await step("badge + pill on the bound tab only", async () => {
+      if (await badge(boundTabId) !== "AI") throw new Error(`badge=${await badge(boundTabId)}`)
+      other = await browser.newPage()
+      await other.goto(`${staticSrv.url}/test-page.html?other`, { waitUntil: "load" })
+      const otherId = await popupPage.evaluate(async () => (await chrome.tabs.query({})).find((t) => t.url?.endsWith("?other"))?.id)
+      if (await badge(otherId) !== "") throw new Error("badge on unbound tab")
+      if (!(await hasPill(testPage))) throw new Error("no pill on bound tab")
+      if (await hasPill(other)) throw new Error("pill on unbound tab")
+      await waitFor(async () => {
+        const { cdp, pill } = await pillNodes(testPage)
+        const { outerHTML } = await cdp.send("DOM.getOuterHTML", { nodeId: pill.nodeId })
+        return /AI has access to this tab · last action \d+s ago/.test(outerHTML)
+      })
+    })
+
+    await step("/screenshot refuses while another tab is in front", async () => {
+      await other.bringToFront()
+      const { status, json } = await callTool("/screenshot", {})
+      if (status !== 409 || json?.error?.code !== "tab_not_visible") throw new Error(`${status} ${JSON.stringify(json)}`)
+      await testPage.bringToFront()
+      if ((await callTool("/screenshot", {})).status !== 200) throw new Error("screenshot failed once bound tab is back in front")
+    })
+
+    await step("/navigate refuses local/private and non-http URLs", async () => {
+      for (const url of ["http://localhost/", "http://[::ffff:127.0.0.1]/", "http://100.64.0.1/", "http://intranet/", "file:///etc/passwd"]) {
+        const { status } = await callTool("/navigate", { url })
+        if (status !== 400) throw new Error(`${url} → ${status}`)
+      }
+    })
+
+    await step("popup shows the bound tab, AI activity and Stop", async () => {
+      const s = await swState()
+      if (s.boundTab?.id !== boundTabId || !/E2E Test Page/.test(s.boundTab.title)) throw new Error(JSON.stringify(s.boundTab))
+      if (!s.lastToolCallAt || Date.now() - s.lastToolCallAt > 10000) throw new Error(`lastToolCallAt=${s.lastToolCallAt}`)
+      await popupPage.reload({ waitUntil: "domcontentloaded" })
+      await waitFor(() => popupPage.evaluate(() => /AI active/.test(document.querySelector("#status-text").textContent)))
+      const ui = await popupPage.evaluate(() => ({
+        title: document.querySelector("#tab-title").textContent,
+        stop: !document.querySelector("#disconnect-btn").hidden,
+        link: document.querySelector("#link-input").value,
+      }))
+      if (!/E2E Test Page/.test(ui.title) || !ui.stop || ui.link !== s.url) throw new Error(JSON.stringify(ui))
+    })
+
+    await step("pill comes back after the bound tab reloads", async () => {
+      await testPage.reload({ waitUntil: "load" })
+      await waitFor(() => hasPill(testPage))
+      if (await badge(boundTabId) !== "AI") throw new Error("badge lost on reload")
+    })
+
+    await step("closing the bound tab ends the session", async () => {
+      await other.bringToFront()
+      const r = await sendToSW(popupPage, { type: "connect" })
+      if (!r.ok || !r.url) throw new Error(JSON.stringify(r))
+      if (await hasPill(testPage)) throw new Error("old tab kept its pill")
+      await waitFor(() => hasPill(other))
+      const base = r.url.replace(/\/agents\.md.*$/, "")
+      if (await agentStatus(base) !== 200) throw new Error("new session not working")
+      await other.close()
+      await waitFor(async () => (await swState()).status.status === "idle")
+      if (await agentStatus(base) === 200) throw new Error("agent URL still works after tab close")
+    })
+
+    await step("Stop in the pill ends the session", async () => {
+      await testPage.bringToFront()
+      const r = await sendToSW(popupPage, { type: "connect" })
+      const base = r.url.replace(/\/agents\.md.*$/, "")
+      await waitFor(() => hasPill(testPage))
+      const { cdp, button } = await pillNodes(testPage)
+      const { model } = await cdp.send("DOM.getBoxModel", { nodeId: button.nodeId })
+      const [x1, y1, , , x3, y3] = model.content
+      await testPage.mouse.click((x1 + x3) / 2, (y1 + y3) / 2)
+      await waitFor(async () => (await swState()).status.status === "idle")
+      await waitFor(async () => !(await hasPill(testPage)))
+      if (await badge(boundTabId) !== "") throw new Error("badge still set")
+      if (await agentStatus(base) === 200) throw new Error("agent URL still works after Stop")
+    })
+
+    await browser.close()
+    browser = null
+    await step("without site access, connect is refused", async () => {
+      ;({ browser, userDataDir: userDataDir2 } = await launchChrome(EXT_DIR))
+      const id = await waitForExtensionId(browser)
+      const page = await browser.newPage()
+      await page.goto(testUrl, { waitUntil: "load" })
+      const popup = await browser.newPage()
+      await popup.goto(`chrome-extension://${id}/popup.html`, { waitUntil: "domcontentloaded" })
+      await page.bringToFront()
+      const r = await sendToSW(popup, { type: "connect" })
+      if (r.ok || !/site access/.test(r.error)) throw new Error(JSON.stringify(r))
     })
 
     console.log(`\n${passed} passed, ${failed} failed`)
@@ -442,7 +541,7 @@ async function main() {
     if (browser) await browser.close().catch(() => {})
     if (staticSrv) await staticSrv.stop()
     await relay.stop()
-    if (userDataDir) { try { fs.rmSync(userDataDir, { recursive: true, force: true }) } catch {} }
+    for (const d of [userDataDir, userDataDir2, extDir]) if (d) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} }
   }
   process.exit(failed > 0 ? 1 : 0)
 }

@@ -23,10 +23,11 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import puppeteer from "puppeteer-core"
+import { testExtensionDir } from "./ext-dir.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, "../..")
-const EXT_DIR = path.resolve(__dirname, "..")
+const EXT_DIR = testExtensionDir()
 const CHROMIUM = process.env.CHROMIUM_PATH ?? "/usr/bin/chromium"
 const RELAY_PORT = parseInt(process.env.RELAY_PORT ?? "8796", 10)
 const RELAY_BASE = `http://127.0.0.1:${RELAY_PORT}`
@@ -217,8 +218,7 @@ async function main() {
   // Backoff base 1s; allow up to ~4s for the connect+register+mint to land.
   await sleep(4000)
 
-  // The popup should have received a `url_changed` event and updated its
-  // linkInput. Read the live value.
+  // The popup polls the SW and should now show the re-minted URL.
   const newUrl = await step("popup reflects new URL after reconnect", async () => {
     const val = await popup.evaluate(() => document.querySelector("#link-input")?.value ?? "")
     if (!val) throw new Error("link-input empty after reconnect")
@@ -247,5 +247,6 @@ main()
     try { await chrome?.browser?.close() } catch {}
     try { await relay?.stop() } catch {}
     try { await statics?.close() } catch {}
+    try { fs.rmSync(EXT_DIR, { recursive: true, force: true }) } catch {}
     process.exit(failed === 0 ? 0 : 1)
   })
