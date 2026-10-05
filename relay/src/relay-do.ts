@@ -38,6 +38,7 @@ const MAX_AGENTS_MD_BYTES = 64 * 1024
 const MAX_TASKS_PER_SESSION = 100
 const MAX_TASK_BODY_BYTES = 64 * 1024
 const REGISTER_TIMEOUT_MS = 10_000
+const MAX_FRAME_BYTES = 4 * 1024 * 1024
 
 const TOOL_PATH_RE = /^\/[a-zA-Z0-9_\-/.]+$/
 // Task IDs are app-supplied strings used as Map keys and echoed in HTTP
@@ -153,6 +154,12 @@ export class RelayServer extends Server<Env> {
 
   onMessage(c: Connection, raw: string | ArrayBuffer): void {
     if (c.id !== this.appWs?.id) return
+    // workerd's own limit is 32 MiB; parsing frames that big risks OOM for
+    // every session sharing this isolate.
+    if ((typeof raw === "string" ? raw.length : raw.byteLength) > MAX_FRAME_BYTES) {
+      this.dropApp(1009, "frame too large")
+      return
+    }
     const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw)
     let msg: Frame
     try { msg = JSON.parse(text) as Frame } catch {
