@@ -657,7 +657,7 @@ POST $BASE/set_pixel
       </div>
       <div>
         <h3>Self-host the relay</h3>
-        <p>One Cloudflare Worker with a Durable Object per session. Run <code>npx wrangler deploy</code> in <code>relay/</code> and point the SDK’s <code>baseUrl</code> at it. Session state lives in memory: held for a minute after your app drops so it can resume, gone when it disconnects for good.</p>
+        <p>One Cloudflare Worker with a Durable Object per session. Run <code>npx wrangler deploy --env=""</code> in <code>relay/</code> and point the SDK’s <code>baseUrl</code> at it. Sessions are kept in Durable Object storage for up to 24 hours after your app drops, so links survive sleep and restarts, and are wiped when the app ends the session.</p>
       </div>
       <div>
         <h3><a href="https://github.com/blitzdotdev/agent-socket/tree/master/examples/pixel-art-canvas">Try the smallest demo</a></h3>

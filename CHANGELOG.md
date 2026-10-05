@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
-- **Chrome extension**: a session timer: sessions stop 60 minutes after Connect by default (Settings: 15 min to 8 h, or no limit), shown in the bar and the popup, with Stop now, Change and Remove timer; expiry is a clean Stop. A site lock, on by default: tools act only while the tab is on an allowed origin (at first the one it was on at Connect), checked on every call and pinned to the checked document; elsewhere calls return 403 `origin_not_allowed`, `/navigate` refuses other origins, and the bar says "AI paused" with **Allow** for that site. The popup lists the allowed sites and has "Let the AI use other sites in this tab" (default in Settings). On another allowed site the session's tools swap to that site's profile on the same link. `/page_info` returns `session_ends_at` and `allowed_origins`.
+Chrome extension 0.5.0.
+
+- **Chrome extension** (0.5.0): a session timer: sessions stop 60 minutes after Connect by default (Settings: 15 min to 8 h, or no limit), shown in the bar and the popup, with Stop now, Change and Remove timer; expiry is a clean Stop. A site lock, on by default: tools act only while the tab is on an allowed origin (at first the one it was on at Connect), checked on every call and pinned to the checked document; elsewhere calls return 403 `origin_not_allowed`, `/navigate` refuses other origins, and the bar says "AI paused" with **Allow** for that site. The popup lists the allowed sites and has "Let the AI use other sites in this tab" (default in Settings). On another allowed site the session's tools swap to that site's profile on the same link. `/page_info` returns `session_ends_at` and `allowed_origins`.
 
 ## 0.2.0
 
