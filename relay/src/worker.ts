@@ -72,6 +72,10 @@ export default {
       if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
         return errorResponse("protocol_error", "expected ws upgrade", 400)
       }
+      const ip = req.headers.get("cf-connecting-ip") ?? ""
+      if (!(await env.WS_RATE_LIMIT.limit({ key: ip })).success) {
+        return errorResponse("rate_limited", "too many connections from this address", 429)
+      }
       // Generate a session-id at the edge — or, when DEBUG=1, honor a
       // ?force_session= query param so the harness can drive the
       // "second WS rejected" path. Never honored in prod.

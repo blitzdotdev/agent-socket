@@ -21,6 +21,12 @@
     ]
   },
 
+  // Per-IP cap on /v1/_ws upgrades (each one spawns a session DO). Counted
+  // per Cloudflare location. namespace_id must be unique within the account.
+  "ratelimits": [
+    { "name": "WS_RATE_LIMIT", "namespace_id": "1001", "simple": { "limit": 60, "period": 10 } }
+  ],
+
   "migrations": [
     { "tag": "v1", "new_classes": ["RelayServer"] }
   ],
