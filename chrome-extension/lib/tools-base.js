@@ -3,6 +3,7 @@
 // Each tool defines a `path`, `description`, `input_schema`, and a `handler`.
 // Handlers receive { body } (string) and run in the SERVICE WORKER; they act
 // only on the bound tab (via `getTabId`), executing code in its MAIN world.
+// With a site lock (`pinTab`), code only runs in the document the lock checked.
 
 import { normalizeLocalHost, validateProfile } from "./profiles.js"
 
@@ -17,7 +18,13 @@ function bad(msg, extra) {
   return { status: 400, body: { error: { code: "bad_input", message: msg, ...(extra ?? {}) } } }
 }
 
+// `e.response`: a ready error response, e.g. the site lock's 403.
 function runtimeError(e) {
+  if (e?.response) return e.response
+  // The document a call was pinned to is gone: the tab navigated meanwhile.
+  if (/^No document with id/.test(e?.message ?? "")) {
+    return { status: 409, body: { error: { code: "page_changed", message: "The tab navigated as this call started, so nothing ran. Call again (or /page_info to see where it went)." } } }
+  }
   return { status: 500, body: { error: { code: "runtime_error", message: e?.message ?? String(e) } } }
 }
 
@@ -126,19 +133,19 @@ const CSP_HINT = "This site's Content Security Policy blocks running code withou
  * Fallback: scripting.executeScript + new Function(), which works on pages
  * that allow 'unsafe-eval'.
  */
-async function runPageCode(tabId, code, args, timeoutMs) {
+async function runPageCode(target, code, args, timeoutMs) {
   const src = buildPageScript(code, args, timeoutMs)
   let r
   if (userScriptsAvailable()) {
     try {
-      ;[r] = await chrome.userScripts.execute({ target: { tabId }, world: "MAIN", js: [{ code: src }] })
+      ;[r] = await chrome.userScripts.execute({ target, world: "MAIN", js: [{ code: src }] })
       if (r?.error) return runtimeError(new Error(typeof r.error === "string" ? r.error : (r.error.message ?? "user script error")))
     } catch { r = null /* e.g. cross-origin frame — try the fallback */ }
   }
   if (!r) {
     try {
       ;[r] = await chrome.scripting.executeScript({
-        target: { tabId },
+        target,
         world: "MAIN",
         func: (src) => {
           try { return new Function("return " + src)() }
@@ -158,12 +165,21 @@ async function runPageCode(tabId, code, args, timeoutMs) {
   return v
 }
 
+// The injection target for a tool call on the bound tab: with a site lock,
+// pinned to the document it allowed, so a navigation between the check and
+// the injection can't hand the call another site's page.
+function pageTarget(getTabId, pinTab) {
+  return async () => {
+    const tabId = await getTabId()
+    if (!tabId) throw new Error("the connected tab is gone")
+    return pinTab ? pinTab(tabId) : { tabId }
+  }
+}
+
 /** Execute a function in the page's main world on the bound tab. */
-async function execInPage(getTabId, fn, args, opts) {
-  const tabId = await getTabId()
-  if (!tabId) throw new Error("the connected tab is gone")
+async function execInPage(getTarget, fn, args) {
   const [result] = await chrome.scripting.executeScript({
-    target: { tabId, allFrames: !!opts?.allFrames },
+    target: await getTarget(),
     world: "MAIN",
     func: fn,
     args: args ?? [],
@@ -189,8 +205,13 @@ export const BASE_TOOL_PATHS = new Set([
 ])
 
 // savePendingProfile({ host, notes, tools }): stores an AI-saved profile for
-// the user to Keep or Discard (background.js).
-export function buildBaseTools({ getTabId, savePendingProfile }) {
+// the user to Keep or Discard (background.js). Site lock (optional):
+// pinTab(tabId) → injection target for the tab's current document, or throws
+// an error with the 403 `response`; navRefusal(url) → that response for a
+// /navigate target outside the allowed sites, or null. sessionInfo() → extra
+// /page_info fields.
+export function buildBaseTools({ getTabId, savePendingProfile, pinTab, navRefusal, sessionInfo }) {
+  const target = pageTarget(getTabId, pinTab)
   return [
     // ── 1. The escape hatch: raw eval ────────────────────────────────
     {
@@ -209,20 +230,18 @@ export function buildBaseTools({ getTabId, savePendingProfile }) {
         const args = parseBody(body)
         if (typeof args.code !== "string") return bad("expected { code: string }")
         const timeoutMs = Math.min(Math.max(args.timeout_ms ?? 5000, 100), 30000)
-        const tabId = await getTabId()
-        if (!tabId) return runtimeError(new Error("the connected tab is gone"))
-        return runPageCode(tabId, args.code, null, timeoutMs)
+        try { return await runPageCode(await target(), args.code, null, timeoutMs) } catch (e) { return runtimeError(e) }
       },
     },
 
     // ── 2. Page info ─────────────────────────────────────────────────
     {
       path: "/page_info",
-      description: "Return basic info about the connected tab: url, title, host, viewport, scroll position, document size, doc readyState, and a short text excerpt. Cheap; safe to call first.",
+      description: "Return basic info about the connected tab: url, title, host, viewport, scroll position, document size, doc readyState, and a short text excerpt. Cheap; safe to call first. Also `session_ends_at` (ISO time the user's timer ends this session, or null) and `allowed_origins` (the sites you may act on in this tab, or \"any\").",
       input_schema: { type: "object", properties: {} },
       handler: async () => {
         try {
-          const info = await execInPage(getTabId, () => ({
+          const info = await execInPage(target, () => ({
             url: location.href,
             host: location.host,
             title: document.title,
@@ -232,7 +251,7 @@ export function buildBaseTools({ getTabId, savePendingProfile }) {
             doc: { w: document.documentElement.scrollWidth, h: document.documentElement.scrollHeight },
             text_excerpt: (document.body?.innerText || "").slice(0, 400),
           }))
-          return info
+          return { ...info, ...sessionInfo?.() }
         } catch (e) { return runtimeError(e) }
       },
     },
@@ -259,7 +278,7 @@ export function buildBaseTools({ getTabId, savePendingProfile }) {
           : ["href", "name", "type", "value", "aria-label", "role", "placeholder", "alt", "title"]
         const text_max = Math.min(Math.max(args.text_max ?? 200, 0), 5000)
         try {
-          const result = await execInPage(getTabId, (selector, limit, attrs, textMax) => {
+          const result = await execInPage(target, (selector, limit, attrs, textMax) => {
             let nodes
             try { nodes = document.querySelectorAll(selector) }
             catch (e) { return { __err: `bad selector: ${e.message}` } }
@@ -301,7 +320,7 @@ export function buildBaseTools({ getTabId, savePendingProfile }) {
         const args = parseBody(body)
         if (typeof args.selector !== "string") return bad("expected { selector: string }")
         try {
-          const result = await execInPage(getTabId, (selector, nth) => {
+          const result = await execInPage(target, (selector, nth) => {
             const nodes = document.querySelectorAll(selector)
             if (nodes.length <= nth) return { clicked: false, reason: `only ${nodes.length} matches for selector` }
             const el = nodes[nth]
@@ -339,7 +358,7 @@ export function buildBaseTools({ getTabId, savePendingProfile }) {
           return bad("expected { selector: string, value: string }")
         }
         try {
-          const result = await execInPage(getTabId, (selector, value, append, submit) => {
+          const result = await execInPage(target, (selector, value, append, submit) => {
             const el = document.querySelector(selector)
             if (!el) return { filled: false, reason: "no match" }
             try { el.scrollIntoView({ block: "center", behavior: "instant" }) } catch {}
@@ -389,7 +408,7 @@ export function buildBaseTools({ getTabId, savePendingProfile }) {
         const timeoutMs = Math.min(Math.max(args.timeout_ms ?? 5000, 100), 30000)
         const absent = !!args.absent
         try {
-          const result = await execInPage(getTabId, async (selector, timeoutMs, absent) => {
+          const result = await execInPage(target, async (selector, timeoutMs, absent) => {
             const deadline = Date.now() + timeoutMs
             while (Date.now() < deadline) {
               const el = document.querySelector(selector)
@@ -412,7 +431,7 @@ export function buildBaseTools({ getTabId, savePendingProfile }) {
     // ── 7. Navigate ─────────────────────────────────────────────────
     {
       path: "/navigate",
-      description: "Navigate the connected tab to an http(s) URL. If `wait_load` is true (default), waits for the `load` event before returning. Refuses local/private-network hosts (localhost, private/link-local/CGNAT IPs, single-label and .local/.lan/.internal names) by URL only — no DNS check. This is a guardrail, not a sandbox: /eval, /click and the page itself can still navigate anywhere.",
+      description: "Navigate the connected tab to an http(s) URL. If `wait_load` is true (default), waits for the `load` event before returning. Refuses sites the user hasn't allowed for this session (403 origin_not_allowed; see `allowed_origins` in /page_info). Also refuses local/private-network hosts (localhost, private/link-local/CGNAT IPs, single-label and .local/.lan/.internal names) by URL only — no DNS check; that part is a guardrail, not a sandbox.",
       input_schema: {
         type: "object",
         required: ["url"],
@@ -427,6 +446,8 @@ export function buildBaseTools({ getTabId, savePendingProfile }) {
         if (typeof args.url !== "string") return bad("expected { url: string }")
         const urlErr = navUrlError(args.url)
         if (urlErr) return bad(urlErr)
+        const refused = navRefusal?.(args.url)
+        if (refused) return refused
         const wait = args.wait_load !== false
         const timeoutMs = Math.min(Math.max(args.timeout_ms ?? 15000, 100), 60000)
         const tabId = await getTabId()
@@ -465,7 +486,7 @@ export function buildBaseTools({ getTabId, savePendingProfile }) {
       handler: async ({ body }) => {
         const args = parseBody(body)
         try {
-          const result = await execInPage(getTabId, (a) => {
+          const result = await execInPage(target, (a) => {
             if (a.selector) {
               const el = document.querySelector(a.selector)
               if (!el) return { scrolled: false, reason: "no match" }
@@ -502,7 +523,7 @@ export function buildBaseTools({ getTabId, savePendingProfile }) {
         const args = parseBody(body)
         const max = Math.min(Math.max(args.max ?? 4000, 1), 200000)
         try {
-          const result = await execInPage(getTabId, (selector, max) => {
+          const result = await execInPage(target, (selector, max) => {
             const root = selector ? document.querySelector(selector) : document.body
             if (!root) return { text: null, reason: "no match" }
             const text = (root.innerText || root.textContent || "").replace(/\n{3,}/g, "\n\n")
@@ -528,7 +549,7 @@ export function buildBaseTools({ getTabId, savePendingProfile }) {
         const args = parseBody(body)
         const max = Math.min(Math.max(args.max ?? 8000, 1), 200000)
         try {
-          const result = await execInPage(getTabId, (selector, max) => {
+          const result = await execInPage(target, (selector, max) => {
             const root = selector ? document.querySelector(selector) : document.documentElement
             if (!root) return { html: null, reason: "no match" }
             const h = root.outerHTML
@@ -562,6 +583,7 @@ export function buildBaseTools({ getTabId, savePendingProfile }) {
             ...(args.quality ? { quality: args.quality } : {}),
           })
           if (!(await chrome.tabs.get(tabId)).active) return notVisible
+          if (pinTab) await pinTab(tabId)  // still on an allowed site
           return { data_url: dataUrl, format: args.format ?? "png", bytes: dataUrl.length }
         } catch (e) { return runtimeError(e) }
       },
@@ -626,17 +648,16 @@ export function buildBaseTools({ getTabId, savePendingProfile }) {
 // is a JS body executed in the page main world. `args` is the parsed body
 // (object). Whatever it `return`s becomes the response body.
 
-export function buildSiteTools(profile, getTabId) {
+export function buildSiteTools(profile, getTabId, pinTab) {
   if (!profile || !Array.isArray(profile.tools)) return []
+  const target = pageTarget(getTabId, pinTab)
   return profile.tools.map((t) => ({
     method: t.method,
     path: t.path,
     description: t.description,
     input_schema: t.input_schema,
     handler: async ({ body }) => {
-      const tabId = await getTabId()
-      if (!tabId) return runtimeError(new Error("the connected tab is gone"))
-      return runPageCode(tabId, t.code, parseBody(body), 30000)
+      try { return await runPageCode(await target(), t.code, parseBody(body), 30000) } catch (e) { return runtimeError(e) }
     },
   }))
 }

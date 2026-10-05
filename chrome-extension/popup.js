@@ -1,6 +1,8 @@
 // Popup controller. Talks to background via chrome.runtime.sendMessage and
 // polls its snapshot once a second while open.
 
+import { DEFAULT_SESSION_MINUTES, TIMER_CHOICES, clock, lengthLabel, originLabel, sessionMinutes, timeLeft } from "./lib/limits.js"
+
 const $ = (s) => document.querySelector(s)
 const statusDot = $("#status-dot")
 const statusText = $("#status-text")
@@ -33,6 +35,21 @@ const changedInput = $("#changed-input")
 const changedCopy = $("#changed-copy")
 const changedReason = $("#changed-reason")
 const eventsList = $("#events-list")
+const pausedCard = $("#paused-card")
+const pausedTitle = $("#paused-title")
+const pausedBody = $("#paused-body")
+const allowBtn = $("#allow-btn")
+const timerCard = $("#timer-card")
+const timerText = $("#timer-text")
+const timerStop = $("#timer-stop")
+const timerChange = $("#timer-change")
+const timerRemove = $("#timer-remove")
+const timerChoices = $("#timer-choices")
+const sitesCard = $("#sites-card")
+const sitesList = $("#sites-list")
+const anySite = $("#any-site")
+const lengthSelect = $("#length-select")
+const anyDefault = $("#any-default")
 
 let shownTab = null  // { id, windowId } of the tab the card shows
 
@@ -83,6 +100,11 @@ const EVENT_TEXT = {
   connect_failed: (e) => `Connect failed: ${e.reason}`,
   resume_retry: (e) => `Relay not reachable (${e.reason}); keeping the link and retrying (attempt ${e.attempt})`,
   stopped: () => "Stopped by the user",
+  expired: () => "Session timer ran out: stopped",
+  timer_set: (e) => e.minutes ? `Timer set: stops in ${lengthLabel(e.minutes)}` : "Timer removed",
+  origin_allowed: (e) => `Allowed ${e.host} for this session`,
+  any_origin: (e) => e.on ? "Allowed other sites in this tab" : "Locked to the allowed sites",
+  tools_swapped: (e) => `Loaded the tools for ${e.host}`,
 }
 
 let lastEventsJson = ""
@@ -136,8 +158,84 @@ async function render() {
   toolsSource.textContent = snap.sourceLabel ? `Tools: ${snap.sourceLabel}` : ""
   toolsSource.style.color = snap.source?.registry?.status === "unreachable" ? "var(--warn)" : ""
   toolsSource.title = snap.source?.registry?.error ? `Registry: ${snap.source.registry.error}` : ""
+  renderLimits(bound ? snap : null)
   await renderProfiles()
 }
+
+// ── timer + site lock ───────────────────────────────────────────────
+
+function renderLimits(snap) {
+  timerCard.hidden = sitesCard.hidden = !snap
+  pausedCard.hidden = !snap?.paused
+  if (!snap) { timerChoices.hidden = true; return }
+  const left = timeLeft(snap.endsAt, Date.now())
+  timerText.textContent = left == null ? "No auto-stop for this session" : `Auto-stop in ${clock(left)}`
+  timerCard.classList.toggle("soon", left != null && left < 60_000)
+  timerRemove.hidden = left == null
+  timerChange.textContent = left == null ? "Set timer" : "Change"
+  const p = snap.paused
+  if (p) {
+    pausedTitle.textContent = p.from ? `AI paused: the tab left ${p.from}` : "AI paused: no site is allowed"
+    pausedBody.textContent = `Tool calls on ${p.host || "this page"} are refused${p.origin ? " until you allow it" : ""}.`
+    allowBtn.hidden = !p.origin
+    allowBtn.textContent = `Allow ${p.host}`
+    allowBtn.dataset.origin = p.origin ?? ""
+  }
+  renderSites(snap.siteLock)
+}
+
+let lastSitesJson = ""
+function renderSites(lock) {
+  const json = JSON.stringify(lock)
+  if (json === lastSitesJson) return
+  lastSitesJson = json
+  anySite.checked = lock.any
+  sitesList.classList.toggle("muted", lock.any)
+  const items = lock.origins.map((o) => {
+    const del = el("a", { href: "#", class: "link-danger", "data-action": "remove", text: "remove" })
+    del.addEventListener("click", async (e) => {
+      e.preventDefault()
+      await chrome.runtime.sendMessage({ type: "remove_origin", origin: o })
+      await render()
+    })
+    return el("li", { "data-origin": o }, el("span", { class: "ellipsis", title: o, text: originLabel(o) }), del)
+  })
+  sitesList.replaceChildren(...(items.length ? items : [el("li", { text: "none" })]))
+}
+
+for (const m of TIMER_CHOICES) {
+  const b = el("button", { class: "ghost small", "data-minutes": String(m), text: lengthLabel(m) })
+  b.addEventListener("click", () => setTimer(m))
+  timerChoices.append(b)
+}
+
+async function setTimer(minutes) {
+  setError("")
+  const res = await chrome.runtime.sendMessage({ type: "set_timer", minutes })
+  if (!res?.ok) setError(res?.error ?? "could not change the timer")
+  timerChoices.hidden = true
+  await render()
+}
+
+timerStop.addEventListener("click", async () => {
+  await chrome.runtime.sendMessage({ type: "disconnect" })
+  render()
+})
+timerChange.addEventListener("click", () => { timerChoices.hidden = !timerChoices.hidden })
+timerRemove.addEventListener("click", () => setTimer(0))
+
+allowBtn.addEventListener("click", async (e) => {
+  if (!e.isTrusted) return
+  setError("")
+  const res = await chrome.runtime.sendMessage({ type: "allow_origin", origin: allowBtn.dataset.origin })
+  if (!res?.ok) setError(res?.error ?? "could not allow the site")
+  await render()
+})
+
+anySite.addEventListener("change", async () => {
+  await chrome.runtime.sendMessage({ type: "set_any_origin", any: anySite.checked })
+  await render()
+})
 
 // ── local profiles: pending (Keep / Discard) and kept (delete) ─────────
 // Everything shown here was written by the AI, so it only ever goes in via
@@ -210,10 +308,16 @@ async function renderProfiles() {
 }
 
 async function loadSettings() {
-  const stored = await chrome.storage.local.get(["relay_base", "registry_base"])
+  const stored = await chrome.storage.local.get(["relay_base", "registry_base", "session_minutes", "default_any_site"])
   relayInput.value = stored.relay_base ?? ""
   registryInput.value = stored.registry_base ?? ""
+  lengthSelect.replaceChildren(...[...TIMER_CHOICES, 0].map((m) => el("option", { value: String(m), text: lengthLabel(m) + (m === DEFAULT_SESSION_MINUTES ? " (default)" : "") })))
+  lengthSelect.value = String(sessionMinutes(stored.session_minutes))
+  anyDefault.checked = stored.default_any_site === true
 }
+
+lengthSelect.addEventListener("change", () => chrome.storage.local.set({ session_minutes: Number(lengthSelect.value) }))
+anyDefault.addEventListener("change", () => chrome.storage.local.set({ default_any_site: anyDefault.checked }))
 
 async function checkUserScripts() {
   const us = await chrome.runtime.sendMessage({ type: "check_user_scripts" })

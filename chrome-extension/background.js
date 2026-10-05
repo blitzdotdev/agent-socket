@@ -4,12 +4,15 @@
 // list from base tools + the bound tab's site profile: the registry's (fetched
 // on Connect, generic fallback) plus a local profile the user kept. Tool
 // handlers only ever touch the bound tab, which shows a toolbar badge and an
-// in-page pill (pill.js) while the session lasts.
+// in-page pill (pill.js) while the session lasts. Each session ends on a timer
+// (60 min by default) and is locked to the sites the user allowed: the tab's
+// origin at Connect, plus any they Allow later.
 
 import { connect, endSession, exponentialBackoff } from "./lib/sdk/index.js"
 import { BASE_TOOL_PATHS, buildBaseTools, buildSiteTools, userScriptsAvailable } from "./lib/tools-base.js"
 import { buildAgentsMd, findLocalProfile, mergeSiteTools, sourceLabel } from "./lib/profiles.js"
 import { DEFAULT_REGISTRY_BASE, buildRegistryTools, fetchSiteProfile } from "./lib/registry.js"
+import { TIMER_CHOICES, deadlineFor, originAllowed, originLabel, originOf, sessionMinutes, shortLeft, timeLeft } from "./lib/limits.js"
 
 // ── state ──────────────────────────────────────────────────────────
 let session = null         // SDK Session — owns the WS to the relay
@@ -29,6 +32,11 @@ let lastBase = null        // relay base the session is on
 // 503 app_offline now, so the pill, popup and badge say so until the user
 // copies the new link or a tool call arrives on it.
 let linkChanged = null
+// Session timer + site lock (lib/limits.js), saved with the session.
+let endsAt = null          // when the session auto-stops (ms epoch), or null: no limit
+let allowedOrigins = []    // origins tool calls may act on
+let anyOrigin = false      // the user let the AI use any site in this tab
+let toolsHost = null       // host (with port) whose site tools are loaded
 
 // Default relay base. Overridable in the popup via chrome.storage.local.relay_base.
 const DEFAULT_BASE = "https://agentsocket.dev"
@@ -58,6 +66,77 @@ async function getBoundTabId() {
 
 async function getRegistryBase() {
   return ((await chrome.storage.local.get("registry_base")).registry_base || DEFAULT_REGISTRY_BASE).replace(/\/+$/, "")
+}
+
+// ── site lock ──────────────────────────────────────────────────────
+// Tool calls act only while the bound tab is on an allowed origin, checked
+// on every call (links the AI clicked, redirects, /eval `location=`, the user
+// browsing all land here). The registry tools don't touch the page, so they
+// stay usable while paused.
+const LOCK_EXEMPT = new Set(["/registry_search", "/registry_get", "/registry_submit"])
+const lock = () => ({ origins: allowedOrigins, any: anyOrigin })
+const allowedLabel = () => allowedOrigins.length === 1 ? originLabel(allowedOrigins[0]) : allowedOrigins.length ? "the allowed sites" : null
+
+// Why tool calls are refused on the bound tab at `url`, or null if they aren't.
+// `from`: what the tab left; `origin`: what "Allow" would add (null if it can't).
+function pauseInfo(url) {
+  if (originAllowed(url, lock())) return null
+  const origin = originOf(url)
+  return { host: origin ? originLabel(origin) : hostOf(url), origin, from: allowedLabel() }
+}
+
+const notAllowed = (message, host) => ({
+  status: 403,
+  body: { error: { code: "origin_not_allowed", message, host, allowed_origins: allowedOrigins } },
+})
+
+function pausedResponse(url) {
+  const p = pauseInfo(url)
+  const where = p.host ? `on ${p.host}` : "on a page"
+  return notAllowed(`The tab is now ${where}, which the user hasn't allowed for this session, so nothing was done. `
+    + (p.origin ? `Ask the user to click "Allow ${p.host}" in the Agent Socket bar or popup, or to` : "Ask the user to")
+    + ` bring the tab back to ${p.from ?? "an allowed site"}.`, p.host)
+}
+
+function navRefusal(url) {
+  if (originAllowed(url, lock())) return null
+  const host = hostOf(url)
+  return notAllowed(`Navigation to ${host} refused: the user hasn't allowed it for this session (allowed: ${allowedOrigins.map(originLabel).join(", ") || "none"}). `
+    + `Ask the user to allow it: they can open it in this tab and click "Allow ${host}" in the Agent Socket extension, or turn on "Let the AI use other sites in this tab".`, host)
+}
+
+async function tabRefusal() {
+  const tab = boundTabId != null ? await chrome.tabs.get(boundTabId).catch(() => null) : null
+  return tab && !originAllowed(tab.url, lock()) ? pausedResponse(tab.url) : null
+}
+
+// Injection target for a tool call, pinned to the document whose origin was
+// checked: if the tab navigates after this, the injection fails instead of
+// running on the next page.
+async function pinTab(tabId) {
+  if (anyOrigin) return { tabId }
+  const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: () => location.href })
+  if (!originAllowed(r?.result, lock())) throw Object.assign(new Error("origin_not_allowed"), { response: pausedResponse(r?.result) })
+  return { tabId, documentIds: [r.documentId] }
+}
+
+// ── session timer ──────────────────────────────────────────────────
+// A chrome.alarms deadline, so it fires even if the worker was stopped. On
+// expiry: the same clean Stop as the Stop button.
+const TIMER_ALARM = "as-session-end"
+function setDeadline(at) {
+  endsAt = at
+  if (at == null) void chrome.alarms.clear(TIMER_ALARM)
+  else chrome.alarms.create(TIMER_ALARM, { when: at })
+}
+const expired = () => endsAt != null && Date.now() >= endsAt
+
+function resetLimits() {
+  setDeadline(null)
+  allowedOrigins = []
+  anyOrigin = false
+  toolsHost = null
+  clearTimeout(swapTimer)
 }
 
 // ── local site profiles ────────────────────────────────────────────
@@ -113,15 +192,28 @@ const summarize = (p, withTools) => ({
 // ── tool set for the bound tab ─────────────────────────────────────
 
 // A tool call can only arrive on the current link, so the AI has it.
-const track = (t) => ({ ...t, handler: (ctx) => {
+const track = (t) => ({ ...t, handler: async (ctx) => {
+  if (expired()) {
+    void stopConnect("expired")
+    return { status: 403, body: { error: { code: "session_expired", message: "The user's session timer ran out, so the session is ending. Ask the user to connect again if there is more to do." } } }
+  }
   lastToolCallAt = Date.now()
   if (linkChanged) void clearLinkChanged("tool_call")
+  if (!LOCK_EXEMPT.has(t.path)) {
+    const refused = await tabRefusal()
+    if (refused) return refused
+  }
   return t.handler(ctx)
 } })
 
+const sessionInfo = () => ({
+  session_ends_at: endsAt == null ? null : new Date(endsAt).toISOString(),
+  allowed_origins: anyOrigin ? "any" : allowedOrigins,
+})
+
 function baseTools() {
   return [
-    ...buildBaseTools({ getTabId: getBoundTabId, savePendingProfile }),
+    ...buildBaseTools({ getTabId: getBoundTabId, savePendingProfile, pinTab, navRefusal, sessionInfo }),
     ...buildRegistryTools({
       getBase: getRegistryBase,
       getHostname: async () => {
@@ -136,14 +228,13 @@ function baseTools() {
 }
 
 // Base tools + registry profile + kept local profile (local wins on a
-// METHOD+path clash), with the agents.md describing them.
-async function computeToolSet(tab, registry) {
-  const host = hostOf(tab.url)
+// METHOD+path clash) for `host` (with port), with the agents.md describing them.
+async function computeToolSet(host, registry) {
   const kept = await withProfiles((d) => d.kept)
-  const local = findLocalProfile(kept, host, hostnameOf(tab.url))
+  const local = findLocalProfile(kept, host, hostnameOf(`http://${host}`))
   const merged = mergeSiteTools(registry?.profile?.tools, local?.tools, BASE_TOOL_PATHS)
   if (merged.dropped.length) console.warn("[as-ext] skipped unusable site tools:", merged.dropped)
-  const tools = [...baseTools(), ...buildSiteTools({ tools: merged.tools }, getBoundTabId)].map(track)
+  const tools = [...baseTools(), ...buildSiteTools({ tools: merged.tools }, getBoundTabId, pinTab)].map(track)
   const agentsMd = buildAgentsMd({ host, registry, local, tools })
   const source = {
     registry: {
@@ -159,20 +250,30 @@ async function computeToolSet(tab, registry) {
   return { tools, agentsMd, source, key }
 }
 
-// Re-registers the bound tab's tools on the live session (same URL) after a
-// Keep or delete. Waits up to `waitMs` (the SDK holds an update made while
-// reconnecting until the session is back, then applies it).
-async function refreshLiveTools(waitMs = 5000) {
-  const s = session, tabId = boundTabId
-  if (!s || tabId == null) return { live: false }
-  const tab = await chrome.tabs.get(tabId).catch(() => null)
-  if (!tab) return { live: false }
-  const set = await computeToolSet(tab, lastRegistry)
+// Re-registers the session's tools on the live session (same URL): for the
+// loaded host after a Keep or delete, or for another `host` + `registry` when
+// the tab moved to another allowed site. Waits up to `waitMs` (the SDK holds
+// an update made while reconnecting until the session is back, then applies
+// it). One at a time.
+let toolsChain = Promise.resolve()
+function refreshLiveTools(waitMs = 5000, host = toolsHost, registry = lastRegistry) {
+  const p = toolsChain.then(() => applyTools(waitMs, host, registry))
+  toolsChain = p.catch(() => {})
+  return p
+}
+
+async function applyTools(waitMs, host, registry) {
+  const s = session
+  if (!s || boundTabId == null || host == null) return { live: false }
+  const set = await computeToolSet(host, registry)
   if (set.key === lastToolsKey) return { live: true, changed: false }
   const applied = s.updateTools(set.tools, set.agentsMd).then(() => {
     if (s !== session) return
     lastToolsKey = set.key
     lastSource = set.source
+    lastRegistry = registry
+    toolsHost = host
+    void saveSession()
   })
   const timedOut = await Promise.race([
     applied.then(() => false),
@@ -241,8 +342,35 @@ async function clearLinkChanged(via) {
 
 // Navigations reset per-tab badges and drop the pill; put both back.
 chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (tabId === boundTabId && info.status === "complete") void showIndicator(tabId)
+  if (tabId !== boundTabId) return
+  if (info.status === "complete") void showIndicator(tabId)
+  if (info.url || info.status === "complete") scheduleToolSwap()
 })
+
+// ── tools follow the tab across allowed sites ──────────────────────
+// Once the tab settles on an allowed site other than the one whose tools are
+// loaded, load that site's registry profile (+ kept local profile) on the
+// same link. A paused tab keeps the loaded tools.
+let swapTimer = null
+function scheduleToolSwap(delay = 500) {
+  clearTimeout(swapTimer)
+  swapTimer = setTimeout(() => void swapTools().catch((e) => console.warn("[as-ext] tool swap failed:", e?.message ?? e)), delay)
+}
+
+async function swapTools() {
+  const s = session
+  const tab = s && boundTabId != null ? await chrome.tabs.get(boundTabId).catch(() => null) : null
+  if (!tab || !originAllowed(tab.url, lock())) return
+  const host = hostOf(tab.url), hostname = hostnameOf(tab.url)
+  if (!host || host === toolsHost) return
+  const base = await getRegistryBase()
+  const registry = lastRegistry?.hostname === hostname && lastRegistry.base === base
+    ? lastRegistry
+    : { ...(await fetchSiteProfile(base, hostname)), hostname, base }
+  if (s !== session) return
+  logEvent("tools_swapped", { host })
+  await refreshLiveTools(5000, host, registry)
+}
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (tabId === boundTabId) void stopConnect()
@@ -257,14 +385,22 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // reached yet (laptop just woke, network down), the saved session is kept and
 // retried with backoff, here and on every later worker start, until the relay
 // answers: it then resumes, or refuses and a new link is made.
-const SAVED_KEY = "as_session"  // { tabId, base, sessionId, secret, url, token, registry, linkChanged }
+const SAVED_KEY = "as_session"  // { tabId, base, sessionId, secret, url, token, registry, linkChanged, endsAt, allowedOrigins, anyOrigin, toolsHost }
 let resumeRetry = null     // { timer, attempt }: pending retry of a saved session's resume
 
 async function saveSession() {
-  if (!session || boundTabId == null) return
+  const tabId = boundTabId
+  if (tabId == null) return
+  const limits = { endsAt, allowedOrigins, anyOrigin, toolsHost }
+  if (!session) {
+    // Still waiting to resume: keep the saved session, with the user's latest timer and sites.
+    const saved = (await chrome.storage.session.get(SAVED_KEY).catch(() => ({})))[SAVED_KEY]
+    if (saved?.tabId === tabId && boundTabId === tabId) await chrome.storage.session.set({ [SAVED_KEY]: { ...saved, ...limits } }).catch(() => {})
+    return
+  }
   await chrome.storage.session.set({
     [SAVED_KEY]: {
-      tabId: boundTabId,
+      tabId,
       base: lastBase,
       sessionId: session.sessionId,
       secret: session.resumeSecret,
@@ -272,6 +408,7 @@ async function saveSession() {
       token: lastToken,
       registry: lastRegistry,
       linkChanged,
+      ...limits,
     },
   }).catch(() => {})
 }
@@ -288,6 +425,12 @@ const restored = (async () => {
     return
   }
   boundTabId = tab.id
+  allowedOrigins = saved.allowedOrigins ?? [originOf(tab.url)].filter(Boolean)
+  anyOrigin = !!saved.anyOrigin
+  toolsHost = saved.toolsHost ?? null
+  setDeadline(saved.endsAt ?? null)
+  // The timer ran out while the worker was stopped: end the held session.
+  if (expired()) return void stopConnect("expired")
   emitStatus({ status: "connecting" })
   // Don't await: a slow resume mustn't hold up every message handler.
   startConnect(tab.id, saved).catch((e) => console.warn("[as-ext] resume after restart failed:", e?.message ?? e))
@@ -341,17 +484,27 @@ async function doConnect(tabId, saved) {
   if (!(await chrome.permissions.contains(SITE_ACCESS))) {
     throw new Error("site access not granted — click Connect in the extension popup to allow it")
   }
-  const base = (await chrome.storage.local.get("relay_base")).relay_base || DEFAULT_BASE
+  const settings = await chrome.storage.local.get(["relay_base", "session_minutes", "default_any_site", "test_session_ms"])
+  const base = settings.relay_base || DEFAULT_BASE
   const resume = saved && saved.base === base ? { sessionId: saved.sessionId, secret: saved.secret } : undefined
   lastBase = base
 
   boundTabId = tab.id
   lastToolCallAt = null
+  // A new session's timer counts from Connect and it is locked to this tab's
+  // origin. (A saved one's were restored with it.) `test_session_ms`: a short
+  // deadline for the e2e tests, settable only from devtools.
+  if (!saved) {
+    setDeadline(settings.test_session_ms > 0 ? Date.now() + settings.test_session_ms : deadlineFor(sessionMinutes(settings.session_minutes), Date.now()))
+    allowedOrigins = [originOf(tab.url)].filter(Boolean)
+    anyOrigin = settings.default_any_site === true
+  }
   // While resuming a saved session, its link (and any unacknowledged change)
   // stays on show: the relay is holding it.
   linkChanged = saved?.linkChanged ?? null
   if (saved?.url) { lastUrl = saved.url; lastToken = saved.token }
-  const host = hostOf(tab.url)
+  // Tools for the tab's site; a resumed session that is paused keeps the ones it had.
+  const host = !originAllowed(tab.url, lock()) && toolsHost ? toolsHost : hostOf(tab.url)
   emitStatus({ status: resumeRetry ? "reconnect-failed" : "connecting" })
 
   const reconnectBackoff = exponentialBackoff()
@@ -360,13 +513,13 @@ async function doConnect(tabId, saved) {
     // The registry decides the shared tools. A resumed session reuses the
     // answer it was started with (same tools as before the restart); if the
     // registry is down, connect anyway with base + local tools.
-    const hostname = hostnameOf(tab.url)
+    const hostname = hostnameOf(`http://${host}`)
     const registryBase = await getRegistryBase()
     registry = saved?.registry && saved.registry.hostname === hostname && saved.registry.base === registryBase
       ? saved.registry
       : { ...(await fetchSiteProfile(registryBase, hostname)), hostname, base: registryBase }
     if (boundTabId !== tab.id) throw new Error("connect cancelled")
-    toolSet = await computeToolSet(tab, registry)
+    toolSet = await computeToolSet(host, registry)
     const { tools, agentsMd } = toolSet
     s = await connect({
       baseUrl: base,
@@ -441,6 +594,7 @@ async function doConnect(tabId, saved) {
     lastRegistry = registry
     lastSource = toolSet.source
     lastToolsKey = toolSet.key
+    toolsHost = host
   } catch (e) {
     s?.close()
     logEvent("connect_failed", { reason: e?.message ?? String(e) })
@@ -455,6 +609,7 @@ async function doConnect(tabId, saved) {
     }
     if (boundTabId === tab.id) {
       lastUrl = lastToken = null
+      resetLimits()
       boundTabId = null; void hideIndicator(tab.id)
       await chrome.storage.session.remove(SAVED_KEY).catch(() => {})
     }
@@ -465,12 +620,15 @@ async function doConnect(tabId, saved) {
   await saveSession()
   emitStatus({ status: "connected", sessionId: session.sessionId })
   await showIndicator(tab.id)
-  // A Keep or delete while we were connecting: pick it up (no-op otherwise).
+  // A Keep or delete, or the tab moving to another site, while we were
+  // connecting: pick it up (no-op otherwise).
   void refreshLiveTools().catch(() => {})
+  scheduleToolSwap(0)
   return { status: "connected", url: lastUrl, host, profile: registry.profile?.host ?? null, source: toolSet.source, tool_count: toolSet.tools.length }
 }
 
-async function stopConnect() {
+// `why`: "stopped" (the user, a closed tab, another Connect) or "expired" (the timer).
+async function stopConnect(why = "stopped") {
   cancelResumeRetry()
   const s = session, token = lastToken, tabId = boundTabId
   // Reset synchronously: a connect in flight checks boundTabId after each await.
@@ -479,8 +637,9 @@ async function stopConnect() {
   lastRegistry = lastSource = lastToolsKey = null
   linkChanged = null
   boundTabId = null
-  if (s) logEvent("stopped")
-  emitStatus({ status: "idle" })
+  resetLimits()
+  if (s || (why === "expired" && tabId != null)) logEvent(why)
+  emitStatus(why === "expired" ? { status: "closed", reason: "the session timer ran out" } : { status: "idle" })
   // Stopped while still waiting to resume a saved session: the relay is
   // holding it, so end it there too.
   const held = !s && tabId != null ? (await chrome.storage.session.get(SAVED_KEY).catch(() => ({})))[SAVED_KEY] : null
@@ -513,9 +672,16 @@ async function snapshot() {
     sourceLabel: session ? sourceLabel(lastSource) : "",
     lastToolCallAt,
     linkChanged,
+    endsAt,
+    siteLock: { origins: allowedOrigins, any: anyOrigin },
+    paused: tab ? pauseInfo(tab.url) : null,
     events: events.slice(-10),
   }
 }
+
+// Our own pages (the popup) vs content scripts (the pill, in the bound tab's top frame).
+const fromPopup = (sender) => sender.id === chrome.runtime.id && !!sender.url?.startsWith(chrome.runtime.getURL(""))
+const fromPillOrPopup = (sender) => fromPopup(sender) || (sender.tab?.id != null && sender.tab.id === boundTabId && sender.frameId === 0)
 
 // ── popup + pill messaging ──────────────────────────────────────────
 
@@ -527,7 +693,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       else if (msg?.type === "disconnect") sendResponse({ ok: true, ...(await stopConnect()) })
       else if (msg?.type === "snapshot") sendResponse({ ok: true, ...(await snapshot()) })
       else if (msg?.type === "pill_state") {
-        sendResponse({ bound: sender.tab?.id != null && sender.tab.id === boundTabId, status: lastStatus.status, lastToolCallAt, linkChanged: !!linkChanged })
+        const bound = sender.tab?.id != null && sender.tab.id === boundTabId
+        const left = bound ? timeLeft(endsAt, Date.now()) : null
+        sendResponse({
+          bound, status: lastStatus.status, lastToolCallAt, linkChanged: !!linkChanged,
+          left: left == null ? null : shortLeft(left), soon: left != null && left < 60_000,
+          paused: bound ? pauseInfo(sender.tab.url) : null,
+        })
+      } else if (msg?.type === "set_timer") {
+        // A new length from now (popup Change), or 0: no limit (Remove timer).
+        if (!fromPopup(sender) || boundTabId == null) throw new Error("not connected")
+        const minutes = Number(msg.minutes)
+        if (minutes !== 0 && !TIMER_CHOICES.includes(minutes)) throw new Error(`timer must be one of ${TIMER_CHOICES.join(", ")} minutes, or 0`)
+        setDeadline(deadlineFor(minutes, Date.now()))
+        logEvent("timer_set", { minutes })
+        await saveSession()
+        sendResponse({ ok: true, endsAt })
+      } else if (msg?.type === "allow_origin") {
+        // "Allow <host>": adds the origin the tab is on now, which must be the
+        // one the button showed.
+        if (!fromPillOrPopup(sender) || boundTabId == null) throw new Error("not connected")
+        const tab = await chrome.tabs.get(boundTabId).catch(() => null)
+        const origin = originOf(tab?.url)
+        if (!origin || origin !== msg.origin) throw new Error("the tab is no longer on that site")
+        if (!allowedOrigins.includes(origin)) allowedOrigins = [...allowedOrigins, origin]
+        logEvent("origin_allowed", { host: originLabel(origin) })
+        await saveSession()
+        scheduleToolSwap(0)
+        sendResponse({ ok: true })
+      } else if (msg?.type === "remove_origin") {
+        if (!fromPopup(sender) || boundTabId == null) throw new Error("not connected")
+        allowedOrigins = allowedOrigins.filter((o) => o !== msg.origin)
+        await saveSession()
+        sendResponse({ ok: true })
+      } else if (msg?.type === "set_any_origin") {
+        if (!fromPopup(sender) || boundTabId == null) throw new Error("not connected")
+        anyOrigin = msg.any === true
+        logEvent("any_origin", { on: anyOrigin })
+        await saveSession()
+        scheduleToolSwap(0)
+        sendResponse({ ok: true })
       } else if (msg?.type === "pill_link") {
         // Only to the pill in the bound tab's top frame (our content script;
         // page scripts can't message the extension). It never enters the DOM.
@@ -595,4 +800,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.alarms.create("as-keepalive", { periodInMinutes: 0.5 })
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === "as-keepalive" && session?.connected) session.ping()
+  if (a.name === TIMER_ALARM) {
+    void restored.then(() => {
+      if (endsAt == null) return
+      if (Date.now() >= endsAt - 1000) void stopConnect("expired")
+      else setDeadline(endsAt)  // fired early: re-arm
+    })
+  }
 })
