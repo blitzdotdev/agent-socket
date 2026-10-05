@@ -7,9 +7,46 @@ paste-able URL. Paste the URL into your AI chat and the AI can click, fill,
 read, evaluate, and screenshot the page on your behalf.
 
 While a tab is connected it shows an in-page "AI has access to this tab" bar
-(last action time + **Stop**) and an "AI" badge on the toolbar icon. Stop,
-the popup's **Stop & disconnect**, or closing the tab ends the session and
-kills the URL.
+(last action time, time left + **Stop**) and an "AI" badge on the toolbar
+icon. Stop, the popup's **Stop & disconnect**, closing the tab, or the
+session timer running out ends the session and kills the URL.
+
+## Session timer and site lock
+
+- **Timer.** A session stops 60 minutes after Connect. The default length
+  is in the popup's Settings (15 min, 30 min, 1 h, 2 h, 4 h, 8 h, No limit).
+  The popup shows "Auto-stop in 42:10" with **Stop now**, **Change** (a new
+  length from now) and **Remove timer** (no limit for this session); the bar
+  shows "42 min left"; both turn red in the last minute. The deadline is
+  saved with the session and enforced with `chrome.alarms`, so it holds
+  across service-worker restarts and keeps counting while the relay is
+  unreachable. Expiry is the same clean Stop as the Stop button. `/page_info`
+  returns `session_ends_at` (ISO, or null).
+- **Site lock** (on by default). Tools act only while the tab is on an
+  allowed origin (scheme + host + port): at first the tab's origin at
+  Connect. Every tool call checks the tab's current URL first, so links the
+  AI clicked, redirects, `/eval` setting `location`, and the user browsing
+  elsewhere are all caught; page code then runs pinned to the document that
+  was checked (`documentIds`), so a navigation in between makes the call fail
+  (409 `page_changed`) instead of running on the next site. Elsewhere, calls
+  return 403 `origin_not_allowed` naming the tab's host, without touching the
+  page, and `/navigate` refuses targets outside the allowed set (the
+  local/private-host guard applies too). The registry tools
+  (`/registry_search`, `/registry_get`, `/registry_submit`) don't touch the
+  page and keep working while paused. `/page_info` returns `allowed_origins`
+  (or `"any"`).
+- **Paused.** The bar turns blue: "AI paused: tab left github.com ·
+  [Allow mail.google.com] [Stop]"; the popup shows the same, the allowed
+  sites (removable), and **Let the AI use other sites in this tab** (per
+  session; its default for new sessions is in Settings, off). Allow adds that
+  exact origin for this session. Allow reacts only to real clicks
+  (`isTrusted`), and the bar's only while the page isn't covering it
+  (IntersectionObserver v2); otherwise it points to the toolbar icon.
+- **Tools follow the tab.** On an allowed site with another host than the
+  loaded tools, the extension fetches that site's registry profile (plus a
+  kept local profile) and swaps the session's tools with `updateTools()`, on
+  the same link; back on the first site, its tools come back. A paused tab
+  keeps the loaded tools.
 
 The relay holds a dropped connection's session for 24 hours, so the URL
 survives network loss, laptop sleep and service-worker restarts: the bar
@@ -30,12 +67,12 @@ connection events (drops, close codes, resumes), kept in memory only.
 | Path | What it does |
 | --- | --- |
 | `POST /eval` | Run arbitrary JS in the page's main world. The escape hatch — use this first on unfamiliar sites to find selectors. |
-| `POST /page_info` | URL, title, host, viewport, scroll position, short text excerpt. |
+| `POST /page_info` | URL, title, host, viewport, scroll position, short text excerpt; `session_ends_at` and `allowed_origins`. |
 | `POST /dom_query` | `querySelectorAll`, returns tag/id/classes/text/attrs of matches. |
 | `POST /click` | Click first element matching a selector. |
 | `POST /fill` | Fill an `<input>` / `<textarea>` / `contenteditable`. Dispatches input+change so React/Vue notice. |
 | `POST /wait_for` | Poll a selector until present (or absent), with timeout. |
-| `POST /navigate` | Navigate the connected tab to an http(s) URL; refuses local/private-network hosts (a guardrail — `/eval` can still navigate). Waits for load by default. |
+| `POST /navigate` | Navigate the connected tab to an http(s) URL; refuses sites outside the allowed set (403 `origin_not_allowed`) and local/private-network hosts. Waits for load by default. |
 | `POST /scroll` | Scroll into view by selector, or to absolute/relative pixels. |
 | `POST /get_text` | `innerText` of selector (or body), truncated. |
 | `POST /get_html` | `outerHTML` of selector. |
@@ -109,16 +146,24 @@ down, `/registry_search` / `/registry_get` / `/registry_submit`,
 Discard / delete, kept tools loading on reconnect, legacy profile migration,
 badge + pill on the bound tab only,
 popup state, pill re-injection after reload, tab close and pill Stop ending
-the session, and connect being refused without site access. Puppeteer can't
+the session, the session timer (pill + popup, Change, Remove, expiry ending
+the session; a hidden `test_session_ms` storage key sets a short deadline),
+the site lock (`/navigate` refused, a tab sent elsewhere by `/eval` pausing
+calls and the bar, Allow in the bar and the popup, removing a site, the
+any-site toggle) and the tool swap to a second site's registry profile on the
+same link (the page is also served as `e2e-other.test`), and connect being
+refused without site access. `SHOT_DIR=<dir>` saves pill and popup screenshots. Puppeteer can't
 click Chrome's permission prompt, so the tests load a copy of the extension
 with site access granted at install (`test/ext-dir.mjs`).
 
 `npm run ext:test:unit` (no chromium) drives the vendored SDK's reconnect path
 (resume, then re-mint when the session is gone) against a mocked WebSocket,
-checks the `/navigate` URL guard, and tests profile validation, merging and
+checks the `/navigate` URL guard, tests profile validation, merging and
 agents.md (`test/profiles.unit.mjs`, which also checks the built-in tool paths
-match `registry/src/rules.ts`). `npm run ext:test:reconnect` (chromium)
-checks the same URL survives a relay-side WS drop and a service-worker stop,
+match `registry/src/rules.ts`), and the timer arithmetic and origin check
+(`test/limits.unit.mjs`). `npm run ext:test:reconnect` (chromium)
+checks the same URL survives a relay-side WS drop and a service-worker stop
+(with the timer, its alarm and the allowed sites kept),
 and that a new URL is minted once the session is gone, with the link-changed
 bar, badge and popup banner, cleared by Copy (popup or bar) or a tool call.
 `SHOT_DIR=<dir>` saves screenshots of that state.
@@ -139,7 +184,8 @@ is a thin client that exchanges `chrome.runtime.sendMessage` calls with the
 SW. A `chrome.alarms` keepalive fires every 30s and calls `session.ping()`
 to keep the WS warm against MV3 service-worker idle-kill. A dropped WS
 resumes the same session, so the pasted URL keeps working. The live session
-(tab, session id, resume secret, URL) is kept in `chrome.storage.session`, so
+(tab, session id, resume secret, URL, timer deadline, allowed origins) is
+kept in `chrome.storage.session`, so
 a restarted service worker resumes it too; only if the relay has ended the
 session does the extension mint a new URL, and the bar, badge and popup tell
 the user the link changed (`linkChanged` in background.js).
