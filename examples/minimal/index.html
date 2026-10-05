@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Agent Socket: minimal example</title>
+<p>Count: <span id="count">0</span></p>
+<button id="connect">Connect with AI</button>
+<p id="link"></p>
+<script type="module">
+  import { connect } from "https://esm.sh/@agent-socket/sdk@0.1"
+
+  let count = 0
+  document.querySelector("#connect").onclick = async () => {
+    const session = await connect({
+      baseUrl: "https://agentsocket.dev",
+      appId: "minimal-example",
+      agentsMd: "# Counter\nA page with one counter. Call /increment to add to it.",
+      tools: [{
+        path: "/increment",
+        description: "Add `by` (default 1) to the counter. Returns the new count.",
+        input_schema: { type: "object", properties: { by: { type: "integer" } } },
+        handler: ({ body }) => {
+          count += JSON.parse(body || "{}").by ?? 1
+          document.querySelector("#count").textContent = count
+          return { count }
+        },
+      }],
+    })
+    const link = await session.mintAgentToken({ label: "minimal" })
+    document.querySelector("#link").textContent = `Paste this into your AI chat: ${link.url}`
+  }
+</script>

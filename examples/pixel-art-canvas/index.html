@@ -89,7 +89,7 @@
   </div>
   <p class="footer">
     Tell an AI chat (Claude, ChatGPT, Gemini) to paint something.
-    The AI will call <code>set_pixel</code> repeatedly and you'll see the image appear here.
+    The AI calls the canvas tools and you see the image appear here.
   </p>
 
   <dialog id="link-modal">
@@ -280,26 +280,20 @@
 
     // ── Connect button ───────────────────────────────────────────
     let session = null
-    // Default base = whatever path prefix lands on /examples/pixel-art-canvas/.
-    // Locally this is just location.origin; behind a path-prefixed tunnel
-    // (anontun: https://x.com/t/ABC/examples/pixel-art-canvas/) it's
-    // location.origin + /t/ABC. Override with ?relay=… .
-    function defaultBase() {
-      const stripped = location.pathname.replace(/\/examples\/[^/]+\/?$/, "")
-      return location.origin + stripped
-    }
-    const baseUrlInput = new URLSearchParams(location.search).get("relay") ?? defaultBase()
+    // Hosted relay by default; ?relay=http://localhost:8787 for a local one.
+    const params = new URLSearchParams(location.search)
+    const baseUrlInput = params.get("relay") ?? "https://agentsocket.dev"
 
     async function ensureConnected() {
       if (session && session.connected) return session
       statusEl.textContent = "Connecting…"
       session = await connect({
         appId: "as_app_anon",
-        appDescription: "A 32x32 pixel canvas the AI can paint by calling set_pixel, clear, and get_grid.",
+        appDescription: "A 32x32 pixel canvas the AI can paint with set_pixels, fill_rect and set_pixel, and read back with get_grid.",
         agentsMd: defaultAgentsMd({
           appName: "Pixel Art Canvas",
           appDescription: "A 32x32 grid where each cell is one pixel. Paint efficiently with /set_pixels (batch up to 1024 in one call) and /fill_rect (solid regions). Read state with /get_grid before iterating.",
-          agentsMdUrl: "__BASE__/v1/t/<token>/agents.md",
+          agentsMdUrl: "$BASE/agents.md",
           capabilities: [
             "/set_pixels { pixels: [{x,y,color}, ...] } — PREFERRED for any sketch with multiple pixels. One round trip instead of N.",
             "/fill_rect { x, y, w, h, color } — solid rectangles and backgrounds.",
@@ -353,9 +347,8 @@
     })
     closeModal.addEventListener("click", () => linkModal.close())
 
-    // ── Test hook for harness ────────────────────────────────────
-    // Exposed when ?harness=1 to avoid leaking in normal use.
-    const params = new URLSearchParams(location.search)
+    // ── Test hook ────────────────────────────────────────────────
+    // ?harness=1 exposes window.__harness for harness/scenarios/50-pixel-art-visual.mjs.
     if (params.get("harness") === "1") {
       window.__harness = {
         ready: false,
@@ -376,26 +369,6 @@
         clearGrid,
       }
       window.__harness.ready = true
-    }
-
-    // ── Auto-connect mode (for screenshot-based testing) ─────────
-    // When ?autoconnect=1, the demo connects and mints a token on load,
-    // and writes the URL into a visible element so a screenshot tool can
-    // scrape it from page.html.
-    if (params.get("autoconnect") === "1") {
-      ensureConnected().then(async (s) => {
-        const link = await s.mintAgentToken({ label: "autoconnect" })
-        linkInput.value = link.url
-        // Also expose to scraper:
-        const el = document.createElement("code")
-        el.id = "auto-url"
-        el.textContent = link.url
-        el.style.cssText = "display:block; margin-top:12px; padding:6px; background:#222; color:#6f6; word-break:break-all; max-width:520px; font-size:11px;"
-        statusEl.after(el)
-        statusEl.textContent = "Auto-connected. URL ready to scrape."
-      }).catch((e) => {
-        statusEl.textContent = `Auto-connect failed: ${e.message}`
-      })
     }
   </script>
 </body>
