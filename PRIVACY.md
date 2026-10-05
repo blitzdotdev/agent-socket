@@ -68,4 +68,4 @@ If we change this policy, we will update the Effective date above and publish th
 
 ## Contact
 
-Questions about this policy: open an issue at <https://github.com/blitzdotdev/agent-socket/issues> or email mjsong2021@gmail.com.
+Questions about this policy: open an issue at <https://github.com/blitzdotdev/agent-socket/issues> or email contact@agentsocket.dev.
