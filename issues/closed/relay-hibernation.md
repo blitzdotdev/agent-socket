@@ -48,3 +48,31 @@ minutes needs the session state in `ctx.storage` and the deadline in an alarm,
 i.e. the work above. Meanwhile the extension tells the user when the link
 changed (pill, popup banner, "NEW" badge) and the relay's `app_offline`
 message tells the AI to ask for the new link.
+
+## Fix
+
+Done together with a long resume hold (24 h, `RESUME_GRACE_MS`):
+
+- Session state lives in `ctx.storage` through the key-value API (works on the
+  production key-value-backed class and the SQLite-backed self-host class; no
+  new migration). Writes on register/resume/update_tools (registration in
+  32 Ki-char chunks, only when it changed), mint/revoke, task 202/complete/poll
+  and detach; reloaded in `onStart`. No resume secret or usable token is
+  stored: an HKDF check value, verifier SHA-256 hashes and AES-GCM-sealed tokens
+  whose key lives only in the open app socket's attachment.
+- One alarm: the hold's expiry while the app is away, the liveness check
+  (last frame or auto-response + `HEARTBEAT_TIMEOUT_MS`) while it is
+  connected. The register/resume deadline stays a 10 s timer, cleared as soon
+  as the socket registers or resumes.
+- `hibernate: true`. The SDK sends the fixed heartbeat
+  `{"type":"ping","id":"as_hb"}`, answered by `setWebSocketAutoResponse`;
+  liveness reads `getWebSocketAutoResponseTimestamp`. Old pings still work.
+- Found on the way: workerd finishes the server-side close of a hibernatable
+  socket that never delivered a message only when the object next goes idle
+  (~10 s), so refused upgrades now get a plain socket closed at once. Silent
+  sockets hitting the register/resume deadline still see the close complete
+  up to ~10 s late (the close frame itself is on time).
+
+Tests: harness 48, 51–62 (`HARNESS_ENV=production` for the key-value-backed
+class), `sdk/test`, `chrome-extension/test/reconnect.e2e.mjs` (relay outage +
+worker restart).

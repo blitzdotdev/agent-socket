@@ -140,9 +140,9 @@ export interface SessionChangedInfo {
   /**
    * Why the links changed:
    * - "resume_refused": the relay refused the resume (close 4401). The
-   *   session had ended: the app was away longer than the relay's grace
-   *   window (60 s on agentsocket.dev), or the relay restarted. The relay
-   *   gives the same answer for a wrong secret.
+   *   session had ended: the app was away longer than the relay's hold
+   *   (24 h on agentsocket.dev), or it was ended or lost on the relay. The
+   *   relay gives the same answer for a wrong secret.
    * - "replaced": another connection resumed this session with its secret
    *   (close 4410), so the SDK started a fresh one instead of taking it back.
    * - "no_resume_secret": the relay never issued a resume secret, so there

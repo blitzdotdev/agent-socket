@@ -13,14 +13,14 @@ node harness/run.mjs 28      # one specific scenario
 node harness/run.mjs 40-49   # a range
 ```
 
-Without `RELAY_URL`, `run.mjs` boots its own `wrangler dev` on a free port (`DEBUG=1`, `MAX_SYNC_TOOL_MS=3000`, `HEARTBEAT_TIMEOUT_MS=6000`, `RESUME_GRACE_MS=3000`) and stops it at the end. Set `RELAY_URL` (and `WRANGLER_LOG` for log slices on failure) to run against a relay you started yourself; also export the same `HEARTBEAT_TIMEOUT_MS` / `RESUME_GRACE_MS` it runs with, or 51 and 54 SKIP. SDK scenarios import `sdk/dist`, so run `npm run build -w sdk` first when calling `run.mjs` directly.
+Without `RELAY_URL`, `run.mjs` boots its own `wrangler dev` (`DEBUG=1`, `MAX_SYNC_TOOL_MS=3000`, `HEARTBEAT_TIMEOUT_MS=15000`, `RESUME_GRACE_MS=3000`) with Durable Object storage in a fresh temp dir, and stops it at the end. It listens on `HARNESS_PORT` (default: a free port); `HARNESS_INSPECTOR_PORT` pins wrangler's inspector port, and `HARNESS_ENV=production` runs the production config, whose Durable Object class is key-value backed (the top level is SQLite backed). Set `RELAY_URL` (and `WRANGLER_LOG` for log slices and the log checks in 58, 60 and 61) to run against a relay you started yourself; also export the same `HEARTBEAT_TIMEOUT_MS` / `RESUME_GRACE_MS` it runs with, or 51, 54, 60 and 61 SKIP. `LONG_GAP_MS` (default 62000) is how long 58 keeps a session waiting. SDK scenarios import `sdk/dist`, so run `npm run build -w sdk` first when calling `run.mjs` directly.
 
 ## Layout
 
 - `run.mjs` — entry point. Discovers `scenarios/NN-*.mjs` files, runs them in numbered order, stops on first failure unless `--continue`. A scenario that returns `{ skip: "reason" }` is reported as SKIP.
 - `lib/` — shared helpers:
-  - `relay.mjs` — `RELAY_HTTP` / `RELAY_WS`, `httpGet`, `httpPost(path, body)`, `openRawWs({ forceSession?, resumeSession? })`, `killWs(sessionId, { end? })`, `resumeGraceMs()`.
-  - `logs.mjs` — tails the wrangler log for failure output.
+  - `relay.mjs` — `RELAY_HTTP` / `RELAY_WS`, `httpGet`, `httpPost(path, body)`, `openRawWs({ forceSession?, resumeSession? })`, `killWs(sessionId, { end?, holdMs? })`, `debugState(sessionId)` (storage keys, alarm, hold; no secrets), `evict(sessionId)` (reset the session's Durable Object: memory and sockets gone, storage kept), `resumeGraceMs()`, `heartbeatTimeoutMs()`, `sdkHeartbeat()` (SDK ping interval that fits the relay's liveness window), `until(cond, what, ms)`.
+  - `logs.mjs` — tails the wrangler log for failure output; `logMark()` / `logSince(mark)` for log checks.
   - `browser.mjs` — Puppeteer helper for visual scenarios.
   - `assert.mjs` — tiny assertion harness.
 - `scenarios/NN-name.mjs` — each scenario exports a default async function. Numbered groups:
@@ -32,6 +32,8 @@ Without `RELAY_URL`, `run.mjs` boots its own `wrangler dev` on a free port (`DEB
   - **50** Puppeteer pixel-art-canvas visual test (SKIP without chromium)
   - **51** App liveness (SKIP unless `HEARTBEAT_TIMEOUT_MS` is short)
   - **52–55** Session resume: raw protocol (same URL, gap behaviour, tools replaced), refused secrets, expiry after the grace window (SKIP unless `RESUME_GRACE_MS` is short), concurrent attempts vs. the live socket
+  - **56–57** `update_tools` (raw + SDK)
+  - **58–62** Durable sessions: a 62 s gap with an eviction in it, a reset while the app is connected, every way a session ends wiping storage (clean close, alarm expiry, `end`, SDK close while away), hibernation + heartbeat auto-response + liveness alarm, and the limits nothing else covers
   - **90** `/v1/_ws` rate limit (last, so its burst can't starve the others)
 
 ## Adding a scenario

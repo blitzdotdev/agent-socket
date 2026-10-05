@@ -5,8 +5,8 @@ The Cloudflare Worker and Durable Object behind agentsocket.dev. Apps hold a Web
 ## How it is built
 
 - `src/worker.ts` routes requests. A new `/v1/_ws` connection gets a fresh 8-character session id, and every request for that session goes to the Durable Object named by it (`idFromName`).
-- `src/relay-do.ts` is the Durable Object, built on [PartyServer](https://github.com/cloudflare/partykit/tree/main/packages/partyserver), one per session. It holds the app's socket, the registered tools and `agents.md`, the session's tokens, in-flight calls and async tasks, all in memory (`hibernate: false`, no storage).
-- `src/tokens.ts` generates and parses session ids, tokens and resume secrets.
+- `src/relay-do.ts` is the Durable Object, built on [PartyServer](https://github.com/cloudflare/partykit/tree/main/packages/partyserver), one per session. It holds the app's socket and in-flight calls in memory, and the registration (tools, `agents.md`), the session's tokens, async tasks and the hold deadline in its storage through the key-value API, reloaded in `onStart`, so a session survives hibernation, eviction and restarts. One alarm drives the hold's expiry and the liveness check. It hibernates (`hibernate: true`): the runtime answers the SDK's heartbeat frame itself (`setWebSocketAutoResponse`), so an idle session costs no duration. The storage layout is in the file's header and in [docs/protocol.md](../docs/protocol.md#storage).
+- `src/tokens.ts` generates and parses session ids, tokens and resume secrets, and derives what is stored in their place: verifier hashes, sealed tokens, the resume check value.
 - `public/` holds the landing and privacy pages, served as static assets before the Worker runs. `public/privacy.html` is generated from `PRIVACY.md` by `npm run privacy:html` at the repo root.
 
 ## Routes
@@ -21,7 +21,7 @@ The Cloudflare Worker and Durable Object behind agentsocket.dev. Apps hold a Web
 | `GET /v1/t/<token>/tools.json` | The app's tools. |
 | `<METHOD> /v1/t/<token>/<path>` | Call a tool. Body up to 1 MiB. |
 | `GET /v1/t/<token>/_as_tasks/<id>` | Poll an async call. |
-| `GET /_debug/health`, `POST /_debug/kill-ws/<id>[?end=1]` | Only with `DEBUG=1`. |
+| `GET /_debug/health`, `POST /_debug/kill-ws/<id>[?end=1\|?hold=<ms>]`, `GET /_debug/state/<id>`, `POST /_debug/evict/<id>` | Only with `DEBUG=1`. |
 
 ## Configuration
 
@@ -31,10 +31,12 @@ The Cloudflare Worker and Durable Object behind agentsocket.dev. Apps hold a Web
 |---|---|---|
 | `MAX_SYNC_TOOL_MS` | 30000 | How long a tool call waits for the app's reply before `504 tool_timeout`. |
 | `HEARTBEAT_TIMEOUT_MS` | 50000 | How long the app's socket may stay silent before the relay drops it and holds the session for resume. The SDK pings every 25 s. |
-| `RESUME_GRACE_MS` | 60000 | How long a dropped app's session is held for resume. `0` turns resume off. |
+| `RESUME_GRACE_MS` | 86400000 | How long a dropped app's session is held for resume (24 h), in Durable Object storage. `0` turns resume off. |
 | `DEBUG` | unset | `1` enables `/_debug/*`, `?force_session=` on `/v1/_ws` and extra logging. Local only: set it in `.dev.vars`, never in `wrangler.jsonc`. |
 
-Bindings: `RELAY` (the Durable Object) and `WS_RATE_LIMIT` (100 `/v1/_ws` upgrades per 10 s per IP, per Cloudflare location). Fixed limits in the code: 50 tokens, 100 in-flight calls and 100 pending async tasks per session, 4 MiB WebSocket frames, 65,536-character `agents.md`, 10 s to register or resume. The full list is in [docs/protocol.md](../docs/protocol.md#limits).
+Bindings: `RELAY` (the Durable Object) and `WS_RATE_LIMIT` (100 `/v1/_ws` upgrades per 10 s per IP, per Cloudflare location). Fixed limits in the code: 50 tokens, 100 in-flight calls and 100 pending async tasks per session, 4 MiB WebSocket frames, 65,536-character `agents.md`, 10 s to register or resume. The full list, with what happens at each, is in [docs/protocol.md](../docs/protocol.md#limits).
+
+Either Durable Object storage backend works: the hosted relay's class is key-value backed (created before SQLite-backed classes existed), the top-level config creates a SQLite-backed one, and the relay uses only the key-value storage API and alarms, which both support. `HARNESS_ENV=production npm run harness` runs the integration harness against the key-value-backed config locally.
 
 ## Changing tools mid-session
 

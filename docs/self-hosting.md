@@ -49,7 +49,8 @@ Then deploy as above.
 ### Things to check
 
 - `ratelimits[0].namespace_id` (`48001`) must be unique within your Cloudflare account. Change it if another Worker already uses that number.
-- Settings are in `vars`: `MAX_SYNC_TOOL_MS`, `HEARTBEAT_TIMEOUT_MS`, `RESUME_GRACE_MS`. See [relay/README.md](../relay/README.md).
+- Settings are in `vars`: `MAX_SYNC_TOOL_MS`, `HEARTBEAT_TIMEOUT_MS`, `RESUME_GRACE_MS` (how long a dropped session is held, 24 h by default). See [relay/README.md](../relay/README.md).
+- Sessions are kept in Durable Object storage while they last, so the relay bills for storage and an alarm per session as well as requests; an idle session hibernates and costs no duration. Each session's storage is deleted when it ends.
 - Never set `DEBUG` in `wrangler.jsonc`. It enables endpoints that close other people's sessions.
 - The relay does not know its own hostname. Minted links use the base URL the app connected with.
 
