@@ -703,6 +703,26 @@ async function main() {
       if (!/E2E Test Page/.test(ui.title) || !ui.stop || ui.link !== s.url) throw new Error(JSON.stringify(ui))
     })
 
+    await step("pill can be dragged and keeps its place across reloads", async () => {
+      await testPage.bringToFront()
+      const box = async () => {
+        const { cdp, pill } = await pillNodes(testPage)
+        const [x1, y1] = (await cdp.send("DOM.getBoxModel", { nodeId: pill.nodeId })).model.border
+        return { x: x1, y: y1 }
+      }
+      const a = await box()
+      await testPage.mouse.move(a.x + 8, a.y + 8)
+      await testPage.mouse.down()
+      await testPage.mouse.move(a.x + 208, a.y - 150, { steps: 8 })
+      await testPage.mouse.up()
+      const b = await box()
+      if (Math.abs(b.x - (a.x + 200)) > 3 || Math.abs(b.y - (a.y - 150)) > 3) throw new Error(`drag ${JSON.stringify({ a, b })}`)
+      if ((await swState()).status.status !== "connected") throw new Error("drag ended the session")
+      await testPage.reload({ waitUntil: "load" })
+      await waitFor(() => hasPill(testPage))
+      await waitFor(async () => { const c = await box(); return Math.abs(c.x - b.x) < 3 && Math.abs(c.y - b.y) < 3 })
+    })
+
     await step("pill comes back after the bound tab reloads", async () => {
       await testPage.reload({ waitUntil: "load" })
       await waitFor(() => hasPill(testPage))
