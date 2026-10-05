@@ -11,6 +11,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 //   "ok"     — accept register, mint/revoke/list tokens
 //   "reject" — reply register_reply { ok:false } then close (like unknown_app_id)
 //   "drop"   — close right after open, before any reply
+//   "drop-after-mint" — accept register, close right after the first mint reply
 let plan = () => "ok"
 let sockets = []
 
@@ -43,6 +44,7 @@ class MockWebSocket {
       const token = `tok_${this.sessionId}_${this.tokens.size}`
       this.tokens.add(token)
       reply({ type: "mint_agent_token_reply", id: m.id, ok: true, token, url: `__BASE__/v1/t/${token}/agents.md`, label: m.label })
+      if (this.mode === "drop-after-mint") setTimeout(() => this.serverClose(1011, "blip"), 1)
     } else if (m.type === "revoke_agent_token") {
       reply({ type: "revoke_agent_token_reply", id: m.id, ok: this.tokens.delete(m.token) })
     } else if (m.type === "ping") {
@@ -163,5 +165,30 @@ test("close() during a reconnect leaves no live socket or timers", async () => {
   await sleep(100)
   assert.equal(open().length, 0)
   assert.equal(s.connected, false)
+  assert.equal(s.heartbeatPingTimer, null)
+})
+
+test("a drop mid-remint re-mints the rest on the next reconnect", async () => {
+  reset((n) => (n === 2 ? "drop-after-mint" : "ok"))
+  const changes = []
+  const s = await connect({ ...base, onDisconnect: quickRetry, onSessionChanged: (i) => changes.push(i) })
+  const a = await s.mintAgentToken({ label: "a" })
+  const b = await s.mintAgentToken({ label: "b" })
+  sockets[0].serverClose(1006, "blip")
+  await waitFor(() => changes.length === 2)
+  const a2 = changes[0].tokensRemapped.get(a.url)
+  assert.match(a2, /tok_S2_/)
+  assert.match(changes[1].tokensRemapped.get(a2), /tok_S3_/)
+  assert.match(changes[1].tokensRemapped.get(b.url), /tok_S3_/)
+  assert.equal(sockets[2].tokens.size, 2)
+  s.close()
+})
+
+test("a frame arriving after close() doesn't re-arm the heartbeat", async () => {
+  reset(() => "ok")
+  const s = await connect({ ...base, heartbeatIntervalMs: 20 })
+  const ws = sockets[0]
+  s.close()
+  ws._fire("message", { data: JSON.stringify({ type: "pong", id: "x" }) })
   assert.equal(s.heartbeatPingTimer, null)
 })

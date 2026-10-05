@@ -222,7 +222,7 @@ class SessionImpl implements Session {
   }
 
   _installHandlers(ws: MinWS): void {
-    ws.addListener("message", (data: any) => this._onMessage(String(data)))
+    ws.addListener("message", (data: any) => { if (ws === this.ws) this._onMessage(String(data)) })
     ws.addListener("close", (...args: any[]) => {
       if (ws === this.ws) this._onClose(args[0] as number ?? 1006, args[1] as string ?? "")
     })

@@ -193,7 +193,8 @@ class SessionImpl {
         });
     }
     _installHandlers(ws) {
-        ws.addListener("message", (data) => this._onMessage(String(data)));
+        ws.addListener("message", (data) => { if (ws === this.ws)
+            this._onMessage(String(data)); });
         ws.addListener("close", (...args) => {
             if (ws === this.ws)
                 this._onClose(args[0] ?? 1006, args[1] ?? "");
