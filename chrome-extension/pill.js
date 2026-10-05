@@ -3,6 +3,10 @@
 // load. Lives in a closed shadow root, re-attaches itself if the page removes
 // it, and removes itself once the tab is no longer bound. Draggable; the
 // position is kept in chrome.storage.local so it stays put across loads.
+// When the link changed (the old one is dead) it turns amber with
+// "Link changed — paste the new link into your AI chat · [Copy link] [Stop]".
+// The link is fetched from the background on the click and goes straight to
+// the clipboard; it never enters the page's DOM.
 
 ;(() => {
   if (globalThis.__asPill) return globalThis.__asPill.refresh()
@@ -19,10 +23,17 @@
     .pill.dragging { cursor: grabbing; }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: #f06; flex: none; }
     button { font: inherit; font-weight: 600; color: #fff; background: #f06; border: 0; border-radius: 999px; padding: 4px 10px; cursor: pointer; }
-  </style><div class="pill" role="status"><span class="dot"></span><span class="text">AI has access to this tab</span><button type="button">Stop</button></div>`
+    button[hidden] { display: none; }
+    button:disabled { opacity: .6; cursor: default; }
+    .pill.changed { border-color: #fb4; box-shadow: 0 0 0 3px rgba(255,187,68,.35), 0 2px 10px rgba(0,0,0,.35); }
+    .pill.changed .dot { background: #fb4; }
+    .pill.changed .text { font-weight: 600; }
+    button.copy { color: #16161a; background: #fb4; }
+  </style><div class="pill" role="status"><span class="dot"></span><span class="text">AI has access to this tab</span><button type="button" class="copy" data-action="copy" hidden>Copy link</button><button type="button" data-action="stop">Stop</button></div>`
   const pill = root.querySelector(".pill")
   const text = root.querySelector(".text")
-  const stop = root.querySelector("button")
+  const copy = root.querySelector('[data-action="copy"]')
+  const stop = root.querySelector('[data-action="stop"]')
 
   // ── dragging ──
   const POS_KEY = "pill_pos"
@@ -35,7 +46,7 @@
   }
   let drag = null
   pill.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || e.target === stop) return
+    if (e.button !== 0 || e.target === stop || e.target === copy) return
     const r = pill.getBoundingClientRect()
     drag = { dx: e.clientX - r.left, dy: e.clientY - r.top }
     pill.setPointerCapture(e.pointerId)
@@ -59,14 +70,65 @@
 
   const ago = (ms) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : ms < 3_600_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 3_600_000)}h`)
 
+  let note = null  // { text, until }: a short message after Copy, over the usual text
+
   async function refresh() {
     let s
     try { s = await chrome.runtime.sendMessage({ type: "pill_state" }) } catch { return remove() }  // extension gone
     if (!s?.bound) return remove()
+    pill.classList.toggle("changed", !!s.linkChanged)
+    copy.hidden = !s.linkChanged
+    if (note && Date.now() < note.until) { text.textContent = note.text; return }
+    note = null
+    if (s.linkChanged) { text.textContent = "Link changed — paste the new link into your AI chat"; return }
     const state = s.status === "connected" ? "AI has access to this tab"
       : s.status === "connecting" ? "AI access: connecting…" : "AI access: reconnecting…"
     text.textContent = state + (s.lastToolCallAt ? ` · last action ${ago(Date.now() - s.lastToolCallAt)} ago` : " · waiting for AI")
   }
+
+  // navigator.clipboard needs a secure context. On http:// pages fall back to
+  // the copy command on a field in our closed shadow root, setting the data
+  // in our own copy listener so a page listener can't swap it; if the page
+  // stops the event before it reaches us, report failure.
+  async function writeClipboard(value) {
+    try { await navigator.clipboard.writeText(value); return true } catch {}
+    const field = document.createElement("textarea")
+    field.value = value
+    field.readOnly = true
+    field.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;"
+    let wrote = false
+    field.addEventListener("copy", (e) => {
+      e.clipboardData.setData("text/plain", value)
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      wrote = true
+    })
+    root.append(field)
+    field.select()
+    let ok = false
+    try { ok = document.execCommand("copy") } catch {}
+    field.remove()
+    return ok && wrote
+  }
+
+  copy.addEventListener("click", async (e) => {
+    if (!e.isTrusted) return
+    copy.disabled = true
+    try {
+      const r = await chrome.runtime.sendMessage({ type: "pill_link" }).catch(() => null)
+      if (r?.url && await writeClipboard(r.url)) {
+        await chrome.runtime.sendMessage({ type: "ack_link", via: "pill" }).catch(() => {})
+        note = { text: "New link copied — paste it into your AI chat", until: Date.now() + 3000 }
+      } else {
+        // No clipboard here: the popup has the link and its own Copy.
+        const o = await chrome.runtime.sendMessage({ type: "open_popup" }).catch(() => null)
+        note = { text: o?.ok ? "Copy the new link in the Agent Socket popup" : "Click the Agent Socket toolbar icon to copy the new link", until: Date.now() + 6000 }
+      }
+    } finally {
+      copy.disabled = false
+      void refresh()
+    }
+  })
 
   function remove() {
     clearInterval(timer)

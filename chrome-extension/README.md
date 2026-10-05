@@ -11,6 +11,15 @@ While a tab is connected it shows an in-page "AI has access to this tab" bar
 the popup's **Stop & disconnect**, or closing the tab ends the session and
 kills the URL.
 
+The relay holds a dropped connection's session for 60 s, so the URL survives
+network blips and service-worker restarts. If a drop outlasts that (laptop
+sleep, say), the extension gets a new URL and the old one is dead. It then
+says so until you copy the new one or the AI uses it: the bar turns amber
+("Link changed — paste the new link into your AI chat", with **Copy link**
+and **Stop**), the badge reads "NEW", and the popup shows a banner with the
+new link and why it changed. The popup's Settings list the last few
+connection events (drops, close codes, resumes), kept in memory only.
+
 ## What it exposes
 
 **Universal tools** (work on any site, registered on every connection):
@@ -107,7 +116,9 @@ checks the `/navigate` URL guard, and tests profile validation, merging and
 agents.md (`test/profiles.unit.mjs`, which also checks the built-in tool paths
 match `registry/src/rules.ts`). `npm run ext:test:reconnect` (chromium)
 checks the same URL survives a relay-side WS drop and a service-worker stop,
-and that a new URL is minted once the session is gone.
+and that a new URL is minted once the session is gone, with the link-changed
+bar, badge and popup banner, cleared by Copy (popup or bar) or a tool call.
+`SHOT_DIR=<dir>` saves screenshots of that state.
 
 ## Architecture in one paragraph
 
@@ -127,4 +138,5 @@ to keep the WS warm against MV3 service-worker idle-kill. A dropped WS
 resumes the same session, so the pasted URL keeps working. The live session
 (tab, session id, resume secret, URL) is kept in `chrome.storage.session`, so
 a restarted service worker resumes it too; only if the relay has ended the
-session does the extension mint a new URL (the popup shows it).
+session does the extension mint a new URL, and the bar, badge and popup tell
+the user the link changed (`linkChanged` in background.js).

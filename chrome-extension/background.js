@@ -23,11 +23,29 @@ let boundTabId = null      // the one tab tool calls may touch
 let lastToolCallAt = null  // the relay serves agents.md/tools.json itself; tool calls are our only sign of the AI
 let connecting = null      // in-flight startConnect, so double clicks don't open two sessions
 let lastBase = null        // relay base the session is on
+// Set when the bound tab's link changed after the user already had one (the
+// relay refused a resume, so the SDK opened a new session with a new link):
+// { at, reason, closeCode?, offlineMs?, afterRestart? }. The old link only gets
+// 503 app_offline now, so the pill, popup and badge say so until the user
+// copies the new link or a tool call arrives on it.
+let linkChanged = null
 
 // Default relay base. Overridable in the popup via chrome.storage.local.relay_base.
 const DEFAULT_BASE = "https://agentsocket.dev"
 // Requested from the popup on Connect (a user gesture), not at install.
 const SITE_ACCESS = { origins: ["<all_urls>"] }
+
+// ── connection diagnostics ─────────────────────────────────────────
+// The last few connection events, shown in the popup's Settings to debug
+// real-world drops. Memory only (gone when the worker stops), never sent
+// anywhere, and no links or secrets: session ids, close codes, reasons.
+const EVENTS_MAX = 20
+const events = []
+function logEvent(type, detail = {}) {
+  events.push({ at: Date.now(), type, ...detail })
+  if (events.length > EVENTS_MAX) events.shift()
+}
+logEvent("worker_start")
 
 // ── helpers ────────────────────────────────────────────────────────
 
@@ -94,7 +112,12 @@ const summarize = (p, withTools) => ({
 
 // ── tool set for the bound tab ─────────────────────────────────────
 
-const track = (t) => ({ ...t, handler: (ctx) => { lastToolCallAt = Date.now(); return t.handler(ctx) } })
+// A tool call can only arrive on the current link, so the AI has it.
+const track = (t) => ({ ...t, handler: (ctx) => {
+  lastToolCallAt = Date.now()
+  if (linkChanged) void clearLinkChanged("tool_call")
+  return t.handler(ctx)
+} })
 
 function baseTools() {
   return [
@@ -164,15 +187,40 @@ async function refreshLiveTools(waitMs = 5000) {
 
 // ── indicator: per-tab badge + in-page pill ─────────────────────────
 
+// "AI" while connected; "NEW" (amber) while the link changed and the user
+// hasn't copied the new one yet.
+async function updateBadge(tabId) {
+  const changed = !!linkChanged
+  await chrome.action.setBadgeText({ tabId, text: changed ? "NEW" : "AI" }).catch(() => {})
+  await chrome.action.setBadgeBackgroundColor({ tabId, color: changed ? "#fb4" : "#f06" }).catch(() => {})
+  await chrome.action.setBadgeTextColor?.({ tabId, color: changed ? "#000" : "#fff" })?.catch(() => {})
+  await chrome.action.setTitle({ tabId, title: changed ? "Agent Socket: your link changed. Click to copy the new one." : "Agent Socket" }).catch(() => {})
+}
+
 async function showIndicator(tabId) {
-  await chrome.action.setBadgeText({ tabId, text: "AI" }).catch(() => {})
-  await chrome.action.setBadgeBackgroundColor({ tabId, color: "#f06" }).catch(() => {})
+  await updateBadge(tabId)
   await chrome.scripting.executeScript({ target: { tabId }, files: ["pill.js"] }).catch(() => {})
 }
 
 async function hideIndicator(tabId) {
   await chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {})
+  await chrome.action.setTitle({ tabId, title: "Agent Socket" }).catch(() => {})
   await chrome.tabs.sendMessage(tabId, { type: "as_pill_remove" }).catch(() => {})
+}
+
+async function markLinkChanged(info) {
+  linkChanged = { at: Date.now(), ...info }
+  lastToolCallAt = null  // that activity was on the dead link
+  if (boundTabId != null) await updateBadge(boundTabId)
+}
+
+// The user copied the new link (`via` popup / pill) or the AI used it (tool_call).
+async function clearLinkChanged(via) {
+  if (!linkChanged) return
+  linkChanged = null
+  logEvent("link_acknowledged", { via })
+  if (boundTabId != null) await updateBadge(boundTabId)
+  await saveSession()
 }
 
 // Navigations reset per-tab badges and drop the pill; put both back.
@@ -190,7 +238,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // exits; not readable by content scripts), so a restarted worker can resume
 // it: the relay holds a dropped session for a grace window, and with the
 // resume secret the SAME agent URL keeps working.
-const SAVED_KEY = "as_session"  // { tabId, base, sessionId, secret, url, token, registry }
+const SAVED_KEY = "as_session"  // { tabId, base, sessionId, secret, url, token, registry, linkChanged }
 
 async function saveSession() {
   if (!session || boundTabId == null) return
@@ -203,6 +251,7 @@ async function saveSession() {
       url: lastUrl,
       token: lastToken,
       registry: lastRegistry,
+      linkChanged,
     },
   }).catch(() => {})
 }
@@ -252,6 +301,7 @@ async function doConnect(tabId, saved) {
 
   boundTabId = tab.id
   lastToolCallAt = null
+  linkChanged = null
   const host = hostOf(tab.url)
   emitStatus({ status: "connecting" })
 
@@ -278,19 +328,29 @@ async function doConnect(tabId, saved) {
       onDisconnect: (info) => {
         if (session && s !== session) return info.giveUp()
         // attempt 1 = the WS just dropped; later = a reconnect attempt failed.
+        logEvent(info.attempt === 1 ? "drop" : "retry_failed", { code: info.code, reason: info.reason, attempt: info.attempt })
         emitStatus({ status: info.attempt === 1 ? "disconnected" : "reconnect-failed", reason: info.reason, attempt: info.attempt })
         reconnectBackoff(info)
       },
       // The usual reconnect resumes the same session: the URL is unchanged.
       onReconnect: ({ sessionId, resumed }) => {
         if (s !== session || !resumed) return
+        logEvent("resumed", { sessionId })
         emitStatus({ status: "connected", sessionId })
         void saveSession()
       },
       // The resume was refused, so the SDK opened a new session and re-minted
-      // our token; pick up the new URL + token (or mint one if that failed).
-      onSessionChanged: async ({ sessionId, tokensRemapped }) => {
+      // our token; pick up the new URL + token (or mint one if that failed),
+      // and tell the user: the link they gave the AI is dead.
+      onSessionChanged: async ({ priorSessionId, sessionId, tokensRemapped, reason, closeCode, offlineMs }) => {
         if (s !== session) return
+        if (sessionId !== priorSessionId) {
+          logEvent(reason === "replaced" ? "replaced" : reason === "no_resume_secret" ? "no_resume" : "resume_refused", { code: closeCode, sessionId: priorSessionId, offlineMs })
+          logEvent("new_session", { sessionId })
+        } else {
+          logEvent("reminted", { sessionId })
+        }
+        const priorUrl = lastUrl
         try {
           const fresh = tokensRemapped.get(lastUrl)
           const link = fresh
@@ -299,6 +359,7 @@ async function doConnect(tabId, saved) {
           lastUrl = link?.url ?? null
           lastToken = link?.token ?? null
         } catch { lastUrl = lastToken = null }
+        if (priorUrl && lastUrl !== priorUrl) await markLinkChanged({ reason: reason ?? "resume_refused", closeCode, offlineMs })
         emitStatus({ status: "connected", sessionId })
         await saveSession()
       },
@@ -311,6 +372,20 @@ async function doConnect(tabId, saved) {
       : null
     const link = kept ?? await s.mintAgentToken({ label: "chrome-extension" })
     if (boundTabId !== tab.id) throw new Error("connect cancelled")
+    if (resume && s.sessionId === resume.sessionId) logEvent("resumed", { sessionId: s.sessionId, afterRestart: true })
+    else if (resume) {
+      // connect() falls back to a fresh session only when the relay refuses (4401).
+      logEvent("resume_refused", { code: 4401, sessionId: resume.sessionId, afterRestart: true })
+      logEvent("new_session", { sessionId: s.sessionId })
+    } else logEvent("connected", { sessionId: s.sessionId })
+    // After a worker restart: the user already had saved.url. Same link →
+    // carry over a change they haven't acknowledged; a new one → it changed.
+    if (saved?.url) {
+      linkChanged = kept ? saved.linkChanged ?? null
+        : !resume ? { at: Date.now(), reason: "relay_changed", afterRestart: true }
+        : s.sessionId === resume.sessionId ? { at: Date.now(), reason: "link_missing", afterRestart: true }
+        : { at: Date.now(), reason: "resume_refused", closeCode: 4401, afterRestart: true }
+    }
     session = s
     lastUrl = link.url
     lastToken = link.token
@@ -319,6 +394,7 @@ async function doConnect(tabId, saved) {
     lastToolsKey = toolSet.key
   } catch (e) {
     s?.close()
+    logEvent("connect_failed", { reason: e?.message ?? String(e) })
     if (boundTabId === tab.id) {
       boundTabId = null; void hideIndicator(tab.id)
       await chrome.storage.session.remove(SAVED_KEY).catch(() => {})
@@ -339,7 +415,9 @@ async function stopConnect() {
   session = null
   lastUrl = lastToken = lastToolCallAt = null
   lastRegistry = lastSource = lastToolsKey = null
+  linkChanged = null
   boundTabId = null
+  if (s) logEvent("stopped")
   emitStatus({ status: "idle" })
   await chrome.storage.session.remove(SAVED_KEY).catch(() => {})
   if (s) {
@@ -367,6 +445,8 @@ async function snapshot() {
     source: session ? lastSource : null,
     sourceLabel: session ? sourceLabel(lastSource) : "",
     lastToolCallAt,
+    linkChanged,
+    events: events.slice(-10),
   }
 }
 
@@ -380,7 +460,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       else if (msg?.type === "disconnect") sendResponse({ ok: true, ...(await stopConnect()) })
       else if (msg?.type === "snapshot") sendResponse({ ok: true, ...(await snapshot()) })
       else if (msg?.type === "pill_state") {
-        sendResponse({ bound: sender.tab?.id != null && sender.tab.id === boundTabId, status: lastStatus.status, lastToolCallAt })
+        sendResponse({ bound: sender.tab?.id != null && sender.tab.id === boundTabId, status: lastStatus.status, lastToolCallAt, linkChanged: !!linkChanged })
+      } else if (msg?.type === "pill_link") {
+        // Only to the pill in the bound tab's top frame (our content script;
+        // page scripts can't message the extension). It never enters the DOM.
+        const ok = sender.tab?.id != null && sender.tab.id === boundTabId && sender.frameId === 0 && !!lastUrl
+        sendResponse(ok ? { ok: true, url: lastUrl } : { ok: false })
+      } else if (msg?.type === "ack_link") {
+        await clearLinkChanged(msg.via === "pill" ? "pill" : "popup")
+        sendResponse({ ok: true })
+      } else if (msg?.type === "open_popup") {
+        // The pill's fallback when it can't write the clipboard itself.
+        sendResponse({ ok: await chrome.action.openPopup().then(() => true, () => false) })
       } else if (msg?.type === "list_profiles") {
         const { pending, kept } = await withProfiles((d) => d)
         const bySaved = (a, b) => (b.savedAt ?? 0) - (a.savedAt ?? 0)

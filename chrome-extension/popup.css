@@ -31,6 +31,7 @@ h1 { font-size: 14px; margin: 0; letter-spacing: 0.5px; }
 .dot[data-status="active"] { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .dot[data-status="connecting"], .dot[data-status="disconnected"], .dot[data-status="reconnect-failed"] { background: var(--warn); }
 .dot[data-status="closed"] { background: var(--err); }
+.dot[data-status="changed"] { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
 
 section {
   background: var(--card);
@@ -69,6 +70,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 11px;
 }
 .warn-title { color: var(--warn); font-weight: 600; margin-bottom: 4px; }
+.changed-banner { background: #2a1f08; border: 1px solid var(--warn); box-shadow: 0 0 0 2px rgba(255,187,68,.2); }
+.changed-banner .warn-title { font-size: 13px; }
+.changed-banner .warn-body { font-size: 12px; }
+.changed-banner button { background: var(--warn); color: #000; }
+#changed-reason { margin-top: 6px; line-height: 1.4; }
+#events-list li { color: var(--muted); display: flex; gap: 6px; }
+#events-list .when { flex: none; }
 .warn-body { color: var(--fg); margin-bottom: 6px; line-height: 1.45; }
 .warn-actions { display: flex; gap: 6px; }
 
