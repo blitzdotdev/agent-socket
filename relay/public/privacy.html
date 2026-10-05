@@ -18,7 +18,7 @@
 <body>
 <h1>Privacy Policy — Agent Socket</h1>
 <p><strong>Effective date: 2026-10-05</strong></p>
-<p>This privacy policy describes how the Agent Socket Chrome extension and its companion relay service (<code>agentsocket.dev</code>) handle data.</p>
+<p>This privacy policy describes how the Agent Socket Chrome extension and its companion services, the relay (<code>agentsocket.dev</code>) and the tool registry (<code>registry.agentsocket.dev</code>), handle data.</p>
 <h2>What Agent Socket is</h2>
 <p>Agent Socket lets the user expose one browser tab of their choosing as a set of HTTP tool endpoints, so an AI chat (such as Claude, ChatGPT, or Gemini) can read and interact with that tab. The extension does nothing until the user explicitly clicks &quot;Connect this tab&quot; in its popup. It has no access to any website at install time: Chrome asks the user to grant site access the first time they click Connect, and that access is used only for the one tab the user connects.</p>
 <h2>What data is processed</h2>
@@ -31,7 +31,7 @@
 <p>This data is sent only in response to tool calls that arrive on the user&#39;s one-time session URL.</p>
 <h2>What we do NOT collect</h2>
 <ul>
-<li>We do not collect analytics or telemetry from the extension. The extension makes no network requests except those required for the active session.</li>
+<li>We do not collect analytics or telemetry from the extension. The extension makes no network requests except the relay connection for the active session and the tool-registry requests described below.</li>
 <li>We do not collect personal information about the user (name, email, payment information, location, contacts).</li>
 <li>We do not track usage across sessions or across users.</li>
 <li>We do not collect data from tabs the user has not explicitly connected. Tool calls can only act on the connected tab; a screenshot is refused unless that tab is the visible tab of its window.</li>
@@ -41,24 +41,33 @@
 <li><strong>Browser → Relay (<code>agentsocket.dev</code>)</strong>: Tool-call payloads travel over a WebSocket from the extension to the relay. The relay is a stateless Cloudflare Worker (Durable Object) that holds the WebSocket open and forwards messages. It does not write the payloads to any persistent storage (no database, no logs in production).</li>
 <li><strong>Relay → AI chat</strong>: The relay forwards tool-call results to whoever is holding the user&#39;s session URL — by design, the AI chat the user pasted the URL into. What that AI chat does with the data is governed by the AI chat&#39;s own privacy policy (e.g. Anthropic&#39;s, OpenAI&#39;s, Google&#39;s).</li>
 </ol>
+<h2>Tool registry (<code>registry.agentsocket.dev</code>)</h2>
+<p>The registry is a public catalog of &quot;site profiles&quot;: notes and ready-made tools for particular websites, so the AI doesn&#39;t have to work out each site from scratch. The extension uses it in these ways:</p>
+<ul>
+<li><strong>On Connect</strong>, the extension sends the connected tab&#39;s <strong>hostname</strong> (for example <code>github.com</code>; not the path, query, port, page title or page content) to the registry to fetch that site&#39;s profile. If the registry has none, a second request fetches the generic profile. Hostnames that can&#39;t be public sites (IP addresses, <code>localhost</code>, names ending in <code>.local</code>, <code>.lan</code>, <code>.internal</code>, <code>.localhost</code> or <code>.home.arpa</code>) are never sent; for those tabs only the generic profile is fetched. These requests carry no cookies or identifiers of ours, but like any web request they reach the server with the user&#39;s IP address and the browser&#39;s user agent. The registry keeps a per-site count of how often each profile is fetched (not per user). If the registry can&#39;t be reached within 3 seconds, the tab connects without it.</li>
+<li><strong>When the AI uses the registry tools</strong>: <code>/registry_search</code> sends the AI&#39;s search text and <code>/registry_get</code> sends the hostname it asks about.</li>
+<li><strong>When the AI submits a profile</strong> with <code>/registry_submit</code>, the extension sends the profile the AI wrote (a hostname, notes, and tool names, descriptions, input schemas and JavaScript code) and the extension&#39;s version number; the browser adds its user agent. The AI can submit without a separate confirmation from the user, so a submission may describe the site the user connected. The registry stores the submission with the user agent (truncated to 512 characters) and a keyed hash (HMAC-SHA-256 with a server-side secret) of the IP address, used only to rate-limit submissions; the IP address itself is not stored. Submissions are kept as the review history. Nothing goes live until a maintainer approves it; approved profiles are published to everyone.</li>
+</ul>
+<p>The registry runs on Cloudflare Workers with Cloudflare&#39;s request logging turned on, so requests (including the hostname in the request URL) also appear in the operator&#39;s Cloudflare logs for Cloudflare&#39;s log-retention period. The registry URL can be changed in the extension&#39;s Settings (for example to a self-hosted registry), in which case these requests go there instead.</p>
 <h2>How long data is retained</h2>
 <ul>
 <li><p><strong>Relay</strong>: Sessions live in memory only. When the user clicks Disconnect or closes the tab, the session is destroyed and any in-flight tool calls fail. If the WebSocket drops unexpectedly (a network blip, or Chrome restarting the extension&#39;s background worker), in-flight tool calls fail and the relay keeps the session&#39;s registration and session URL valid in memory for up to 60 seconds so the extension can reconnect to it; tool calls arriving in that window are refused, and if the extension doesn&#39;t reconnect the session is destroyed. Nothing persists across the session.</p>
 </li>
 <li><p><strong>Extension</strong>: Before the user clicks Connect, the extension stores nothing. Afterwards it keeps, on the user&#39;s machine only:</p>
 <ul>
-<li>in <code>chrome.storage.local</code>: (a) the relay base URL, if the user changed it in Settings, and (b) site-specific tool profiles saved via the <code>/save_site_profile</code> tool (deletable from the popup&#39;s Settings);</li>
-<li>in <code>chrome.storage.session</code> (held in memory, cleared when Chrome exits, not readable by web pages or content scripts) while a tab is connected: the id of the connected tab, the relay base URL, the session id, the session URL and token, and a random reconnect secret the relay issued for the session. This lets a restarted extension background worker reconnect to the same session, so the session URL the user pasted keeps working. It is removed on Disconnect, when the connected tab closes, or when reconnecting fails.</li>
+<li>in <code>chrome.storage.local</code>: (a) the relay and registry base URLs, if the user changed them in Settings, and (b) site profiles the AI saved with the <code>/save_site_profile</code> tool: first as <em>pending</em> (shown in the popup with Keep / Discard; pending profiles never run), then as <em>kept</em> once the user clicks Keep (deletable from the popup&#39;s Settings);</li>
+<li>in <code>chrome.storage.session</code> (held in memory, cleared when Chrome exits, not readable by web pages or content scripts) while a tab is connected: the id of the connected tab, the relay base URL, the session id, the session URL and token, a random reconnect secret the relay issued for the session, and the registry profile fetched for the tab. This lets a restarted extension background worker reconnect to the same session with the same tools, so the session URL the user pasted keeps working. It is removed on Disconnect, when the connected tab closes, or when reconnecting fails.</li>
 </ul>
-<p>The session URL, token and reconnect secret are discarded on disconnect. None of this is transmitted except the relay base URL, which decides where the session connects, and the session id and reconnect secret, which go only to that relay when reconnecting. Uninstalling the extension deletes all of it.</p>
+<p>The session URL, token and reconnect secret are discarded on disconnect. None of this is transmitted except the relay base URL, which decides where the session connects, the session id and reconnect secret, which go only to that relay when reconnecting, and the tools of kept profiles, which are registered with the relay (tool names, descriptions and input schemas, and the notes in the session&#39;s agents.md; the code stays in the extension) for sessions on that site. Uninstalling the extension deletes all of it.</p>
 </li>
 </ul>
 <h2>Third parties</h2>
-<p>We do not sell, rent, or share user data with third parties for advertising, marketing, or any other purpose unrelated to making the active session work. The relay is hosted on Cloudflare Workers; Cloudflare&#39;s data-handling practices are governed by its own privacy policy at <a href="https://www.cloudflare.com/privacypolicy/">https://www.cloudflare.com/privacypolicy/</a>.</p>
+<p>We do not sell, rent, or share user data with third parties for advertising, marketing, or any other purpose unrelated to making the active session work. The relay and the registry are hosted on Cloudflare Workers; Cloudflare&#39;s data-handling practices are governed by its own privacy policy at <a href="https://www.cloudflare.com/privacypolicy/">https://www.cloudflare.com/privacypolicy/</a>.</p>
 <h2>User control</h2>
 <ul>
 <li>While a tab is connected it shows an &quot;AI has access to this tab&quot; bar with a Stop button and an &quot;AI&quot; badge on the extension icon. Stop (in the bar or the popup&#39;s &quot;Stop &amp; disconnect&quot;) or closing the tab terminates the session and invalidates the session URL at once; restarting Chrome does so within 60 seconds.</li>
 <li>The session URL is the only authorization token.</li>
+<li>Tools the AI saves for a site never run until the user clicks Keep in the popup, which also shows their code for review; kept profiles can be deleted at any time.</li>
 <li>The user can revoke the extension&#39;s site access or remove it at any time from <code>chrome://extensions</code>.</li>
 <li>The <code>chrome.userScripts</code> API used by the <code>/eval</code> tool is additionally gated behind a per-extension &quot;Allow User Scripts&quot; toggle that the user must explicitly enable.</li>
 <li>Source code for both the extension and the relay is open and auditable: <a href="https://github.com/blitzdotdev/agent-socket">https://github.com/blitzdotdev/agent-socket</a>.</li>
