@@ -8,8 +8,10 @@
   --warn: #fb4;
   --err: #f55;
   --border: #2a2a30;
+  --paused: #8c9cff;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; padding: 0; }
 body {
   font: 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -78,6 +80,19 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 #events-list li { color: var(--muted); display: flex; gap: 6px; }
 #events-list .when { flex: none; }
 .warn-body { color: var(--fg); margin-bottom: 6px; line-height: 1.45; }
+.paused-banner { background: #15182b; border: 1px solid var(--paused); box-shadow: 0 0 0 2px rgba(140,156,255,.2); }
+.paused-banner .warn-title { color: var(--paused); font-size: 13px; }
+.paused-banner button { background: var(--paused); color: #000; }
+
+#timer-text { font-size: 14px; font-weight: 600; }
+#timer-card.soon { border-color: var(--err); }
+#timer-card.soon #timer-text { color: var(--err); }
+.timer-actions { margin-top: 6px; flex-wrap: wrap; gap: 6px; }
+#sites-list li { display: flex; gap: 6px; align-items: center; }
+#sites-list li .ellipsis { flex: 1; }
+label.check { display: flex; gap: 6px; align-items: center; margin-top: 6px; cursor: pointer; }
+label.check input { margin: 0; accent-color: var(--accent); }
+select { background: #0a0a0d; color: var(--fg); border: 1px solid var(--border); border-radius: 3px; font: inherit; font-size: 11px; padding: 2px 4px; }
 .warn-actions { display: flex; gap: 6px; }
 
 .url-row { display: flex; gap: 4px; }

@@ -261,6 +261,13 @@ export function buildAgentsMd({ host, registry, local, tools }) {
     "with non-2xx status. Keep results small; prefer targeted queries over",
     "wholesale DOM dumps.",
     "",
+    "## Limits the user set",
+    "",
+    "Tools act only while the tab is on a site the user allowed (at first, the one it",
+    "was on at Connect). Elsewhere they return 403 `origin_not_allowed` and do nothing:",
+    "ask the user to click **Allow** in the extension, or to go back. The session also",
+    "ends on the user's timer. `/page_info` shows `allowed_origins` and `session_ends_at`.",
+    "",
     ...notes,
   ].join("\n")
   return md.length > MAX_AGENTS_MD_CHARS ? `${md.slice(0, MAX_AGENTS_MD_CHARS)}\n\n…(truncated)\n` : md

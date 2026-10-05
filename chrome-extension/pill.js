@@ -1,4 +1,4 @@
-// In-page indicator for the bound tab: "AI has access to this tab · [Stop]".
+// In-page indicator for the bound tab: "AI has access to this tab · 42 min left · [Stop]".
 // Injected by background.js into the isolated world on connect and after each
 // load. Lives in a closed shadow root, re-attaches itself if the page removes
 // it, and removes itself once the tab is no longer bound. Draggable; the
@@ -6,7 +6,9 @@
 // When the link changed (the old one is dead) it turns amber with
 // "Link changed — paste the new link into your AI chat · [Copy link] [Stop]".
 // The link is fetched from the background on the click and goes straight to
-// the clipboard; it never enters the page's DOM.
+// the clipboard; it never enters the page's DOM. When the tab is on a site the
+// user hasn't allowed, it says "AI paused: tab left github.com · [Allow
+// mail.google.com] [Stop]".
 
 ;(() => {
   if (globalThis.__asPill) return globalThis.__asPill.refresh()
@@ -29,10 +31,17 @@
     .pill.changed .dot { background: #fb4; }
     .pill.changed .text { font-weight: 600; }
     button.copy { color: #16161a; background: #fb4; }
-  </style><div class="pill" role="status"><span class="dot"></span><span class="text">AI has access to this tab</span><button type="button" class="copy" data-action="copy" hidden>Copy link</button><button type="button" data-action="stop">Stop</button></div>`
+    .left[hidden] { display: none; }
+    .left.soon { color: #ff5c5c; font-weight: 700; }
+    .pill.paused { border-color: #8c9cff; }
+    .pill.paused .dot { background: #8c9cff; }
+    button.allow { color: #16161a; background: #8c9cff; }
+  </style><div class="pill" role="status"><span class="dot"></span><span class="text">AI has access to this tab</span><span class="left" hidden></span><button type="button" class="copy" data-action="copy" hidden>Copy link</button><button type="button" class="allow" data-action="allow" hidden>Allow</button><button type="button" data-action="stop">Stop</button></div>`
   const pill = root.querySelector(".pill")
   const text = root.querySelector(".text")
+  const left = root.querySelector(".left")
   const copy = root.querySelector('[data-action="copy"]')
+  const allow = root.querySelector('[data-action="allow"]')
   const stop = root.querySelector('[data-action="stop"]')
 
   // ── dragging ──
@@ -46,7 +55,7 @@
   }
   let drag = null
   pill.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || e.target === stop || e.target === copy) return
+    if (e.button !== 0 || e.target.tagName === "BUTTON") return
     const r = pill.getBoundingClientRect()
     drag = { dx: e.clientX - r.left, dy: e.clientY - r.top }
     pill.setPointerCapture(e.pointerId)
@@ -76,15 +85,44 @@
     let s
     try { s = await chrome.runtime.sendMessage({ type: "pill_state" }) } catch { return remove() }  // extension gone
     if (!s?.bound) return remove()
+    const paused = !s.linkChanged && s.paused
     pill.classList.toggle("changed", !!s.linkChanged)
+    pill.classList.toggle("paused", !!paused)
     copy.hidden = !s.linkChanged
+    allow.hidden = !paused?.origin
+    if (paused?.origin) { allow.textContent = `Allow ${paused.host}`; allow.dataset.origin = paused.origin }
+    left.hidden = !s.left || !!s.linkChanged || !!paused
+    left.textContent = s.left ? `· ${s.left}` : ""
+    left.classList.toggle("soon", !!s.soon)
     if (note && Date.now() < note.until) { text.textContent = note.text; return }
     note = null
     if (s.linkChanged) { text.textContent = "Link changed — paste the new link into your AI chat"; return }
+    if (paused) { text.textContent = paused.from ? `AI paused: tab left ${paused.from}` : "AI paused: no site allowed"; return }
     const state = s.status === "connected" ? "AI has access to this tab"
       : s.status === "connecting" ? "AI access: connecting…" : "AI access: reconnecting…"
     text.textContent = state + (s.lastToolCallAt ? ` · last action ${ago(Date.now() - s.lastToolCallAt)} ago` : " · waiting for AI")
   }
+
+  // Allow counts only for a real click on a button the page isn't covering
+  // (IntersectionObserver v2 visibility), so a page can't trick the user into it.
+  let allowVisible = false
+  const seen = new IntersectionObserver((es) => { allowVisible = es.at(-1).isVisible }, { trackVisibility: true, delay: 100 })
+  seen.observe(allow)
+  allow.addEventListener("click", async (e) => {
+    if (!e.isTrusted) return
+    if (!allowVisible) {
+      note = { text: "Allow it from the Agent Socket toolbar icon", until: Date.now() + 6000 }
+      return void refresh()
+    }
+    allow.disabled = true
+    try {
+      const r = await chrome.runtime.sendMessage({ type: "allow_origin", origin: allow.dataset.origin }).catch(() => null)
+      if (r?.ok) note = { text: "Allowed for this session", until: Date.now() + 3000 }
+    } finally {
+      allow.disabled = false
+      void refresh()
+    }
+  })
 
   // navigator.clipboard needs a secure context. On http:// pages fall back to
   // the copy command on a field in our closed shadow root, setting the data
@@ -132,6 +170,7 @@
 
   function remove() {
     clearInterval(timer)
+    seen.disconnect()
     removeEventListener("resize", restore)
     keep.disconnect()
     chrome.runtime.onMessage.removeListener(onMessage)

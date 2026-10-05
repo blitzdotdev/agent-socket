@@ -35,6 +35,10 @@ const REGISTRY_BASE = `http://127.0.0.1:${STATIC_PORT}/registry`
 // opened under these names; Chromium resolves them to 127.0.0.1.
 const SITE_HOST = "e2e-site.test"
 const GENERIC_SITE_HOST = "no-profile.test"
+// A second site for the site lock and tool swap.
+const OTHER_HOST = "e2e-other.test"
+const SHOT_DIR = process.env.SHOT_DIR ?? ""
+const EXT_VERSION = JSON.parse(fs.readFileSync(path.join(EXT_DIR, "manifest.json"), "utf8")).version
 
 // ── runner ────────────────────────────────────────────────────────────
 let passed = 0, failed = 0
@@ -103,6 +107,11 @@ const registry = {
         { method: "POST", path: "/reg_counter", description: "Read the counter (registry version).", input_schema: { type: "object", properties: {} }, code: "return { from: 'registry', value: Number(document.getElementById('counter').textContent) }" },
         { method: "POST", path: "/reg_title", description: "Read the page heading.", code: "return document.getElementById('page-title').textContent" },
       ],
+    },
+    [OTHER_HOST]: {
+      host: OTHER_HOST, version: 1, updated: "2026-10-01 00:00:00",
+      notes: "E2E OTHER NOTES: the second site.",
+      tools: [{ method: "POST", path: "/other_heading", description: "Read the heading (other site).", code: "return { from: 'other', title: document.getElementById('page-title').textContent }" }],
     },
     "*": { host: "*", version: 1, updated: "2026-10-01 00:00:00", notes: "E2E GENERIC NOTES: no site profile.", tools: [] },
   },
@@ -189,7 +198,7 @@ async function launchChrome(extDir) {
       `--load-extension=${extDir}`,
       `--user-data-dir=${userDataDir}`,
       "--window-size=1280,900",
-      `--host-resolver-rules=MAP ${SITE_HOST} 127.0.0.1, MAP ${GENERIC_SITE_HOST} 127.0.0.1`,
+      `--host-resolver-rules=MAP ${SITE_HOST} 127.0.0.1, MAP ${GENERIC_SITE_HOST} 127.0.0.1, MAP ${OTHER_HOST} 127.0.0.1`,
     ],
     defaultViewport: null,
   })
@@ -492,7 +501,7 @@ async function main() {
       })
       if (status !== 200 || !json.submitted || json.status !== "pending" || json.id !== "sub_1" || json.host !== SITE_HOST) throw new Error(`${status} ${JSON.stringify(json)}`)
       const sub = registry.submissions[0]
-      if (sub.body.host !== SITE_HOST || sub.body.ext_version !== "0.3.0" || sub.body.tools[0].method !== "POST" || sub.body.notes !== "Counter page.") throw new Error(JSON.stringify(sub.body))
+      if (sub.body.host !== SITE_HOST || sub.body.ext_version !== EXT_VERSION || sub.body.tools[0].method !== "POST" || sub.body.notes !== "Counter page.") throw new Error(JSON.stringify(sub.body))
       if (!/Chrome/.test(sub.userAgent ?? "")) throw new Error(`user agent: ${sub.userAgent}`)
     })
 
@@ -655,7 +664,8 @@ async function main() {
       const pill = host && find(host, (n) => /^pill\b/.test(attr(n, "class") ?? ""))
       const button = host && find(host, (n) => attr(n, "data-action") === "stop")
       const copy = host && find(host, (n) => attr(n, "data-action") === "copy")
-      return { cdp, pill, button, copy, copyShown: !!copy && attr(copy, "hidden") === null }
+      const allow = host && find(host, (n) => attr(n, "data-action") === "allow")
+      return { cdp, pill, button, copy, copyShown: !!copy && attr(copy, "hidden") === null, allow, allowShown: !!allow && attr(allow, "hidden") === null }
     }
     const center = async (cdp, node) => {
       const [x1, y1, , , x3, y3] = (await cdp.send("DOM.getBoxModel", { nodeId: node.nodeId })).model.content
@@ -808,6 +818,219 @@ async function main() {
       if (await readClipboard() !== changedUrl) throw new Error("clipboard doesn't hold the new link")
     })
 
+    // ── 11. Session timer + site lock ──────────────────────────────
+    const firstOrigin = `http://${SITE_HOST}:${STATIC_PORT}`
+    const otherOrigin = `http://${OTHER_HOST}:${STATIC_PORT}`
+    const otherHost = `${OTHER_HOST}:${STATIC_PORT}`
+    const otherUrl = `${otherOrigin}/test-page.html`
+    const popupState = () => popupPage.evaluate(() => ({
+      timer: document.querySelector("#timer-text").textContent,
+      soon: document.querySelector("#timer-card").classList.contains("soon"),
+      removeShown: !document.querySelector("#timer-remove").hidden,
+      paused: !document.querySelector("#paused-card").hidden,
+      pausedTitle: document.querySelector("#paused-title").textContent,
+      allow: document.querySelector("#paused-card").hidden || document.querySelector("#allow-btn").hidden ? null : document.querySelector("#allow-btn").textContent,
+      sites: [...document.querySelectorAll("#sites-list li[data-origin]")].map((li) => li.dataset.origin),
+      any: document.querySelector("#any-site").checked,
+    }))
+    const near = (a, b, ms = 15000) => a != null && Math.abs(a - b) < ms
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+    const refused = async (p, body, host) => {
+      const { status, json } = await callTool(p, body)
+      if (status !== 403 || json?.error?.code !== "origin_not_allowed" || (host && json.error.host !== host)) throw new Error(`${p}: ${status} ${JSON.stringify(json)}`)
+      return json.error
+    }
+    const toolsAre = (want, notWant) => waitFor(async () => {
+      const have = await toolPaths(activeTokenBase)
+      return have.includes(want) && !have.includes(notWant)
+    }, 10000)
+    if (SHOT_DIR) fs.mkdirSync(SHOT_DIR, { recursive: true })
+    const shotPill = async (name) => {
+      if (!SHOT_DIR) return
+      await testPage.bringToFront()
+      await testPage.evaluate(() => scrollTo(0, 0))  // screenshot clips are in page coordinates
+      await sleep(400)
+      const { cdp, pill } = await pillNodes(testPage)
+      const [x1, y1, , , x3, y3] = (await cdp.send("DOM.getBoxModel", { nodeId: pill.nodeId })).model.border
+      await testPage.screenshot({ path: path.join(SHOT_DIR, `${name}.png`), clip: { x: Math.max(0, x1 - 16), y: Math.max(0, y1 - 16), width: x3 - x1 + 32, height: y3 - y1 + 32 } })
+    }
+    const shotPopup = async (name) => {
+      if (!SHOT_DIR) return
+      await popupPage.bringToFront()
+      await popupPage.setViewport({ width: 384, height: 900 })
+      await sleep(1200)
+      const h = await popupPage.evaluate(() => document.body.scrollHeight)
+      await popupPage.screenshot({ path: path.join(SHOT_DIR, `${name}.png`), clip: { x: 0, y: 0, width: 384, height: h } })
+      await testPage.bringToFront()
+    }
+
+    await step("timer: a new session stops after 60 min; pill, popup, /page_info show it", async () => {
+      await sendToSW(popupPage, { type: "disconnect" })
+      await testPage.bringToFront()
+      if (!testPage.url().startsWith(firstOrigin)) await testPage.goto(testUrl, { waitUntil: "load" })
+      const t0 = Date.now()
+      const r = await sendToSW(popupPage, { type: "connect" })
+      if (!r.ok) throw new Error(JSON.stringify(r))
+      activeTokenBase = r.url.replace(/\/agents\.md.*$/, "")
+      const snap = await swState()
+      if (!near(snap.endsAt, t0 + 3_600_000)) throw new Error(`endsAt ${snap.endsAt - t0} ms after connect`)
+      if (JSON.stringify(snap.siteLock) !== JSON.stringify({ origins: [firstOrigin], any: false })) throw new Error(JSON.stringify(snap.siteLock))
+      await waitFor(async () => /<span class="left">· 60 min left<\/span>/.test(await pillHtml(testPage)))
+      await waitFor(async () => { const u = await popupState(); return /^Auto-stop in (1:00:00|59:\d\d)$/.test(u.timer) && u.removeShown && !u.soon })
+      const { status, json } = await callTool("/page_info", {})
+      if (status !== 200 || json.session_ends_at !== new Date(snap.endsAt).toISOString()) throw new Error(`${status} ${json?.session_ends_at}`)
+      if (JSON.stringify(json.allowed_origins) !== JSON.stringify([firstOrigin])) throw new Error(JSON.stringify(json.allowed_origins))
+      if (!/origin_not_allowed[\s\S]*session_ends_at/.test(await (await fetch(`${activeTokenBase}/agents.md`)).text())) throw new Error("agents.md doesn't explain the limits")
+    })
+
+    await step("timer: Change picks a new length from now; Remove timer clears it", async () => {
+      await clickInPopup("#timer-change")
+      await clickInPopup('#timer-choices [data-minutes="30"]')
+      await waitFor(async () => near((await swState()).endsAt, Date.now() + 30 * 60_000))
+      await waitFor(async () => /^Auto-stop in (30:00|29:\d\d)$/.test((await popupState()).timer))
+      await waitFor(async () => /AI has access to this tab · last action \d+s ago<\/span><span class="left">· 30 min left/.test(await pillHtml(testPage)))
+      await shotPill("pill-time-left")
+      await shotPopup("popup-timer")
+      await clickInPopup("#timer-change")
+      await shotPopup("popup-timer-change")
+      await clickInPopup("#timer-change")
+      if (SHOT_DIR) {
+        await popupPage.evaluate(() => { document.querySelector("#advanced").open = true; scrollTo(0, 0) })
+        await shotPopup("popup-settings")
+        await popupPage.evaluate(() => { document.querySelector("#advanced").open = false })
+      }
+      await clickInPopup("#timer-remove")
+      await waitFor(async () => (await swState()).endsAt === null)
+      await waitFor(async () => { const u = await popupState(); return u.timer === "No auto-stop for this session" && !u.removeShown })
+      await waitFor(async () => !/min left/.test(await pillHtml(testPage)))
+      if ((await callTool("/page_info", {})).json.session_ends_at !== null) throw new Error("session_ends_at not null")
+      if ((await popupText("#timer-change")) !== "Set timer") throw new Error("no Set timer")
+      await clickInPopup("#timer-change")
+      await clickInPopup('#timer-choices [data-minutes="120"]')
+      await waitFor(async () => /· 2 h left/.test(await pillHtml(testPage)))
+    })
+
+    await step("site lock: /navigate to another origin is refused", async () => {
+      const e = await refused("/navigate", { url: otherUrl }, otherHost)
+      if (!/Allow/.test(e.message) || !/Let the AI use other sites/.test(e.message)) throw new Error(e.message)
+      if (!testPage.url().startsWith(firstOrigin)) throw new Error(`tab moved to ${testPage.url()}`)
+      if ((await callTool("/navigate", { url: `${testUrl}?same-origin` })).status !== 200) throw new Error("same-origin navigate refused")
+    })
+
+    let urlBeforeSwap
+    await step("site lock: tab sent away by /eval → next calls refused, page untouched, pill paused", async () => {
+      urlBeforeSwap = (await swState()).url
+      const { status } = await callTool("/eval", { code: `setTimeout(() => { location.href = ${JSON.stringify(`${otherUrl}?away`)} }, 50); return 1` })
+      if (status !== 200) throw new Error(`eval ${status}`)
+      await waitFor(() => testPage.url().includes("?away"))
+      await testPage.waitForFunction(() => document.readyState === "complete")
+      await refused("/page_info", {}, otherHost)
+      for (const [p, body] of [["/eval", { code: "return document.title" }], ["/click", { selector: "#inc-btn" }], ["/get_text", {}], ["/reg_counter", {}], ["/screenshot", {}]]) await refused(p, body)
+      if (await testPage.evaluate(() => document.getElementById("counter").textContent) !== "0") throw new Error("a refused /click touched the page")
+      if ((await callTool("/registry_search", { q: "counter" })).status !== 200) throw new Error("registry tools refused while paused")
+      await waitFor(async () => {
+        const { allowShown } = await pillNodes(testPage)
+        const html = await pillHtml(testPage)
+        return allowShown && /class="pill paused"/.test(html) && html.includes(`AI paused: tab left ${SITE_HOST}:${STATIC_PORT}`) && html.includes(`Allow ${otherHost}`)
+      })
+      await waitFor(async () => { const u = await popupState(); return u.paused && u.allow === `Allow ${otherHost}` && u.pausedTitle === `AI paused: the tab left ${SITE_HOST}:${STATIC_PORT}` && u.sites.join() === firstOrigin })
+      await sleep(1500)  // past the tool-swap debounce: a paused tab keeps the loaded tools
+      await toolsAre("/reg_counter", "/other_heading")
+      await shotPill("pill-paused")
+      await shotPopup("popup-paused")
+    })
+
+    await step("site lock: Allow in the pill lets calls through; tools swap on the same link", async () => {
+      await testPage.bringToFront()
+      await sleep(300)
+      const { cdp, allow } = await pillNodes(testPage)
+      const at = await center(cdp, allow)
+      await testPage.mouse.click(at.x, at.y)
+      await waitFor(async () => (await swState()).siteLock.origins.includes(otherOrigin))
+      const { status, json } = await callTool("/page_info", {})
+      if (status !== 200 || json.host !== otherHost || json.allowed_origins.join() !== `${firstOrigin},${otherOrigin}`) throw new Error(`${status} ${JSON.stringify(json)}`)
+      await toolsAre("/other_heading", "/reg_counter")
+      const h = await callTool("/other_heading", {})
+      if (h.json?.value?.from !== "other") throw new Error(JSON.stringify(h.json))
+      if (!(await (await fetch(`${activeTokenBase}/agents.md`)).text()).includes("E2E OTHER NOTES")) throw new Error("agents.md not swapped")
+      if ((await swState()).url !== urlBeforeSwap) throw new Error("the link changed")
+      await waitFor(async () => !/paused/.test(await pillHtml(testPage)) && /AI has access to this tab/.test(await pillHtml(testPage)))
+    })
+
+    await step("site lock: back on the first site, its tools come back", async () => {
+      const { status, json } = await callTool("/navigate", { url: testUrl })
+      if (status !== 200 || !json.loaded) throw new Error(`${status} ${JSON.stringify(json)}`)
+      await toolsAre("/reg_counter", "/other_heading")
+      if ((await callTool("/reg_counter", {})).json?.value?.from !== "registry") throw new Error("registry tool not back")
+    })
+
+    await step("site lock: popup removes an allowed site; Allow in the popup takes a trusted click", async () => {
+      await clickInPopup(`#sites-list li[data-origin="${otherOrigin}"] a[data-action="remove"]`)
+      await waitFor(async () => (await swState()).siteLock.origins.join() === firstOrigin)
+      await refused("/navigate", { url: otherUrl })
+      await testPage.goto(`${otherUrl}?user`, { waitUntil: "load" })  // the user browses there
+      await refused("/get_text", {}, otherHost)
+      await waitFor(async () => (await popupState()).allow === `Allow ${otherHost}`)
+      await popupPage.$eval("#allow-btn", (n) => n.click())  // synthetic: ignored
+      await sleep(500)
+      if ((await swState()).siteLock.origins.includes(otherOrigin)) throw new Error("an untrusted click allowed the site")
+      await popupPage.bringToFront()
+      await popupPage.click("#allow-btn")
+      await testPage.bringToFront()
+      await waitFor(async () => (await swState()).siteLock.origins.includes(otherOrigin))
+      if ((await callTool("/get_text", {})).status !== 200) throw new Error("still refused after Allow")
+      await clickInPopup(`#sites-list li[data-origin="${otherOrigin}"] a[data-action="remove"]`)
+      await waitFor(async () => (await swState()).siteLock.origins.join() === firstOrigin)
+      await refused("/get_text", {})
+      await testPage.goto(testUrl, { waitUntil: "load" })
+      await toolsAre("/reg_counter", "/other_heading")
+    })
+
+    await step("site lock: \"Let the AI use other sites\" lets calls through anywhere", async () => {
+      await testPage.goto(`http://${GENERIC_SITE_HOST}:${STATIC_PORT}/test-page.html?lock`, { waitUntil: "load" })
+      await refused("/page_info", {})
+      await clickInPopup("#any-site")
+      await waitFor(async () => (await swState()).siteLock.any === true)
+      const { status, json } = await callTool("/page_info", {})
+      if (status !== 200 || json.allowed_origins !== "any") throw new Error(`${status} ${JSON.stringify(json)}`)
+      const nav = await callTool("/navigate", { url: otherUrl })
+      if (nav.status !== 200) throw new Error(`navigate ${nav.status}`)
+      await toolsAre("/other_heading", "/reg_counter")
+      if ((await popupState()).any !== true) throw new Error("toggle not shown on")
+      await clickInPopup("#any-site")
+      await waitFor(async () => (await swState()).siteLock.any === false)
+      await refused("/page_info", {}, otherHost)
+      await testPage.goto(testUrl, { waitUntil: "load" })
+      await toolsAre("/reg_counter", "/other_heading")
+      if ((await callTool("/page_info", {})).status !== 200) throw new Error("first site refused")
+    })
+
+    await step("timer: expiry ends the session like Stop", async () => {
+      await popupPage.evaluate(() => chrome.storage.local.set({ test_session_ms: 10000 }))
+      try {
+        await sendToSW(popupPage, { type: "disconnect" })
+        const r = await sendToSW(popupPage, { type: "connect" })
+        const base = r.url.replace(/\/agents\.md.*$/, "")
+        if (await agentStatus(base) !== 200) throw new Error("new session not working")
+        await waitFor(async () => /<span class="left soon">· \d+ s left/.test(await pillHtml(testPage)))
+        await waitFor(async () => (await popupState()).soon)
+        await shotPill("pill-last-minute")
+        await shotPopup("popup-last-minute")
+        await waitFor(async () => (await swState()).status.status === "closed", 20000)
+        const snap = await swState()
+        if (!/timer/.test(snap.status.reason) || snap.boundTab || snap.endsAt !== null) throw new Error(JSON.stringify(snap.status))
+        if (!snap.events.some((e) => e.type === "expired")) throw new Error("no expired event")
+        await waitFor(async () => !(await hasPill(testPage)))
+        if (await badge(boundTabId) !== "") throw new Error("badge still set")
+        if (await agentStatus(base) === 200) throw new Error("agent URL still works after expiry")
+        // Ended, not held: a held session still serves its agents.md.
+        await waitFor(async () => (await fetch(`${base}/agents.md`)).status === 503)
+        await waitFor(() => popupPage.evaluate(() => /session timer ran out/.test(document.querySelector("#status-text").textContent)))
+      } finally {
+        await popupPage.evaluate(() => chrome.storage.local.remove("test_session_ms"))
+      }
+    })
+
     await step("closing the bound tab ends the session", async () => {
       await other.bringToFront()
       const r = await sendToSW(popupPage, { type: "connect" })
@@ -832,7 +1055,7 @@ async function main() {
       await testPage.mouse.click((x1 + x3) / 2, (y1 + y3) / 2)
       await waitFor(async () => (await swState()).status.status === "idle")
       await waitFor(async () => !(await hasPill(testPage)))
-      if (await badge(boundTabId) !== "") throw new Error("badge still set")
+      await waitFor(async () => await badge(boundTabId) === "")  // cleared after the revoke
       if (await agentStatus(base) === 200) throw new Error("agent URL still works after Stop")
     })
 

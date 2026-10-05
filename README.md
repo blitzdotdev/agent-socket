@@ -70,8 +70,8 @@ The relay is one Worker: `cd relay && npx wrangler deploy --env=""` puts it on y
 ## Security model
 
 - **The link is the key.** Anyone with it can call the app's tools until it is revoked or the session ends. Share it only with the chat you mean to.
-- **Only what the app exposes.** An agent can call only the registered tools. With the extension, that means the one tab you connected, nothing else in the browser.
-- **You can end it.** Stop, Stop & disconnect, closing the tab, or `session.close()` in your app ends the session and kills every link it minted.
+- **Only what the app exposes.** An agent can call only the registered tools. With the extension, that means the one tab you connected, nothing else in the browser, and only on the site it was on until you allow more.
+- **You can end it.** Stop, Stop & disconnect, closing the tab, or `session.close()` in your app ends the session and kills every link it minted. Extension sessions also end on a timer, 60 minutes by default.
 
 Details and how to report a vulnerability: [SECURITY.md](SECURITY.md).
 

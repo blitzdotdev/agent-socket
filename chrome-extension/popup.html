@@ -45,6 +45,28 @@
     <div id="tools-source" class="muted small" hidden></div>
   </section>
 
+  <section id="paused-card" class="paused-banner" role="alert" hidden>
+    <div class="warn-title" id="paused-title"></div>
+    <div class="warn-body" id="paused-body"></div>
+    <button id="allow-btn" hidden></button>
+  </section>
+
+  <section id="timer-card" hidden>
+    <div id="timer-text">Auto-stop in —</div>
+    <div class="row timer-actions">
+      <button id="timer-stop" class="small">Stop now</button>
+      <button id="timer-change" class="ghost small">Change</button>
+      <button id="timer-remove" class="ghost small">Remove timer</button>
+    </div>
+    <div id="timer-choices" class="row timer-actions" hidden></div>
+  </section>
+
+  <section id="sites-card" hidden>
+    <div class="muted small">Sites the AI can use in this tab:</div>
+    <ul id="sites-list" class="profile-list"></ul>
+    <label class="check small"><input type="checkbox" id="any-site"> Let the AI use other sites in this tab</label>
+  </section>
+
   <section id="pending-card" hidden>
     <div class="muted small">The AI saved tools. They run only if you keep them:</div>
     <ul id="pending-list" class="profile-list"></ul>
@@ -80,6 +102,11 @@
       <input id="registry-input" placeholder="https://registry.agentsocket.dev" />
       <button id="save-registry">Save</button>
     </div>
+    <div class="row">
+      <label for="length-select" class="muted small">New sessions stop after</label>
+      <select id="length-select"></select>
+    </div>
+    <label class="check small"><input type="checkbox" id="any-default"> Let the AI use other sites by default</label>
     <div class="row">
       <span class="muted small">Kept site profiles (load on this computer only):</span>
     </div>
