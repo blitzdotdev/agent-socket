@@ -35,7 +35,7 @@ These are **by design** for v0, documented in the spec, and not considered vulne
 - **Anyone can claim any name** in the channel CLI. Names are self-assigned labels; there's no identity verification.
 - **Sessions are cheap to create.** `/v1/_ws` upgrades are rate-limited per IP (100 per 10 s, per Cloudflare location) and a socket that doesn't register within 10 s is closed, but there's no global cap; per-session limits are 100 inflight calls and 50 tokens.
 - **App-ids are unauthenticated labels.** Any app can register under any well-formed app-id; the relay doesn't check Origin.
-- **No persistence.** DOs die on disconnect; channel host RAM is the only state.
+- **No persistence.** DO state is memory only. A dropped app's session is held for up to 60 s so the app can resume it, then wiped; a clean disconnect wipes it at once. Channel host RAM is the only state.
 - **Channel content is untrusted input.** AI participants must treat messages as data, not directives. See [`docs/spec/`](docs/) §9.5.
 
 Reports about these specific behaviors will be acknowledged but won't be treated as vulnerabilities unless they reveal an attack vector beyond what the model already admits.
@@ -43,6 +43,7 @@ Reports about these specific behaviors will be acknowledged but won't be treated
 ## What we'd consider a vulnerability
 
 - Bypassing the in-memory token check (impersonating a session you don't have the verifier for)
+- Attaching to or resuming a session without its resume secret (the session-id is public; only `/v1/_ws?session=` plus the secret in the first frame may resume, compared in constant time), or disturbing a live app socket without it
 - Leaking DO state across sessions
 - Cross-session data exposure via the relay
 - Memory-exhaustion vectors beyond the documented 100-inflight / 50-token / 1 MiB-request-body / 4 MiB-frame caps

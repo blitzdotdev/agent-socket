@@ -90,7 +90,10 @@ click Chrome's permission prompt, so the tests load a copy of the extension
 with site access granted at install (`test/ext-dir.mjs`).
 
 `npm run ext:test:unit` (no chromium) drives the vendored SDK's reconnect path
-against a mocked WebSocket and checks the `/navigate` URL guard.
+(resume, then re-mint when the session is gone) against a mocked WebSocket and
+checks the `/navigate` URL guard. `npm run ext:test:reconnect` (chromium)
+checks the same URL survives a relay-side WS drop and a service-worker stop,
+and that a new URL is minted once the session is gone.
 
 ## Architecture in one paragraph
 
@@ -105,4 +108,8 @@ access to page globals. Tool input is parsed from the JSON body the relay
 forwards; output is whatever the handler returns. The popup (`popup.html`)
 is a thin client that exchanges `chrome.runtime.sendMessage` calls with the
 SW. A `chrome.alarms` keepalive fires every 30s and calls `session.ping()`
-to keep the WS warm against MV3 service-worker idle-kill.
+to keep the WS warm against MV3 service-worker idle-kill. A dropped WS
+resumes the same session, so the pasted URL keeps working. The live session
+(tab, session id, resume secret, URL) is kept in `chrome.storage.session`, so
+a restarted service worker resumes it too; only if the relay has ended the
+session does the extension mint a new URL (the popup shows it).
