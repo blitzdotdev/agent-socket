@@ -1,0 +1,27 @@
+{
+  "name": "@agent-socket/registry",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Hosted registry of agent-socket site profiles (tools + notes), built on teenybase.",
+  "scripts": {
+    "migrate": "teeny deploy --local --yes",
+    "dev": "TEENY_DEV_PORT=8795 teeny dev --local",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "seed": "node scripts/seed.mjs"
+  },
+  "dependencies": {
+    "hono": "^4.11.9",
+    "teenybase": "0.0.14"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.10",
+    "@cloudflare/workers-types": "^4.20260210.0",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.5.0",
+    "vitest": "3.2.4",
+    "wrangler": "^4.63.0"
+  }
+}

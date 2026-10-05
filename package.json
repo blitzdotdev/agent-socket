@@ -14,7 +14,8 @@
   "workspaces": [
     "relay",
     "sdk",
-    "harness"
+    "harness",
+    "registry"
   ],
   "scripts": {
     "dev": "bash scripts/deploy.sh dev",
