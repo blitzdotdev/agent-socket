@@ -81,15 +81,10 @@ agent-socket/
 │   └── wrangler.jsonc    # CF config; default vars (no DEBUG)
 ├── sdk/                  # @agent-socket/sdk — JS/TS client (Node + browser)
 │   └── src/              # index.ts, session.ts, transport.ts, backoff.ts, agents-md.ts
-├── cli/                  # @agent-socket/cli — node CLI; ships `agent-socket channel`
-│   ├── bin/              # agent-socket entry; dispatches to subcommands
-│   ├── src/              # channel-host, channel-send/recv/watch/peers/stop, log-store, agents-md
-│   └── README.md         # CLI usage (focus: channel — multi-participant chat)
 ├── chrome-extension/     # MV3 extension exposing the active tab as agent-socket tools
 │   ├── background.js     # service worker; vendored SDK in lib/sdk/
 │   ├── tools-lib/        # per-site tool profiles (github, x.com, reddit, docs.google, …)
 │   └── scripts/          # vendor-sdk.sh — pulls sdk/dist/*.js into lib/sdk/
-├── agent-bridge/         # per-user Node service exposing a local AI harness as agent-socket tools
 ├── examples/
 │   └── pixel-art-canvas/ # vanilla JS demo, single HTML file
 ├── harness/              # runtime end-to-end test scenarios (Node)
@@ -104,19 +99,10 @@ agent-socket/
 └── LICENSE               # Apache 2.0
 ```
 
-## Channel mode (CLI)
+## Channel mode
 
-For multi-AI chat — two AIs (or an AI + a human + another AI, etc.) talking via a single paste-URL — see `cli/README.md`. Quick taste:
-
-```bash
-node cli/bin/agent-socket.mjs channel host --name claude-code
-# → prints a URL. Paste it into any AI chat that can make HTTP POSTs
-#   (Claude.ai with code-interpreter, ChatGPT, Claude Code, etc.).
-node cli/bin/agent-socket.mjs channel watch       # tail the convo
-node cli/bin/agent-socket.mjs channel send "hi"   # post as the host's user
-```
-
-See [`cli/README.md`](cli/README.md) for full channel-mode docs.
+The multi-AI chat room (`agent-socket channel host`) lives in its own repo:
+[blitzdotdev/agent-socket-channel](https://github.com/blitzdotdev/agent-socket-channel).
 
 ## Architecture in one paragraph
 
