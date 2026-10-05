@@ -391,7 +391,7 @@ export class RelayServer extends Server<Env> {
       if (this.env.DEBUG === "1") console.log("[DO] task_complete dropped: taskId not pending:", taskId)
       return
     }
-    if (typeof status !== "number" || !Number.isInteger(status) || status < 100 || status > 599) {
+    if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 599) {
       if (this.env.DEBUG === "1") console.log("[DO] task_complete dropped: invalid status:", status)
       return
     }
@@ -651,29 +651,38 @@ const SCRIPT_CAPABLE_TYPES = new Set([
   "text/xml",
 ])
 
+// Never throws: an app reply that can't become a Response (bad status, a
+// header value with a newline) must still resolve the agent's request.
 function buildToolResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
-  const contentType = extractContentType(headers)
-  // Handler opted into a custom content-type AND gave us a string body — pass
-  // it through, but neutralize script-capable types (XSS on our origin) and
-  // always send nosniff so the browser can't sniff a safe type into HTML.
-  if (contentType && typeof body === "string") {
-    const essence = contentType.split(";")[0]!.trim().toLowerCase()
-    const safeType = SCRIPT_CAPABLE_TYPES.has(essence)
-      ? "text/plain; charset=utf-8"
-      : contentType
-    return new Response(body, {
-      status,
-      headers: { "content-type": safeType, "x-content-type-options": "nosniff" },
-    })
+  if (!Number.isInteger(status) || status < 200 || status > 599) {
+    return errorResponse("protocol_error", "app replied with an invalid status (use 200-599)", 502)
   }
-  return new Response(
-    body !== undefined ? JSON.stringify(body) : "",
-    {
-      status,
-      headers: {
-        "content-type": "application/json; charset=utf-8",
-        "x-content-type-options": "nosniff",
+  const contentType = extractContentType(headers)
+  try {
+    // Handler opted into a custom content-type AND gave us a string body — pass
+    // it through, but neutralize script-capable types (XSS on our origin) and
+    // always send nosniff so the browser can't sniff a safe type into HTML.
+    if (contentType && typeof body === "string") {
+      const essence = contentType.split(";")[0]!.trim().toLowerCase()
+      const safeType = SCRIPT_CAPABLE_TYPES.has(essence)
+        ? "text/plain; charset=utf-8"
+        : contentType
+      return new Response(body, {
+        status,
+        headers: { "content-type": safeType, "x-content-type-options": "nosniff" },
+      })
+    }
+    return new Response(
+      body !== undefined ? JSON.stringify(body) : "",
+      {
+        status,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "x-content-type-options": "nosniff",
+        },
       },
-    },
-  )
+    )
+  } catch {
+    return errorResponse("protocol_error", "app reply is not a valid HTTP response", 502)
+  }
 }
