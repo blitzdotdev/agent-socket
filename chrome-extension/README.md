@@ -7,9 +7,35 @@ paste-able URL. Paste the URL into your AI chat and the AI can click, fill,
 read, evaluate, and screenshot the page on your behalf.
 
 While a tab is connected it shows an in-page "AI has access to this tab" bar
-(last action time, time left + **Stop**) and an "AI" badge on the toolbar
+(last tool and when, time left + **Stop**) and an "AI" badge on the toolbar
 icon. Stop, the popup's **Stop & disconnect**, closing the tab, or the
 session timer running out ends the session and kills the URL.
+
+## Activity log
+
+Every tool call the AI makes (refused ones too) and every session event
+(connected, stopped, timer changed, site allowed, link changed) is written to
+a log in `chrome.storage.local`, on this computer only. The popup's
+**Activity** card shows the last three actions; **Open activity log** opens
+`activity.html`: entries grouped by session, newest first, each with time,
+site, tool, a short description, status and duration; click one for its
+details. Delete one entry (×), a session, or everything, filter, or export as
+JSON. Entries older than 7 days are pruned (and the oldest beyond 1,500).
+
+How much is kept is the **Activity log detail** setting:
+
+- **Summary (typed text hidden)**, the default: the tool's target (selector,
+  URL, query) as is; text the AI typed or sent becomes its length
+  (`fill #email (16 chars)`); `/eval` code is cut to 200 characters. No results.
+- **Full detail**: also what the AI typed and the first 1,000 characters of
+  each result (screenshots become `[image 312 KB]`). Values typed into
+  password fields, or sent under names like `password` or `token`, are
+  always hidden.
+- **Tool + result only**: the tool, status and timing.
+
+The session URL, token and resume secret are never logged; entries carry the
+session id (the public part) to group them. The pure formatting and storage
+code is `lib/activity.js`.
 
 ## Session timer and site lock
 
