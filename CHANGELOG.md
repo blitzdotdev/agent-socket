@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Chrome extension** (0.6.0): an activity log of everything the AI did in the tab: every tool call (refused ones too) and session event, kept on this computer for 7 days. The popup shows the last three actions and opens the full log (`activity.html`): grouped by session, filterable, exportable as JSON, with delete for one entry, a session or everything. A Settings option picks how much is kept: a summary with typed text hidden (default), full detail (passwords always hidden), or tool + result only. The bar now names the last tool ("last: click 8s ago"). `/fill` returns the input's `type`.
+
 ## 0.3.0
 
 Chrome extension 0.5.0.

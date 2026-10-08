@@ -1,4 +1,4 @@
-// In-page indicator for the bound tab: "AI has access to this tab · 42 min left · [Stop]".
+// In-page indicator for the bound tab: "AI has access to this tab · last: click 8s ago · 42 min left · [Stop]".
 // Injected by background.js into the isolated world on connect and after each
 // load. Lives in a closed shadow root, re-attaches itself if the page removes
 // it, and removes itself once the tab is no longer bound. Draggable; the
@@ -100,7 +100,8 @@
     if (paused) { text.textContent = paused.from ? `AI paused: tab left ${paused.from}` : "AI paused: no site allowed"; return }
     const state = s.status === "connected" ? "AI has access to this tab"
       : s.status === "connecting" ? "AI access: connecting…" : "AI access: reconnecting…"
-    text.textContent = state + (s.lastToolCallAt ? ` · last action ${ago(Date.now() - s.lastToolCallAt)} ago` : " · waiting for AI")
+    const tool = s.lastTool ? (s.lastTool.length > 24 ? `${s.lastTool.slice(0, 23)}…` : s.lastTool) : "action"
+    text.textContent = state + (s.lastToolCallAt ? ` · last: ${tool} ${ago(Date.now() - s.lastToolCallAt)} ago` : " · waiting for AI")
   }
 
   // Allow counts only for a real click on a button the page isn't covering

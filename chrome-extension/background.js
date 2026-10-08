@@ -6,13 +6,15 @@
 // handlers only ever touch the bound tab, which shows a toolbar badge and an
 // in-page pill (pill.js) while the session lasts. Each session ends on a timer
 // (60 min by default) and is locked to the sites the user allowed: the tab's
-// origin at Connect, plus any they Allow later.
+// origin at Connect, plus any they Allow later. Every tool call and session
+// event goes into a local activity log (lib/activity.js, activity.html).
 
 import { connect, endSession, exponentialBackoff } from "./lib/sdk/index.js"
 import { BASE_TOOL_PATHS, buildBaseTools, buildSiteTools, userScriptsAvailable } from "./lib/tools-base.js"
 import { buildAgentsMd, findLocalProfile, mergeSiteTools, sourceLabel } from "./lib/profiles.js"
 import { DEFAULT_REGISTRY_BASE, buildRegistryTools, fetchSiteProfile } from "./lib/registry.js"
 import { TIMER_CHOICES, deadlineFor, originAllowed, originLabel, originOf, sessionMinutes, shortLeft, timeLeft } from "./lib/limits.js"
+import { createActivityStore, describeCall, eventSummary, levelOf, parseArgs } from "./lib/activity.js"
 
 // ── state ──────────────────────────────────────────────────────────
 let session = null         // SDK Session — owns the WS to the relay
@@ -24,6 +26,7 @@ let lastSource = null      // where the live tools came from (popup "Tools: …"
 let lastToolsKey = null    // fingerprint of the registered tool set, to skip no-op updates
 let boundTabId = null      // the one tab tool calls may touch
 let lastToolCallAt = null  // the relay serves agents.md/tools.json itself; tool calls are our only sign of the AI
+let lastToolName = null    // the tool of that call, for the pill ("last: click 2m ago")
 let connecting = null      // in-flight startConnect, so double clicks don't open two sessions
 let lastBase = null        // relay base the session is on
 // Set when the bound tab's link changed after the user already had one (the
@@ -54,6 +57,31 @@ function logEvent(type, detail = {}) {
   if (events.length > EVENTS_MAX) events.shift()
 }
 logEvent("worker_start")
+
+// ── activity log ───────────────────────────────────────────────────
+// What the AI did, for the user to review (activity.html): one entry per tool
+// call, refused ones included, plus session events. chrome.storage.local on
+// this computer only, 7 days, never sent anywhere. `activity_level` (popup
+// Settings) decides how much of each call is kept.
+const activity = createActivityStore(chrome.storage.local)
+const PRUNE_ALARM = "as-activity-prune"
+
+async function logCall(t, ctx, call, at, result, error) {
+  try {
+    const level = levelOf((await chrome.storage.local.get("activity_level")).activity_level)
+    const d = describeCall({ method: ctx?.method ?? t.method ?? "POST", path: t.path, args: parseArgs(ctx?.body), result, error, level })
+    await activity.add({ kind: "call", at, ms: Date.now() - at, session: call.session, host: call.host, level, ...d })
+  } catch (e) { console.warn("[as-ext] activity log write failed:", e?.message ?? e) }
+}
+
+// `event`: a key of SESSION_EVENTS in lib/activity.js.
+function logSession(event, { session: sid = session?.sessionId ?? null, host = toolsHost ?? "", ...extra } = {}) {
+  return activity.add({ kind: "session", event, session: sid, host, ...extra, summary: eventSummary({ event, host, ...extra }) })
+    .catch((e) => console.warn("[as-ext] activity log write failed:", e?.message ?? e))
+}
+
+void activity.prune().catch(() => {})
+chrome.alarms.create(PRUNE_ALARM, { periodInMinutes: 60 })
 
 // ── helpers ────────────────────────────────────────────────────────
 
@@ -103,11 +131,6 @@ function navRefusal(url) {
   const host = hostOf(url)
   return notAllowed(`Navigation to ${host} refused: the user hasn't allowed it for this session (allowed: ${allowedOrigins.map(originLabel).join(", ") || "none"}). `
     + `Ask the user to allow it: they can open it in this tab and click "Allow ${host}" in the Agent Socket extension, or turn on "Let the AI use other sites in this tab".`, host)
-}
-
-async function tabRefusal() {
-  const tab = boundTabId != null ? await chrome.tabs.get(boundTabId).catch(() => null) : null
-  return tab && !originAllowed(tab.url, lock()) ? pausedResponse(tab.url) : null
 }
 
 // Injection target for a tool call, pinned to the document whose origin was
@@ -191,20 +214,36 @@ const summarize = (p, withTools) => ({
 
 // ── tool set for the bound tab ─────────────────────────────────────
 
-// A tool call can only arrive on the current link, so the AI has it.
+// Every tool call: refused if the timer ran out or the tab is off the allowed
+// sites, then run; either way written to the activity log.
 const track = (t) => ({ ...t, handler: async (ctx) => {
+  const at = Date.now()
+  const call = { session: session?.sessionId ?? null, host: toolsHost ?? "" }
+  let result
+  try {
+    result = await guarded(t, ctx, call)
+  } catch (e) {
+    await logCall(t, ctx, call, at, undefined, e)
+    throw e
+  }
+  await logCall(t, ctx, call, at, result)
+  return result
+} })
+
+async function guarded(t, ctx, call) {
   if (expired()) {
     void stopConnect("expired")
     return { status: 403, body: { error: { code: "session_expired", message: "The user's session timer ran out, so the session is ending. Ask the user to connect again if there is more to do." } } }
   }
+  // A tool call can only arrive on the current link, so the AI has it.
   lastToolCallAt = Date.now()
+  lastToolName = t.path.replace(/^\//, "")
   if (linkChanged) void clearLinkChanged("tool_call")
-  if (!LOCK_EXEMPT.has(t.path)) {
-    const refused = await tabRefusal()
-    if (refused) return refused
-  }
+  const tab = boundTabId != null ? await chrome.tabs.get(boundTabId).catch(() => null) : null
+  if (tab) call.host = hostOf(tab.url)
+  if (!LOCK_EXEMPT.has(t.path) && tab && !originAllowed(tab.url, lock())) return pausedResponse(tab.url)
   return t.handler(ctx)
-} })
+}
 
 const sessionInfo = () => ({
   session_ends_at: endsAt == null ? null : new Date(endsAt).toISOString(),
@@ -325,7 +364,7 @@ function hideIndicator(tabId) {
 
 async function markLinkChanged(info) {
   linkChanged = { at: Date.now(), ...info }
-  lastToolCallAt = null  // that activity was on the dead link
+  lastToolCallAt = lastToolName = null  // that activity was on the dead link
   const tabId = boundTabId
   if (tabId != null) await queueIndicator(() => tabId === boundTabId ? updateBadge(tabId) : undefined)
 }
@@ -373,7 +412,7 @@ async function swapTools() {
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === boundTabId) void stopConnect()
+  if (tabId === boundTabId) void stopConnect("tab_closed")
 })
 
 // ── surviving a service-worker restart ─────────────────────────────
@@ -490,7 +529,7 @@ async function doConnect(tabId, saved) {
   lastBase = base
 
   boundTabId = tab.id
-  lastToolCallAt = null
+  lastToolCallAt = lastToolName = null
   // A new session's timer counts from Connect and it is locked to this tab's
   // origin. (A saved one's were restored with it.) `test_session_ms`: a short
   // deadline for the e2e tests, settable only from devtools.
@@ -561,7 +600,10 @@ async function doConnect(tabId, saved) {
           lastUrl = link?.url ?? null
           lastToken = link?.token ?? null
         } catch { lastUrl = lastToken = null }
-        if (priorUrl && lastUrl !== priorUrl) await markLinkChanged({ reason: reason ?? "resume_refused", closeCode, offlineMs })
+        if (priorUrl && lastUrl !== priorUrl) {
+          await markLinkChanged({ reason: reason ?? "resume_refused", closeCode, offlineMs })
+          void logSession("link_changed", { session: sessionId, prior: priorSessionId })
+        }
         emitStatus({ status: "connected", sessionId })
         await saveSession()
       },
@@ -579,7 +621,10 @@ async function doConnect(tabId, saved) {
       // connect() falls back to a fresh session only when the relay refuses (4401).
       logEvent("resume_refused", { code: 4401, sessionId: resume.sessionId, afterRestart: true })
       logEvent("new_session", { sessionId: s.sessionId })
-    } else logEvent("connected", { sessionId: s.sessionId })
+    } else {
+      logEvent("connected", { sessionId: s.sessionId })
+      void logSession("connected", { session: s.sessionId, host })
+    }
     // After a worker restart: the user already had saved.url. Same link →
     // carry over a change they haven't acknowledged; a new one → it changed.
     if (saved?.url) {
@@ -588,6 +633,7 @@ async function doConnect(tabId, saved) {
         : s.sessionId === resume.sessionId ? { at: Date.now(), reason: "link_missing", afterRestart: true }
         : { at: Date.now(), reason: "resume_refused", closeCode: 4401, afterRestart: true }
     }
+    if (saved?.url && !kept) void logSession("link_changed", { session: s.sessionId, prior: saved.sessionId })
     session = s
     lastUrl = link.url
     lastToken = link.token
@@ -627,13 +673,13 @@ async function doConnect(tabId, saved) {
   return { status: "connected", url: lastUrl, host, profile: registry.profile?.host ?? null, source: toolSet.source, tool_count: toolSet.tools.length }
 }
 
-// `why`: "stopped" (the user, a closed tab, another Connect) or "expired" (the timer).
+// `why`: "stopped" (the user, another Connect), "tab_closed" or "expired" (the timer).
 async function stopConnect(why = "stopped") {
   cancelResumeRetry()
-  const s = session, token = lastToken, tabId = boundTabId
+  const s = session, token = lastToken, tabId = boundTabId, host = toolsHost ?? ""
   // Reset synchronously: a connect in flight checks boundTabId after each await.
   session = null
-  lastUrl = lastToken = lastToolCallAt = null
+  lastUrl = lastToken = lastToolCallAt = lastToolName = null
   lastRegistry = lastSource = lastToolsKey = null
   linkChanged = null
   boundTabId = null
@@ -644,6 +690,8 @@ async function stopConnect(why = "stopped") {
   // holding it, so end it there too.
   const held = !s && tabId != null ? (await chrome.storage.session.get(SAVED_KEY).catch(() => ({})))[SAVED_KEY] : null
   await chrome.storage.session.remove(SAVED_KEY).catch(() => {})
+  const sid = s?.sessionId ?? held?.sessionId
+  if (sid) void logSession(why, { session: sid, host })
   if (s) {
     // close() ends the session on the relay, killing every token; revoke first anyway.
     if (token && s.connected) await Promise.race([s.revokeAgentToken(token).catch(() => {}), new Promise((r) => setTimeout(r, 2000))])
@@ -671,6 +719,7 @@ async function snapshot() {
     source: session ? lastSource : null,
     sourceLabel: session ? sourceLabel(lastSource) : "",
     lastToolCallAt,
+    lastTool: lastToolName,
     linkChanged,
     endsAt,
     siteLock: { origins: allowedOrigins, any: anyOrigin },
@@ -696,7 +745,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const bound = sender.tab?.id != null && sender.tab.id === boundTabId
         const left = bound ? timeLeft(endsAt, Date.now()) : null
         sendResponse({
-          bound, status: lastStatus.status, lastToolCallAt, linkChanged: !!linkChanged,
+          bound, status: lastStatus.status, lastToolCallAt, lastTool: lastToolName, linkChanged: !!linkChanged,
           left: left == null ? null : shortLeft(left), soon: left != null && left < 60_000,
           paused: bound ? pauseInfo(sender.tab.url) : null,
         })
@@ -707,6 +756,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (minutes !== 0 && !TIMER_CHOICES.includes(minutes)) throw new Error(`timer must be one of ${TIMER_CHOICES.join(", ")} minutes, or 0`)
         setDeadline(deadlineFor(minutes, Date.now()))
         logEvent("timer_set", { minutes })
+        void logSession("timer_set", { minutes })
         await saveSession()
         sendResponse({ ok: true, endsAt })
       } else if (msg?.type === "allow_origin") {
@@ -718,11 +768,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!origin || origin !== msg.origin) throw new Error("the tab is no longer on that site")
         if (!allowedOrigins.includes(origin)) allowedOrigins = [...allowedOrigins, origin]
         logEvent("origin_allowed", { host: originLabel(origin) })
+        void logSession("origin_allowed", { site: originLabel(origin) })
         await saveSession()
         scheduleToolSwap(0)
         sendResponse({ ok: true })
       } else if (msg?.type === "remove_origin") {
         if (!fromPopup(sender) || boundTabId == null) throw new Error("not connected")
+        if (allowedOrigins.includes(msg.origin)) void logSession("origin_removed", { site: originLabel(msg.origin) })
         allowedOrigins = allowedOrigins.filter((o) => o !== msg.origin)
         await saveSession()
         sendResponse({ ok: true })
@@ -730,6 +782,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!fromPopup(sender) || boundTabId == null) throw new Error("not connected")
         anyOrigin = msg.any === true
         logEvent("any_origin", { on: anyOrigin })
+        void logSession("any_origin", { on: anyOrigin })
         await saveSession()
         scheduleToolSwap(0)
         sendResponse({ ok: true })
@@ -800,6 +853,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.alarms.create("as-keepalive", { periodInMinutes: 0.5 })
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === "as-keepalive" && session?.connected) session.ping()
+  if (a.name === PRUNE_ALARM) void activity.prune().catch(() => {})
   if (a.name === TIMER_ALARM) {
     void restored.then(() => {
       if (endsAt == null) return

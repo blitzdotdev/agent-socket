@@ -690,7 +690,7 @@ async function main() {
       await waitFor(async () => {
         const { cdp, pill } = await pillNodes(testPage)
         const { outerHTML } = await cdp.send("DOM.getOuterHTML", { nodeId: pill.nodeId })
-        return /AI has access to this tab · last action \d+s ago/.test(outerHTML)
+        return /AI has access to this tab · last: \w+ \d+s ago/.test(outerHTML)
       })
     })
 
@@ -888,7 +888,7 @@ async function main() {
       await clickInPopup('#timer-choices [data-minutes="30"]')
       await waitFor(async () => near((await swState()).endsAt, Date.now() + 30 * 60_000))
       await waitFor(async () => /^Auto-stop in (30:00|29:\d\d)$/.test((await popupState()).timer))
-      await waitFor(async () => /AI has access to this tab · last action \d+s ago<\/span><span class="left">· 30 min left/.test(await pillHtml(testPage)))
+      await waitFor(async () => /AI has access to this tab · last: \w+ \d+s ago<\/span><span class="left">· 30 min left/.test(await pillHtml(testPage)))
       await shotPill("pill-time-left")
       await shotPopup("popup-timer")
       await clickInPopup("#timer-change")
@@ -1005,6 +1005,145 @@ async function main() {
       if ((await callTool("/page_info", {})).status !== 200) throw new Error("first site refused")
     })
 
+    // ── 12. Activity log ───────────────────────────────────────────
+    const actEntries = () => popupPage.evaluate(async () => {
+      const keys = (await chrome.storage.local.getKeys()).filter((k) => k.startsWith("act:")).sort()
+      const got = keys.length ? await chrome.storage.local.get(keys) : {}
+      return keys.map((k) => got[k])
+    })
+    const sid = (url) => url.match(/\/v1\/t\/as_([0-9A-Z]{8})_/)[1]
+    const callsOf = (es, tool) => es.filter((e) => e.kind === "call" && (!tool || e.tool === tool))
+    const eventsOf = (es, event) => es.filter((e) => e.kind === "session" && e.event === event)
+    const setLevel = async (level) => {
+      await popupPage.select("#activity-level", level)
+      await waitFor(async () => (await popupPage.evaluate(() => chrome.storage.local.get("activity_level"))).activity_level === level)
+    }
+    let actPage
+
+    await step("activity: every call and session event is logged; typed text hidden by default", async () => {
+      const es = await actEntries()
+      const site = `${SITE_HOST}:${STATIC_PORT}`
+      const click = callsOf(es, "click").find((e) => e.summary === 'click "Increment"' && e.status === 200)
+      if (!click || click.host !== site || !/^[0-9A-Z]{8}$/.test(click.session) || typeof click.ms !== "number" || click.level !== "summary") throw new Error(`click: ${JSON.stringify(click)}`)
+      const fill = callsOf(es, "fill").find((e) => e.summary === "fill #email-input (16 chars)")
+      if (fill?.detail?.args?.value !== "<16 chars>" || fill.detail.args.selector !== "#email-input") throw new Error(`fill: ${JSON.stringify(fill)}`)
+      const all = JSON.stringify(es)
+      if (all.includes("ada@lovelace.dev") || all.includes("Inventor of the loop")) throw new Error("typed text was stored")
+      const secret = activeTokenBase.match(/as_[0-9A-Z]{8}_([\w-]+)/)[1]
+      if (all.includes(secret) || all.includes("/v1/t/")) throw new Error("a link or token was stored")
+      const refusal = (tool, status, code) => callsOf(es, tool).some((e) => e.status === status && e.error === code && e.message)
+      if (!refusal("screenshot", 409, "tab_not_visible")) throw new Error("screenshot refusal not logged")
+      if (!refusal("page_info", 403, "origin_not_allowed") || !refusal("navigate", 403, "origin_not_allowed")) throw new Error("site-lock refusal not logged")
+      if (!es.some((e) => e.kind === "call" && e.status === 400 && e.error === "bad_input")) throw new Error("bad input not logged")
+      const ev = (name, n = 1) => { if (eventsOf(es, name).length < n) throw new Error(`${name}: ${eventsOf(es, name).length} events`) }
+      ev("connected", 2); ev("stopped"); ev("link_changed", 3); ev("origin_allowed", 2); ev("origin_removed", 2); ev("any_origin", 2)
+      if (eventsOf(es, "timer_set").map((e) => e.minutes).join() !== "30,0,120") throw new Error(JSON.stringify(eventsOf(es, "timer_set")))
+      if (eventsOf(es, "connected")[0].host !== site || !/^Connected on /.test(eventsOf(es, "connected")[0].summary)) throw new Error(JSON.stringify(eventsOf(es, "connected")[0]))
+    })
+
+    await step("activity: popup card shows the last actions; Open activity log opens the page", async () => {
+      await callTool("/get_text", { selector: "#counter" })
+      await waitFor(() => popupPage.evaluate(() => /^get_text #counter/.test(document.querySelector("#activity-list li .what")?.textContent ?? "")))
+      if (await popupPage.evaluate(() => document.querySelectorAll("#activity-list li").length) !== 3) throw new Error("not 3 rows")
+      await waitFor(async () => /AI has access to this tab · last: get_text \d+s ago/.test(await pillHtml(testPage)))
+      await shotPill("pill-last-tool")
+      await shotPopup("popup-activity")
+      const opened = browser.waitForTarget((t) => t.url().endsWith("/activity.html"), { timeout: 5000 })
+      await clickInPopup("#open-activity")
+      actPage = await (await opened).page()
+      await actPage.setViewport({ width: 1200, height: 900 })
+      await actPage.waitForSelector(".group .entry")
+    })
+
+    await step("activity page: grouped by session, rows expand, filter narrows", async () => {
+      const info = await actPage.evaluate(() => ({
+        groups: document.querySelectorAll(".group").length,
+        first: document.querySelector(".group .entry .summary")?.textContent,
+        note: document.querySelector("#note").textContent,
+      }))
+      if (info.groups < 4 || !/^get_text #counter/.test(info.first)) throw new Error(JSON.stringify(info))
+      if (!/only on this computer for 7 days/.test(info.note) || !/Detail level: Summary \(typed text hidden\);/.test(info.note)) throw new Error(info.note)
+      await actPage.type("#filter", "fill #email")
+      await waitFor(() => actPage.evaluate(() => {
+        const rows = [...document.querySelectorAll(".entry .summary")].map((n) => n.textContent)
+        return rows.length >= 1 && rows.every((t) => t.startsWith("fill #email"))
+      }))
+      await actPage.click(".entry.call .row")
+      const detail = await actPage.$eval(".entry.call pre.detail", (n) => JSON.parse(n.textContent))
+      if (detail.detail?.args?.value !== "<16 chars>" || detail.status !== 200) throw new Error(JSON.stringify(detail))
+      if (SHOT_DIR) await actPage.screenshot({ path: path.join(SHOT_DIR, "activity-filtered.png") })
+      await actPage.$eval("#filter", (n) => { n.value = ""; n.dispatchEvent(new Event("input")) })
+      if (SHOT_DIR) await actPage.screenshot({ path: path.join(SHOT_DIR, "activity-summary.png") })
+    })
+
+    await step("activity: Full detail keeps typed text but hides passwords; minimal keeps tool + status", async () => {
+      await setLevel("full")
+      await callTool("/eval", { code: "document.body.insertAdjacentHTML('beforeend', '<input type=password id=pw-input>'); return 1" })
+      await callTool("/fill", { selector: "#pw-input", value: "hunter22" })
+      await callTool("/fill", { selector: "#name-input", value: "Grace" })
+      const es = await actEntries()
+      const pw = callsOf(es, "fill").find((e) => e.summary === "fill #pw-input (8 chars, password)")
+      if (pw?.detail?.args?.value !== "<hidden: 8 chars>" || pw.detail.reply?.value_now !== "<hidden: 8 chars>") throw new Error(`pw: ${JSON.stringify(pw)}`)
+      if (JSON.stringify(es).includes("hunter22")) throw new Error("password stored")
+      const name = callsOf(es, "fill").find((e) => e.summary === 'fill #name-input "Grace"')
+      if (name?.level !== "full" || name.detail.args.value !== "Grace" || name.detail.reply?.value_now !== "Grace") throw new Error(`name: ${JSON.stringify(name)}`)
+      if (SHOT_DIR) {
+        await actPage.bringToFront()
+        await waitFor(() => actPage.evaluate(() => [...document.querySelectorAll(".entry .summary")].some((n) => n.textContent.includes("Grace"))))
+        await actPage.evaluate(() => [...document.querySelectorAll(".entry .summary")].find((n) => n.textContent.includes("Grace")).closest(".row").click())
+        await actPage.screenshot({ path: path.join(SHOT_DIR, "activity-full.png") })
+        await testPage.bringToFront()
+      }
+      await setLevel("minimal")
+      await callTool("/click", { selector: "#inc-btn" })
+      const last = callsOf(await actEntries()).at(-1)
+      if (last.summary !== "click" || last.level !== "minimal" || last.detail !== undefined || last.status !== 200) throw new Error(JSON.stringify(last))
+      await setLevel("summary")
+    })
+
+    await step("activity page: delete one entry, a session, then everything", async () => {
+      await actPage.bringToFront()
+      await actPage.reload({ waitUntil: "domcontentloaded" })
+      await actPage.waitForSelector(".entry")
+      const before = (await actEntries()).length
+      const firstId = await actPage.$eval(".entry", (n) => n.dataset.id)
+      await actPage.click(`.entry[data-id="${firstId}"] .del`)
+      await waitFor(async () => !(await actEntries()).some((e) => e.id === firstId))
+      await waitFor(() => actPage.evaluate((id) => !document.querySelector(`.entry[data-id="${id}"]`), firstId))
+      if ((await actEntries()).length !== before - 1) throw new Error("deleted more than one entry")
+      const sessionId = await actPage.$$eval(".group", (gs) => gs.at(-1).dataset.session)
+      await actPage.$$eval(".group", (gs) => gs.at(-1).querySelector('[data-action="delete-session"]').click())
+      await waitFor(async () => !(await actEntries()).some((e) => (e.session ?? "") === sessionId))
+      if (!(await actEntries()).length) throw new Error("deleting a session deleted everything")
+      actPage.once("dialog", (d) => d.accept())
+      await actPage.click("#delete-all")
+      await waitFor(async () => (await actEntries()).length === 0)
+      await waitFor(() => actPage.evaluate(() => /No activity yet/.test(document.querySelector("#groups").textContent)))
+      if (!(await popupPage.evaluate(() => chrome.storage.local.get("kept_profiles"))).kept_profiles) throw new Error("delete all touched other storage")
+      await testPage.bringToFront()
+    })
+
+    await step("activity: kept across a service-worker restart; entries older than 7 days are pruned", async () => {
+      if ((await callTool("/page_info", {})).status !== 200) throw new Error("page_info failed")
+      await waitFor(async () => callsOf(await actEntries(), "page_info").length === 1)
+      const oldKey = await popupPage.evaluate(async () => {
+        const at = Date.now() - 8 * 24 * 3_600_000
+        const key = `act:${String(at).padStart(15, "0")}-old`
+        await chrome.storage.local.set({ [key]: { id: key, at, kind: "call", tool: "old", summary: "old", status: 200 } })
+        return key
+      })
+      const sw = browser.targets().find((t) => t.type() === "service_worker" && t.url().startsWith(`chrome-extension://${extId}/`))
+      if (!sw) throw new Error("service worker target not found")
+      await (await sw.worker()).close()
+      await waitFor(async () => !browser.targets().includes(sw), 10000)
+      await waitFor(async () => (await sendToSW(popupPage, { type: "snapshot" }).catch(() => null))?.ok === true, 10000)
+      await waitFor(async () => { const es = await actEntries(); return !es.some((e) => e.id === oldKey) && callsOf(es, "page_info").length === 1 }, 10000)
+      await waitFor(async () => (await callTool("/page_info", {})).status === 200, 20000)
+      // Logging goes on after the restart.
+      await waitFor(async () => { const p = callsOf(await actEntries(), "page_info"); return p.length >= 2 && p.at(-1).status === 200 })
+      await actPage.close()
+    })
+
     await step("timer: expiry ends the session like Stop", async () => {
       await popupPage.evaluate(() => chrome.storage.local.set({ test_session_ms: 10000 }))
       try {
@@ -1020,6 +1159,7 @@ async function main() {
         const snap = await swState()
         if (!/timer/.test(snap.status.reason) || snap.boundTab || snap.endsAt !== null) throw new Error(JSON.stringify(snap.status))
         if (!snap.events.some((e) => e.type === "expired")) throw new Error("no expired event")
+        await waitFor(async () => eventsOf(await actEntries(), "expired").some((e) => e.session === sid(r.url)))
         await waitFor(async () => !(await hasPill(testPage)))
         if (await badge(boundTabId) !== "") throw new Error("badge still set")
         if (await agentStatus(base) === 200) throw new Error("agent URL still works after expiry")
@@ -1041,6 +1181,7 @@ async function main() {
       if (await agentStatus(base) !== 200) throw new Error("new session not working")
       await other.close()
       await waitFor(async () => (await swState()).status.status === "idle")
+      await waitFor(async () => eventsOf(await actEntries(), "tab_closed").some((e) => e.session === sid(r.url)))
       if (await agentStatus(base) === 200) throw new Error("agent URL still works after tab close")
     })
 
@@ -1056,6 +1197,7 @@ async function main() {
       await waitFor(async () => (await swState()).status.status === "idle")
       await waitFor(async () => !(await hasPill(testPage)))
       await waitFor(async () => await badge(boundTabId) === "")  // cleared after the revoke
+      await waitFor(async () => eventsOf(await actEntries(), "stopped").some((e) => e.session === sid(r.url)))
       if (await agentStatus(base) === 200) throw new Error("agent URL still works after Stop")
     })
 
