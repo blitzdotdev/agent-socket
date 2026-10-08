@@ -67,7 +67,7 @@ function entryNode(e) {
 
 function detailNode(e) {
   const { id, kind, summary, ...rest } = e
-  const shown = { ...rest, at: new Date(e.at).toISOString() }
+  const shown = Object.fromEntries(Object.entries({ ...rest, at: new Date(e.at).toISOString() }).filter(([, v]) => v != null))
   return el("pre", { class: "detail", text: JSON.stringify(shown, null, 2) })
 }
 
