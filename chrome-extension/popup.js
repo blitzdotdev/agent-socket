@@ -2,6 +2,7 @@
 // polls its snapshot once a second while open.
 
 import { DEFAULT_SESSION_MINUTES, TIMER_CHOICES, clock, lengthLabel, originLabel, sessionMinutes, timeLeft } from "./lib/limits.js"
+import { LEVELS, createActivityStore, levelOf } from "./lib/activity.js"
 
 const $ = (s) => document.querySelector(s)
 const statusDot = $("#status-dot")
@@ -50,6 +51,10 @@ const sitesList = $("#sites-list")
 const anySite = $("#any-site")
 const lengthSelect = $("#length-select")
 const anyDefault = $("#any-default")
+const activityList = $("#activity-list")
+const openActivity = $("#open-activity")
+const activityLevel = $("#activity-level")
+const activity = createActivityStore(chrome.storage.local)
 
 let shownTab = null  // { id, windowId } of the tab the card shows
 
@@ -60,7 +65,7 @@ function statusLabel(snap) {
     case "connecting": return "Connecting…"
     case "connected":
       if (snap.linkChanged) return "Connected — the AI needs the new link"
-      return snap.lastToolCallAt ? `AI active — last tool call ${ago(Date.now() - snap.lastToolCallAt)} ago` : "Connected — waiting for AI"
+      return snap.lastToolCallAt ? `AI active — last tool call${snap.lastTool ? `: ${snap.lastTool},` : ""} ${ago(Date.now() - snap.lastToolCallAt)} ago` : "Connected — waiting for AI"
     case "disconnected":
     case "reconnect-failed": return "Reconnecting…"
     case "closed": return `Disconnected${snap.status.reason ? ` (${snap.status.reason})` : ""}`
@@ -160,7 +165,26 @@ async function render() {
   toolsSource.title = snap.source?.registry?.error ? `Registry: ${snap.source.registry.error}` : ""
   renderLimits(bound ? snap : null)
   await renderProfiles()
+  await renderActivity()
 }
+
+// ── activity: the last few AI actions (full log in activity.html) ─────
+
+const statusClass = (st) => (st < 300 ? "ok" : st < 500 ? "warn" : "err")
+let lastActivityJson = null
+async function renderActivity() {
+  const calls = (await activity.list(30)).filter((e) => e.kind === "call").slice(0, 3)
+  const json = JSON.stringify(calls.map((e) => e.id))
+  if (json === lastActivityJson) return
+  lastActivityJson = json
+  const items = calls.map((e) => el("li", { "data-id": e.id },
+    el("span", { class: "when", text: new Date(e.at).toLocaleTimeString() }),
+    el("span", { class: "what", title: e.summary, text: e.summary }),
+    el("span", { class: `st ${statusClass(e.status)}`, text: String(e.status) })))
+  activityList.replaceChildren(...(items.length ? items : [el("li", { class: "muted", text: "No AI actions yet." })]))
+}
+
+openActivity.addEventListener("click", () => chrome.tabs.create({ url: chrome.runtime.getURL("activity.html") }))
 
 // ── timer + site lock ───────────────────────────────────────────────
 
@@ -308,16 +332,19 @@ async function renderProfiles() {
 }
 
 async function loadSettings() {
-  const stored = await chrome.storage.local.get(["relay_base", "registry_base", "session_minutes", "default_any_site"])
+  const stored = await chrome.storage.local.get(["relay_base", "registry_base", "session_minutes", "default_any_site", "activity_level"])
   relayInput.value = stored.relay_base ?? ""
   registryInput.value = stored.registry_base ?? ""
   lengthSelect.replaceChildren(...[...TIMER_CHOICES, 0].map((m) => el("option", { value: String(m), text: lengthLabel(m) + (m === DEFAULT_SESSION_MINUTES ? " (default)" : "") })))
   lengthSelect.value = String(sessionMinutes(stored.session_minutes))
   anyDefault.checked = stored.default_any_site === true
+  activityLevel.replaceChildren(...Object.entries(LEVELS).map(([v, label]) => el("option", { value: v, text: label })))
+  activityLevel.value = levelOf(stored.activity_level)
 }
 
 lengthSelect.addEventListener("change", () => chrome.storage.local.set({ session_minutes: Number(lengthSelect.value) }))
 anyDefault.addEventListener("change", () => chrome.storage.local.set({ default_any_site: anyDefault.checked }))
+activityLevel.addEventListener("change", () => chrome.storage.local.set({ activity_level: activityLevel.value }))
 
 async function checkUserScripts() {
   const us = await chrome.runtime.sendMessage({ type: "check_user_scripts" })

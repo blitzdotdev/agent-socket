@@ -133,5 +133,14 @@ details > div, details > ul { margin-top: 6px; }
 a.link-danger { color: var(--err); }
 
 
+.card-head { justify-content: space-between; }
+#activity-list li { display: flex; gap: 6px; align-items: baseline; }
+#activity-list .when { flex: none; color: var(--muted); }
+#activity-list .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st { flex: none; font-weight: 600; }
+.st.ok { color: var(--ok); }
+.st.warn { color: var(--warn); }
+.st.err { color: var(--err); }
+
 footer { margin-top: 4px; min-height: 18px; }
 #error-msg { color: var(--err); }

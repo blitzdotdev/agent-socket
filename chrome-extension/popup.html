@@ -86,6 +86,14 @@
     <div class="muted small" id="copy-hint">Anyone with this link can drive the tab until you stop.</div>
   </section>
 
+  <section id="activity-card">
+    <div class="row card-head">
+      <span class="muted small">Activity</span>
+      <button id="open-activity" class="ghost small">Open activity log</button>
+    </div>
+    <ul id="activity-list" class="profile-list"></ul>
+  </section>
+
   <details id="advanced">
     <summary>Settings</summary>
     <div class="row">
@@ -107,6 +115,10 @@
       <select id="length-select"></select>
     </div>
     <label class="check small"><input type="checkbox" id="any-default"> Let the AI use other sites by default</label>
+    <div class="row">
+      <label for="activity-level" class="muted small">Activity log detail</label>
+      <select id="activity-level"></select>
+    </div>
     <div class="row">
       <span class="muted small">Kept site profiles (load on this computer only):</span>
     </div>

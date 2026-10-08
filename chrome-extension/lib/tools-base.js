@@ -382,7 +382,7 @@ export function buildBaseTools({ getTabId, savePendingProfile, pinTab, navRefusa
               el.dispatchEvent(ev)
               if (el.form) { try { el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit() } catch {} }
             }
-            return { filled: true, tag: el.tagName.toLowerCase(), value_now: el.value ?? el.textContent }
+            return { filled: true, tag: el.tagName.toLowerCase(), input_type: el instanceof HTMLInputElement ? el.type : null, value_now: el.value ?? el.textContent }
           }, [args.selector, args.value, !!args.append, !!args.submit])
           return result
         } catch (e) { return runtimeError(e) }
