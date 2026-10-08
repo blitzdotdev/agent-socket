@@ -35,9 +35,18 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
+      # Scenario 50 needs a real Chrome; /usr/bin/chromium on ubuntu-24.04 is
+      # a snap shim that starts slowly or not at all (see chrome-ext-e2e).
+      - id: setup-chrome
+        uses: browser-actions/setup-chrome@latest
+        with:
+          chrome-version: stable
       - run: npm ci
       # Builds the SDK, then boots its own wrangler dev for the run.
-      - run: npm run harness
+      # --continue: one failure must not skip (and hide) every later scenario.
+      - env:
+          CHROMIUM_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: npm run harness -- --continue
 
   chrome-ext-unit:
     name: Chrome extension — unit
