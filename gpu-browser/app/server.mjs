@@ -38,7 +38,9 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const INSTALLED = fs.existsSync(path.join(HERE, "..", "VERSION"))
 if (INSTALLED) {
   process.env.PLAYWRIGHT_BROWSERS_PATH ??= path.join(HERE, "..", "browsers")
-  // Chromium profiles and Playwright temp files stay in this account's home.
+  // The account's own home, whatever HOME sudo passed on (Apple's sudoers
+  // keeps the caller's). Chromium profiles and Playwright temp files stay there.
+  process.env.HOME = os.userInfo().homedir
   process.env.TMPDIR = path.join(os.homedir(), "tmp")
   fs.rmSync(process.env.TMPDIR, { recursive: true, force: true })
   fs.mkdirSync(process.env.TMPDIR, { mode: 0o700, recursive: true })
@@ -712,7 +714,7 @@ async function main() {
     process.exit(2)
   }
   if (minutes > 0) endsAt = Date.now() + minutes * 60_000
-  // Proves the CLI's stdin reaches us (it passes through sudo, and launchctl on macOS).
+  // Proves the CLI's stdin reaches us (it passes through sudo).
   event("ready")
 
   // Ending: the owner's `stop`, Ctrl-C (the CLI forwards it, and sudo may
