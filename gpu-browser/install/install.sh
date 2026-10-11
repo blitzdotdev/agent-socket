@@ -15,7 +15,7 @@ COMMENT="$MARK - created by npx @agent-socket/gpu-browser - remove with sudo sh 
 OS=$(uname -s)
 
 say() { printf '  %s\n' "$*"; }
-die() { printf 'install failed: %s\n' "$*" >&2; if [ "${locked:-}" = true ] && [ "${trapped:-}" != true ]; then rm -rf "$LOCK"; fi; exit 1; }
+die() { printf 'install failed: %s\n' "$*" >&2; if [ "${locked:-}" = true ] && [ "${trapped:-}" != true ]; then unlock; fi; exit 1; }
 event() { printf '@@install %s\n' "$*"; }
 
 USER_NAME="" USER_HOME="" PKG="" VERSION="" HASH=""
@@ -42,18 +42,19 @@ printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' || die "bad --versio
 printf '%s' "$HASH" | grep -Eq '^[0-9a-f]{64}$' || die "bad --hash"
 
 # One install at a time: two would share .staging/.new/.old and could undo
-# each other. mkdir is atomic; the lock holds the installer's pid, so one
-# left by a killed run is taken over.
+# each other. The lock is a symlink whose target is the installer's pid:
+# creating it is atomic and it never exists without its owner, so one left
+# by a killed run (a dead pid) can be taken over safely.
 LOCK=/var/run/agent-socket-gpu-browser-install.lock
 locked=false
-if ! mkdir "$LOCK" 2>/dev/null; then
-  other=$(cat "$LOCK/pid" 2>/dev/null || true)
+if ! ln -s "$$" "$LOCK" 2>/dev/null; then
+  other=$(readlink "$LOCK" 2>/dev/null || true)
   if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then die "another install is running (pid $other); try again when it has finished"; fi
   rm -rf "$LOCK"
-  mkdir "$LOCK" 2>/dev/null || die "another install is starting; try again in a moment"
+  ln -s "$$" "$LOCK" 2>/dev/null || die "another install is starting; try again in a moment"
 fi
-echo $$ > "$LOCK/pid"
 locked=true
+unlock() { if [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ]; then rm -f "$LOCK"; fi; }
 
 # One owner per machine: the sudo rule names the user who installed it.
 if [ -f "$DIR/install.env" ]; then
@@ -79,6 +80,16 @@ for f in "/etc/sudoers.d/zz-$NAME" "/etc/apparmor.d/$NAME"; do
   if [ -e "$f" ] && ! grep -q "$MARK" "$f" 2>/dev/null; then die "$f exists and wasn't written by this installer; not touching it"; fi
 done
 made_acct=false made_group=false made_dir=false made_aa=false done_ok=false
+# An update stopped in the middle of the swap (here, or a run killed with
+# SIGKILL or a power cut) left part of the old copy in .old: put it back.
+restore_old() {
+  if [ -d "$DIR/.old" ]; then
+    for d in node app browsers VERSION; do
+      if [ -e "$DIR/.old/$d" ]; then rm -rf "${DIR:?}/$d"; mv "$DIR/.old/$d" "$DIR/"; fi
+    done
+    rm -rf "$DIR/.old"
+  fi
+}
 cleanup() {
   [ "$done_ok" = true ] && return
   rm -rf "$DIR/.staging" "$DIR/.new" 2>/dev/null || true
@@ -87,13 +98,7 @@ cleanup() {
     apparmor_parser -R "/etc/apparmor.d/$NAME" 2>/dev/null || true
     rm -f "/etc/apparmor.d/$NAME"
   fi
-  # An update stopped in the middle of the swap: put the old copy back.
-  if [ -d "$DIR/.old" ]; then
-    for d in node app browsers VERSION; do
-      if [ -e "$DIR/.old/$d" ]; then rm -rf "${DIR:?}/$d"; mv "$DIR/.old/$d" "$DIR/"; fi
-    done
-    rm -rf "$DIR/.old"
-  fi
+  restore_old
   [ "$FRESH" = true ] || return 0
   if [ "$made_acct" = true ]; then
     pkill -9 -u "$NAME" 2>/dev/null || true
@@ -106,7 +111,7 @@ cleanup() {
   if [ "$made_dir" = true ]; then rm -rf "$DIR"; fi
   echo "  undone: this install's account and files are removed again" >&2
 }
-on_exit() { cleanup; rm -rf "$LOCK"; }
+on_exit() { cleanup; unlock; }
 trap on_exit EXIT
 trapped=true
 trap 'exit 130' INT TERM HUP
@@ -196,7 +201,8 @@ chown "$NAME:$NAME" "$DIR/home"
 chmod 700 "$DIR/home"
 cp "$PKG/install/home-README.md" "$DIR/home/README.md"
 chmod 644 "$DIR/home/README.md"
-rm -rf "$DIR/.staging" "$DIR/.new" "$DIR/.old"
+restore_old
+rm -rf "$DIR/.staging" "$DIR/.new"
 mkdir "$DIR/.staging"
 chown "$NAME:$NAME" "$DIR/.staging"
 
