@@ -178,13 +178,12 @@ export const SESSION_EVENTS = {
   stopped: () => "Stopped by the user",
   expired: () => "Session timer ran out: stopped",
   tab_closed: () => "Tab closed: session ended",
-  access_removed: () => "Site access turned off: session ended",
   origin_allowed: (e) => `Allowed ${e.site} for this session`,
   origin_removed: (e) => `Removed ${e.site} from the allowed sites`,
   any_origin: (e) => (e.on ? "Allowed other sites in this tab" : "Locked to the allowed sites"),
   timer_set: (e) => (e.minutes ? `Timer set: stops ${e.minutes} min from then` : "Timer removed"),
 }
-export const ENDING_EVENTS = new Set(["stopped", "expired", "tab_closed", "access_removed"])
+export const ENDING_EVENTS = new Set(["stopped", "expired", "tab_closed"])
 export const eventSummary = (e) => SESSION_EVENTS[e.event]?.(e) ?? e.event
 
 // ── listing helpers ──────────────────────────────────────────────────

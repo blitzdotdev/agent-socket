@@ -205,8 +205,7 @@ export const BASE_TOOL_PATHS = new Set([
 ])
 
 // savePendingProfile({ host, notes, tools }): stores an AI-saved profile for
-// the user to Keep or Discard (background.js); resolves to a refusal response
-// instead if the session may not save for that host. Site lock (optional):
+// the user to Keep or Discard (background.js). Site lock (optional):
 // pinTab(tabId) → injection target for the tab's current document, or throws
 // an error with the 403 `response`; navRefusal(url) → that response for a
 // /navigate target outside the allowed sites, or null. sessionInfo() → extra
@@ -631,8 +630,7 @@ export function buildBaseTools({ getTabId, savePendingProfile, pinTab, navRefusa
         const v = validateProfile({ notes: args.notes, tools: args.tools }, BASE_TOOL_PATHS)
         if (!v.ok) return bad("profile failed validation; nothing was saved", { issues: v.issues.slice(0, 50) })
         if (!v.tools.length) return bad("expected at least one tool")
-        const refused = await savePendingProfile({ host: key, notes: v.notes, tools: v.tools })
-        if (refused) return refused
+        await savePendingProfile({ host: key, notes: v.notes, tools: v.tools })
         return {
           saved: true,
           status: "pending_user_approval",

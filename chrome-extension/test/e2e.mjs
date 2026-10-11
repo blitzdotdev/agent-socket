@@ -173,14 +173,7 @@ function startStatic() {
     try { body = fs.readFileSync(fp) } catch { res.writeHead(404).end(); return }
     const ext = path.extname(fp).toLowerCase()
     const ct = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json" }[ext] ?? "application/octet-stream"
-    // ?csp: a page whose CSP forbids eval (new Function), like x.com or GitHub.
-    const csp = url.searchParams.has("csp") ? { "content-security-policy": "script-src 'self' 'unsafe-inline'" } : {}
-    // ?spin=<ms>: the page's main thread is busy for that long right after load.
-    const spin = parseInt(url.searchParams.get("spin") ?? "", 10)
-    if (spin > 0 && ext === ".html") {
-      body = String(body).replace("</body>", `<script>addEventListener("load", () => setTimeout(() => { const t = Date.now(); while (Date.now() - t < ${spin}) {} }, 0))</script></body>`)
-    }
-    res.writeHead(200, { "content-type": `${ct}; charset=utf-8`, ...csp })
+    res.writeHead(200, { "content-type": `${ct}; charset=utf-8` })
     res.end(body)
   })
   return new Promise((resolve) => srv.listen(STATIC_PORT, "127.0.0.1", () => resolve({
@@ -556,12 +549,9 @@ async function main() {
     })
 
     await step("Discard drops a pending save without loading it", async () => {
-      // Only for the sites this session may act on.
-      const far = await callTool("/save_site_profile", { host: "elsewhere.example", tools: [{ path: "/nope", description: "x", code: "return 1" }] })
-      if (far.status !== 403 || far.json?.error?.code !== "host_not_allowed") throw new Error(`other host: ${far.status} ${JSON.stringify(far.json)}`)
-      const { json } = await callTool("/save_site_profile", { tools: [{ path: "/nope", description: "x", code: "return 1" }] })
+      const { json } = await callTool("/save_site_profile", { host: "elsewhere.example", tools: [{ path: "/nope", description: "x", code: "return 1" }] })
       if (json.status !== "pending_user_approval") throw new Error(JSON.stringify(json))
-      await clickInPopup(`#pending-list li[data-host="${localHost}"] button[data-action="discard"]`)
+      await clickInPopup(`#pending-list li[data-host="elsewhere.example"] button[data-action="discard"]`)
       await until(async () => !(await sendToSW(popupPage, { type: "list_profiles" })).pending.length)
       const list = await sendToSW(popupPage, { type: "list_profiles" })
       if (list.kept.map((k) => k.host).join() !== localHost) throw new Error(JSON.stringify(list))
@@ -607,15 +597,12 @@ async function main() {
       const md = await (await fetch(`${base}/agents.md`)).text()
       if (!md.includes("E2E GENERIC NOTES") || !md.includes("generic profile")) throw new Error("generic notes missing")
       if (!sameSet(await toolPaths(base), BASE_PATHS)) throw new Error(`tools: ${await toolPaths(base)}`)
-      // The first tab stays connected meanwhile: each tab has its own session.
-      if ((await callTool("/page_info", {})).status !== 200) throw new Error("connecting a second tab ended the first")
-      await sendToSW(popupPage, { type: "disconnect", tabId })
+      await sendToSW(popupPage, { type: "disconnect" })
       await page.close()
     })
 
     await step("registry down: Connect still works with base tools, popup says so", async () => {
       await testPage.bringToFront()
-      await sendToSW(popupPage, { type: "disconnect" })
       registry.mode = "hang"
       try {
         const t0 = Date.now()
@@ -1184,162 +1171,18 @@ async function main() {
       }
     })
 
-    // ── 13. Several tabs: one session (link, pill, timer, site lock) each ──
-    const callAt = async (base, p, body = {}) => {
-      const r = await fetch(`${base}${p}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
-      let json = null
-      try { json = await r.json() } catch {}
-      return { status: r.status, json }
-    }
-    const tabIdOf = (page) => popupPage.evaluate(async (u) => (await chrome.tabs.query({})).find((t) => t.url === u)?.id, page.url())
-    const counter = (page) => page.evaluate(() => document.getElementById("counter").textContent)
-    const popupOthers = () => popupPage.evaluate(() => ({
-      shown: !document.querySelector("#others-card").hidden,
-      label: document.querySelector("#others-label").textContent,
-      tabs: [...document.querySelectorAll("#others-list li")].map((li) => Number(li.dataset.tab)),
-      connect: !document.querySelector("#connect-btn").hidden,
-      stop: !document.querySelector("#disconnect-btn").hidden,
-      linkShown: !document.querySelector("#link-card").hidden,
-      link: document.querySelector("#link-input").value,
-    }))
-    let tabA, tabB, rA, rB, baseA, baseB, third
-
-    await step("two tabs at once: each gets its own link, and each link only touches its tab", async () => {
-      await testPage.bringToFront()
-      if (!testPage.url().startsWith(firstOrigin)) await testPage.goto(testUrl, { waitUntil: "load" })
-      await testPage.reload({ waitUntil: "load" })
-      await other.reload({ waitUntil: "load" })
-      tabA = await tabIdOf(testPage)
-      tabB = await tabIdOf(other)
-      rA = await sendToSW(popupPage, { type: "connect", tabId: tabA })
-      rB = await sendToSW(popupPage, { type: "connect", tabId: tabB })
-      if (!rA.ok || !rB.ok || rA.status !== "connected" || rB.status !== "connected") throw new Error(JSON.stringify({ rA, rB }))
-      if (rA.url === rB.url || sid(rA.url) === sid(rB.url)) throw new Error("both tabs got the same link")
-      baseA = rA.url.replace(/\/agents\.md.*$/, "")
-      baseB = rB.url.replace(/\/agents\.md.*$/, "")
-      const [a, b] = [await callAt(baseA, "/page_info"), await callAt(baseB, "/page_info")]
-      if (a.status !== 200 || b.status !== 200 || a.json.url !== testPage.url() || b.json.url !== other.url()) throw new Error(JSON.stringify({ a: a.json?.url, b: b.json?.url }))
-      if ((await callAt(baseA, "/click", { selector: "#inc-btn" })).json?.clicked !== true) throw new Error("click on A failed")
-      if (await counter(testPage) !== "1" || await counter(other) !== "0") throw new Error(`after A: ${await counter(testPage)} / ${await counter(other)}`)
-      await callAt(baseB, "/click", { selector: "#inc-btn" })
-      await callAt(baseB, "/click", { selector: "#inc-btn" })
-      if (await counter(testPage) !== "1" || await counter(other) !== "2") throw new Error(`after B: ${await counter(testPage)} / ${await counter(other)}`)
-    })
-
-    await step("two tabs: badge, pill, timer and site lock are per tab", async () => {
-      if (await badge(tabA) !== "AI" || await badge(tabB) !== "AI") throw new Error(`badges ${await badge(tabA)} / ${await badge(tabB)}`)
-      await waitFor(async () => (await hasPill(testPage)) && (await hasPill(other)))
-      if (!(await sendToSW(popupPage, { type: "set_timer", tabId: tabA, minutes: 30 })).ok) throw new Error("set_timer failed")
-      await waitFor(async () => /· 30 min left/.test(await pillHtml(testPage)) && /· 60 min left/.test(await pillHtml(other)))
-      await waitFor(async () => /last: click \d+s ago/.test(await pillHtml(testPage)) && /last: click \d+s ago/.test(await pillHtml(other)))
-      // One saved position for both pills; each stays fully on screen.
-      await callAt(baseB, "/page_info")
-      await sleep(1500)
-      for (const pg of [testPage, other]) {
-        const { cdp, pill } = await pillNodes(pg)
-        const [x1, , , , x3] = (await cdp.send("DOM.getBoxModel", { nodeId: pill.nodeId })).model.border
-        const vw = await pg.evaluate(() => innerWidth)
-        if (x1 < 0 || x3 > vw + 1) throw new Error(`pill off screen: ${x1}..${x3} of ${vw}`)
-      }
-      const [sa, sb] = [await sendToSW(popupPage, { type: "snapshot", tabId: tabA }), await sendToSW(popupPage, { type: "snapshot", tabId: tabB })]
-      if (!near(sa.endsAt, Date.now() + 30 * 60_000) || !near(sb.endsAt, Date.now() + 60 * 60_000)) throw new Error("timers not independent")
-      if (sa.siteLock.origins.join() !== firstOrigin || sb.siteLock.origins.join() !== new URL(other.url()).origin) throw new Error(JSON.stringify([sa.siteLock, sb.siteLock]))
-      // "other sites" on B leaves A locked.
-      await sendToSW(popupPage, { type: "set_any_origin", tabId: tabB, any: true })
-      const nav = await callAt(baseA, "/navigate", { url: otherUrl })
-      if (nav.status !== 403 || nav.json?.error?.code !== "origin_not_allowed") throw new Error(`A navigate: ${nav.status}`)
-      if ((await callAt(baseB, "/page_info")).json?.allowed_origins !== "any") throw new Error("B not open")
-      if (JSON.stringify((await callAt(baseA, "/page_info")).json?.allowed_origins) !== JSON.stringify([firstOrigin])) throw new Error("A not locked")
-      await sendToSW(popupPage, { type: "set_any_origin", tabId: tabB, any: false })
-      await shotPill("pill-tab-a")
-      if (SHOT_DIR) {
-        await other.bringToFront()
-        await sleep(400)
-        const { cdp, pill } = await pillNodes(other)
-        const [x1, y1, , , x3, y3] = (await cdp.send("DOM.getBoxModel", { nodeId: pill.nodeId })).model.border
-        await other.screenshot({ path: path.join(SHOT_DIR, "pill-tab-b.png"), clip: { x: Math.max(0, x1 - 16), y: Math.max(0, y1 - 16), width: x3 - x1 + 32, height: y3 - y1 + 32 } })
-        await testPage.bringToFront()
-      }
-    })
-
-    await step("popup on a third tab: Connect, plus both connected tabs with Show and Stop", async () => {
-      third = await browser.newPage()
-      await third.goto(`http://${GENERIC_SITE_HOST}:${STATIC_PORT}/test-page.html?third`, { waitUntil: "load" })
-      await third.bringToFront()
-      await popupPage.reload({ waitUntil: "domcontentloaded" })
-      await waitFor(async () => { const u = await popupOthers(); return u.shown && u.tabs.length === 2 })
-      const u = await popupOthers()
-      if (!u.connect || u.stop || u.linkShown || u.link !== "" || u.label !== "AI is connected to 2 other tabs:") throw new Error(JSON.stringify(u))
-      if (!u.tabs.includes(tabA) || !u.tabs.includes(tabB)) throw new Error(JSON.stringify(u.tabs))
-      if (SHOT_DIR) {
-        await popupPage.bringToFront()
-        await popupPage.setViewport({ width: 384, height: 900 })
-        await sleep(1200)
-        const h = await popupPage.evaluate(() => document.body.scrollHeight)
-        await popupPage.screenshot({ path: path.join(SHOT_DIR, "popup-unconnected-2.png"), clip: { x: 0, y: 0, width: 384, height: h } })
-        await third.bringToFront()
-      }
-      await popupPage.$eval(`#others-list li[data-tab="${tabB}"] [data-action="show"]`, (n) => n.click())
-      await waitFor(() => popupPage.evaluate(async (id) => (await chrome.tabs.get(id)).active, tabB))
-    })
-
-    await step("popup on tab B shows B's link, not A's; A under \"Also connected\"", async () => {
+    await step("closing the bound tab ends the session", async () => {
       await other.bringToFront()
-      await waitFor(async () => { const u = await popupOthers(); return u.link === rB.url && u.stop && !u.connect })
-      const u = await popupOthers()
-      if (u.label !== "Also connected:" || u.tabs.join() !== String(tabA)) throw new Error(JSON.stringify(u))
-      if ((await sendToSW(popupPage, { type: "snapshot", tabId: tabA })).url !== rA.url) throw new Error("A's snapshot lost its link")
-      await shotPopup("popup-connected")
-    })
-
-    await step("Stop on A (from the popup's list) leaves B working", async () => {
-      await clickInPopup(`#others-list li[data-tab="${tabA}"] [data-action="stop"]`)
-      await waitFor(async () => (await agentStatus(baseA)) !== 200)
-      await waitFor(async () => !(await hasPill(testPage)))
-      if (await badge(tabA) !== "") throw new Error("badge left on A")
-      if ((await callAt(baseB, "/page_info")).status !== 200 || !(await hasPill(other)) || await badge(tabB) !== "AI") throw new Error("B affected by stopping A")
-      await third.bringToFront()
-      await waitFor(async () => { const u = await popupOthers(); return u.label === "AI is connected to another tab:" && u.tabs.join() === String(tabB) })
-      if (SHOT_DIR) {
-        await popupPage.bringToFront()
-        await sleep(1200)
-        const h = await popupPage.evaluate(() => document.body.scrollHeight)
-        await popupPage.screenshot({ path: path.join(SHOT_DIR, "popup-unconnected-1.png"), clip: { x: 0, y: 0, width: 384, height: h } })
-      }
-      await third.close()
-      await testPage.bringToFront()
-    })
-
-    await step("timer expiry on A ends only A", async () => {
-      await popupPage.evaluate(() => chrome.storage.local.set({ test_session_ms: 6000 }))
-      try {
-        const r = await sendToSW(popupPage, { type: "connect", tabId: tabA })
-        const base = r.url.replace(/\/agents\.md.*$/, "")
-        if (await agentStatus(base) !== 200) throw new Error("A not working")
-        await waitFor(async () => (await sendToSW(popupPage, { type: "snapshot", tabId: tabA })).status.status === "closed", 20000)
-        await waitFor(async () => (await agentStatus(base)) !== 200)
-        if ((await callAt(baseB, "/page_info")).status !== 200 || !(await hasPill(other))) throw new Error("B ended with A's timer")
-      } finally {
-        await popupPage.evaluate(() => chrome.storage.local.remove("test_session_ms"))
-      }
-    })
-
-    await step("activity log keeps the two tabs' sessions apart", async () => {
-      const es = await actEntries()
-      const hostA = new URL(testUrl).host, hostB = new URL(other.url()).host
-      const clicks = (id) => callsOf(es, "click").filter((e) => e.session === id)
-      if (!clicks(sid(rA.url)).length || clicks(sid(rA.url)).some((e) => e.host !== hostA)) throw new Error(`A: ${JSON.stringify(clicks(sid(rA.url)))}`)
-      if (clicks(sid(rB.url)).length !== 2 || clicks(sid(rB.url)).some((e) => e.host !== hostB)) throw new Error(`B: ${JSON.stringify(clicks(sid(rB.url)))}`)
-      const conn = (id) => eventsOf(es, "connected").find((e) => e.session === id)
-      if (conn(sid(rA.url))?.host !== hostA || conn(sid(rB.url))?.host !== hostB) throw new Error("connected events")
-      if (!eventsOf(es, "stopped").some((e) => e.session === sid(rA.url))) throw new Error("A's stop not logged")
-    })
-
-    await step("closing a connected tab ends its session", async () => {
+      const r = await sendToSW(popupPage, { type: "connect" })
+      if (!r.ok || !r.url) throw new Error(JSON.stringify(r))
+      if (await hasPill(testPage)) throw new Error("old tab kept its pill")
+      await waitFor(() => hasPill(other))
+      const base = r.url.replace(/\/agents\.md.*$/, "")
+      if (await agentStatus(base) !== 200) throw new Error("new session not working")
       await other.close()
-      await waitFor(async () => !(await sendToSW(popupPage, { type: "snapshot", tabId: tabA })).others.length)
-      await waitFor(async () => eventsOf(await actEntries(), "tab_closed").some((e) => e.session === sid(rB.url)))
-      if (await agentStatus(baseB) === 200) throw new Error("agent URL still works after tab close")
+      await waitFor(async () => (await swState()).status.status === "idle")
+      await waitFor(async () => eventsOf(await actEntries(), "tab_closed").some((e) => e.session === sid(r.url)))
+      if (await agentStatus(base) === 200) throw new Error("agent URL still works after tab close")
     })
 
     await step("Stop in the pill ends the session", async () => {
@@ -1356,324 +1199,6 @@ async function main() {
       await waitFor(async () => await badge(boundTabId) === "")  // cleared after the revoke
       await waitFor(async () => eventsOf(await actEntries(), "stopped").some((e) => e.session === sid(r.url)))
       if (await agentStatus(base) === 200) throw new Error("agent URL still works after Stop")
-    })
-
-    // ── 14. Multi-tab edge cases ───────────────────────────────────
-    const baseOf = (url) => url.replace(/\/agents\.md.*$/, "")
-    const swTarget = () => browser.targets().find((t) => t.type() === "service_worker" && t.url().startsWith(`chrome-extension://${extId}/`))
-    const restartWorker = async () => {
-      const sw = swTarget()
-      if (!sw) throw new Error("service worker target not found")
-      await (await sw.worker()).close()
-      await waitFor(async () => !browser.targets().includes(sw), 10000)
-      await waitFor(async () => (await sendToSW(popupPage, { type: "snapshot" }).catch(() => null))?.ok === true, 10000)
-    }
-    const snapOf = (id) => sendToSW(popupPage, { type: "snapshot", tabId: id })
-    const shotPopupFor = async (page, name) => {
-      if (!SHOT_DIR) return
-      await page.bringToFront()
-      await popupPage.reload({ waitUntil: "domcontentloaded" })
-      await sleep(1500)
-      await shotPopup(name)
-    }
-    const toolsHave = (base, p) => waitFor(async () => (await toolPaths(base)).includes(p), 10000)
-    const toolsLack = (base, p) => waitFor(async () => !(await toolPaths(base)).includes(p), 10000)
-    let twin, twinId, baseT, ra
-
-    await step("edge: Connect twice at once on one tab → one session", async () => {
-      await testPage.bringToFront()
-      await testPage.goto(testUrl, { waitUntil: "load" })
-      const [x, y] = await Promise.all([sendToSW(popupPage, { type: "connect", tabId: tabA }), sendToSW(popupPage, { type: "connect", tabId: tabA })])
-      if (!x.ok || !y.ok || x.url !== y.url) throw new Error(JSON.stringify({ x, y }))
-      const z = await sendToSW(popupPage, { type: "connect", tabId: tabA })
-      if (z.status !== "already_connected" || z.url !== x.url) throw new Error(JSON.stringify(z))
-      if ((await snapOf(tabA)).others.length) throw new Error("a second session appeared")
-      ra = x
-      baseA = baseOf(x.url)
-    })
-
-    await step("edge: two tabs on the same site — Keep/delete reach both; a save from the other tab says it replaces", async () => {
-      twin = await browser.newPage()
-      await twin.goto(`${testUrl}?twin`, { waitUntil: "load" })
-      twinId = await tabIdOf(twin)
-      const rt = await sendToSW(popupPage, { type: "connect", tabId: twinId })
-      baseT = baseOf(rt.url)
-      const one = await callAt(baseA, "/save_site_profile", { tools: [{ path: "/twin_a", description: "a", code: "return 'a'" }] })
-      if (one.status !== 200 || one.json?.host !== localHost) throw new Error(JSON.stringify(one))
-      await callAt(baseT, "/save_site_profile", { tools: [{ path: "/twin_b", description: "b", code: "return 'b'" }, { path: "/twin_c", description: "c", code: "return 'c'" }] })
-      const p = (await sendToSW(popupPage, { type: "list_profiles" })).pending.find((x) => x.host === localHost)
-      if (p?.tool_count !== 2 || p.replaced?.tool_count !== 1) throw new Error(JSON.stringify(p))
-      await testPage.bringToFront()
-      await popupPage.reload({ waitUntil: "domcontentloaded" })
-      await waitFor(() => popupPage.evaluate((h) => /Replaces an earlier save from another tab \(on e2e-site\.test:\d+\) with 1 tool that you hadn't reviewed/.test(document.querySelector(`#pending-list li[data-host="${h}"]`)?.textContent ?? ""), localHost))
-      await shotPopup("popup-pending-replaced")
-      await sendToSW(popupPage, { type: "keep_profile", host: localHost })
-      await toolsHave(baseA, "/twin_b"); await toolsHave(baseT, "/twin_b")
-      if ((await callAt(baseT, "/twin_c")).json?.value !== "c") throw new Error("kept tool doesn't run on the twin")
-      await sendToSW(popupPage, { type: "delete_profile", host: localHost })
-      await toolsLack(baseA, "/twin_b"); await toolsLack(baseT, "/twin_b")
-    })
-
-    await step("edge: the popup shows the AI's pending saves for its own tab's site (with where they came from); others in Settings", async () => {
-      // A session can't save for a site it may not act on.
-      const bank = await callAt(baseA, "/save_site_profile", { host: "bank.example", tools: [{ path: "/x", description: "x", code: "return 1" }] })
-      if (bank.status !== 403 || bank.json?.error?.code !== "host_not_allowed") throw new Error(`bank: ${bank.status} ${JSON.stringify(bank.json)}`)
-      if ((await sendToSW(popupPage, { type: "list_profiles" })).pending.some((p) => p.host === "bank.example")) throw new Error("refused save stored")
-      const far = await browser.newPage()
-      await far.goto(`${otherUrl}?far`, { waitUntil: "load" })
-      const farId = await tabIdOf(far)
-      const rf = await sendToSW(popupPage, { type: "connect", tabId: farId })
-      if ((await callAt(baseOf(rf.url), "/save_site_profile", { tools: [{ path: "/far", description: "far", code: "return 1" }] })).status !== 200) throw new Error("far save")
-      await testPage.bringToFront()
-      await waitFor(() => popupPage.evaluate((h) => document.querySelector("#pending-card").hidden
-        && /Saved by the AI on e2e-other\.test/.test(document.querySelector(`#pending-other-list li[data-host="${h}"]`)?.textContent ?? ""), otherHost))
-      await callAt(baseA, "/save_site_profile", { tools: [{ path: "/near", description: "near", code: "return 1" }] })
-      await waitFor(() => popupPage.evaluate((h) => !document.querySelector("#pending-card").hidden
-        && [...document.querySelectorAll("#pending-list li")].map((li) => li.dataset.host).join() === h
-        && /Saved by the AI on e2e-site\.test/.test(document.querySelector("#pending-list li").textContent)
-        && /1 more for other sites/.test(document.querySelector("#pending-elsewhere").textContent), localHost))
-      await sendToSW(popupPage, { type: "discard_profile", host: localHost })
-      await sendToSW(popupPage, { type: "discard_profile", host: otherHost })
-      await far.close()
-    })
-
-    await step("edge: two connected tabs in one window — /screenshot of the one behind is refused", async () => {
-      await twin.bringToFront()
-      const a = await callAt(baseA, "/screenshot")
-      if (a.status !== 409 || a.json?.error?.code !== "tab_not_visible") throw new Error(`A: ${a.status} ${JSON.stringify(a.json)}`)
-      if ((await callAt(baseT, "/screenshot")).status !== 200) throw new Error("twin screenshot failed")
-    })
-
-    let newWin
-    await step("edge: a tab dragged to another window keeps working there; Show focuses that window", async () => {
-      newWin = await popupPage.evaluate(async (id) => (await chrome.windows.create({ tabId: id, focused: true })).id, twinId)
-      await waitFor(async () => (await snapOf(tabA)).others.find((o) => o.id === twinId)?.windowId === newWin).catch(() => { throw new Error("snapshot kept the old windowId") })
-      const shot = await callAt(baseT, "/screenshot")
-      if (shot.status !== 200) throw new Error(`twin screenshot in its new window: ${shot.status} ${JSON.stringify(shot.json)}`)
-      if ((await callAt(baseT, "/page_info")).json?.url !== twin.url()) throw new Error("twin page_info")
-      // The popup's Show for the twin targets its current window.
-      await testPage.bringToFront()
-      await waitFor(() => popupPage.evaluate(({ id, w }) => document.querySelector(`#others-list li[data-tab="${id}"]`)?.dataset.window === String(w), { id: twinId, w: newWin }))
-        .catch(() => { throw new Error("popup's Show has the old window") })
-      await popupPage.$eval(`#others-list li[data-tab="${twinId}"] [data-action="show"]`, (n) => n.click())
-      await waitFor(() => popupPage.evaluate(async (id) => (await chrome.tabs.get(id)).active, twinId))
-    })
-
-    await step("edge: Stop all ends every session", async () => {
-      await testPage.bringToFront()
-      await waitFor(() => popupPage.evaluate(() => !document.querySelector("#stop-all").hidden && document.querySelector("#stop-all").textContent === "Stop all 2 tabs"))
-      await clickInPopup("#stop-all")
-      await waitFor(async () => (await agentStatus(baseA)) !== 200 && (await agentStatus(baseT)) !== 200)
-      await waitFor(async () => !(await hasPill(testPage)) && !(await hasPill(twin)))
-      if ((await snapOf(tabA)).others.length) throw new Error("sessions left")
-    })
-
-    await step("edge: closing a window with two connected tabs ends both, each logged", async () => {
-      const t3 = await popupPage.evaluate(async ({ w, u }) => (await chrome.tabs.create({ windowId: w, url: u })).id, { w: newWin, u: `${testUrl}?third-in-win` })
-      await waitFor(() => popupPage.evaluate(async (id) => (await chrome.tabs.get(id)).status === "complete", t3))
-      const [r1, r2] = [await sendToSW(popupPage, { type: "connect", tabId: twinId }), await sendToSW(popupPage, { type: "connect", tabId: t3 })]
-      if (!r1.ok || !r2.ok) throw new Error(JSON.stringify({ r1, r2 }))
-      await popupPage.evaluate((w) => chrome.windows.remove(w), newWin)
-      await waitFor(async () => { const es = eventsOf(await actEntries(), "tab_closed"); return [r1, r2].every((r) => es.some((e) => e.session === sid(r.url))) })
-      for (const r of [r1, r2]) if (await agentStatus(baseOf(r.url)) === 200) throw new Error("a link still works after its window closed")
-      twin = null
-    })
-
-    await step("edge: worker restarts with two sessions — both resume; then one refused, the other keeps its link", async () => {
-      await testPage.bringToFront()
-      const r1 = await sendToSW(popupPage, { type: "connect", tabId: tabA })
-      const b2 = await browser.newPage()
-      await b2.goto(`${otherUrl}?b2`, { waitUntil: "load" })
-      const b2Id = await tabIdOf(b2)
-      const r2 = await sendToSW(popupPage, { type: "connect", tabId: b2Id })
-      await testPage.bringToFront()
-      // A plain restart: both resume, same links.
-      await restartWorker()
-      // Right away (resume maybe still in flight) each tab knows its own session id.
-      for (const [r, id] of [[r1, tabA], [r2, b2Id]]) {
-        const sn = await snapOf(id)
-        if (!sn.sessionIds.includes(sid(r.url)) || sn.sessionIds.length !== 1) throw new Error(`session ids: ${JSON.stringify(sn.sessionIds)}`)
-      }
-      for (const [r, id] of [[r1, tabA], [r2, b2Id]]) {
-        await waitFor(async () => (await agentStatus(baseOf(r.url))) === 200, 20000)
-        const sn = await snapOf(id)
-        if (sn.url !== r.url || sn.linkChanged) throw new Error(`after restart: ${JSON.stringify({ url: sn.url, changed: sn.linkChanged })}`)
-      }
-      // Each tab's popup lists only its own connection events.
-      const evA = (await snapOf(tabA)).events
-      if (evA.some((e) => e.tab === b2Id || e.sessionId === sid(r2.url))) throw new Error(`A's events include B2's: ${JSON.stringify(evA)}`)
-      if (!evA.some((e) => e.type === "resumed" && e.sessionId === sid(r1.url))) throw new Error(`A's resume not listed: ${JSON.stringify(evA)}`)
-      // Spoil B2's saved resume secret: the relay will refuse that resume.
-      await popupPage.evaluate(async (id) => {
-        const k = `as_session:${id}`
-        const v = (await chrome.storage.session.get(k))[k]
-        await chrome.storage.session.set({ [k]: { ...v, secret: "x".repeat(43) } })
-      }, b2Id)
-      await restartWorker()
-      await waitFor(async () => (await agentStatus(baseOf(r1.url))) === 200, 20000)
-      const s1 = await snapOf(tabA)
-      if (s1.url !== r1.url || s1.linkChanged) throw new Error(`A: ${JSON.stringify({ url: s1.url, changed: s1.linkChanged })}`)
-      let s2
-      await waitFor(async () => { s2 = await snapOf(b2Id); return s2.linkChanged && s2.url && s2.url !== r2.url }, 20000)
-      if (s2.linkChanged.reason !== "resume_refused" || !s2.linkChanged.afterRestart) throw new Error(JSON.stringify(s2.linkChanged))
-      await waitFor(async () => /Link changed/.test(await pillHtml(b2)) && !/Link changed/.test(await pillHtml(testPage)))
-      if (await badge(b2Id) !== "NEW" || await badge(tabA) !== "AI") throw new Error(`badges ${await badge(b2Id)} / ${await badge(tabA)}`)
-      // (A call on the new link also clears its "link changed" state, so it comes last.)
-      if (await agentStatus(baseOf(s2.url)) !== 200) throw new Error("B2's new link doesn't work")
-      await b2.close()
-      await sendToSW(popupPage, { type: "disconnect", tabId: tabA })
-    })
-
-    await step("edge: a busy page in one tab doesn't hold up Stop or Connect in others", async () => {
-      const q = await browser.newPage()
-      await q.goto(`${otherUrl}?q`, { waitUntil: "load" })
-      const r = await browser.newPage()
-      await r.goto(`http://${GENERIC_SITE_HOST}:${STATIC_PORT}/test-page.html?r`, { waitUntil: "load" })
-      const [qId, rId] = [await tabIdOf(q), await tabIdOf(r)]
-      await testPage.bringToFront()
-      const ra2 = await sendToSW(popupPage, { type: "connect", tabId: tabA })
-      const rq = await sendToSW(popupPage, { type: "connect", tabId: qId })
-      if (!ra2.ok || !rq.ok) throw new Error(JSON.stringify({ ra2, rq }))
-      // A loads a page that keeps its main thread busy for 10 s; the pill can't go in meanwhile.
-      await testPage.evaluate((u) => { location.href = u }, `${testUrl}?spin=10000`)
-      await sleep(1500)
-      let t0 = Date.now()
-      const stopQ = await sendToSW(popupPage, { type: "disconnect", tabId: qId })
-      const stopMs = Date.now() - t0
-      if (!stopQ.ok || stopMs > 3000) throw new Error(`Stop on Q took ${stopMs} ms: ${JSON.stringify(stopQ)}`)
-      if (await badge(qId) !== "") throw new Error(`Q's badge: ${await badge(qId)}`)
-      t0 = Date.now()
-      const conR = await sendToSW(popupPage, { type: "connect", tabId: rId })
-      const conMs = Date.now() - t0
-      if (!conR.ok || conMs > 5000) throw new Error(`Connect on R took ${conMs} ms: ${JSON.stringify(conR)}`)
-      if (await badge(rId) !== "AI") throw new Error(`R's badge: ${await badge(rId)}`)
-      console.log(`       with tab A busy: Stop ${stopMs} ms, Connect ${conMs} ms`)
-      // Once A is free again its pill arrives.
-      await waitFor(async () => { try { return await hasPill(testPage) } catch { return false } }, 20000)
-      await sendToSW(popupPage, { type: "disconnect", tabId: rId })
-      await sendToSW(popupPage, { type: "disconnect", tabId: tabA })
-      await q.close(); await r.close()
-      await testPage.goto(testUrl, { waitUntil: "load" })
-    })
-
-    await step("edge: a tab closed while the worker is asleep: its link dies at once", async () => {
-      const x = await browser.newPage()
-      await x.goto(`${otherUrl}?asleep`, { waitUntil: "load" })
-      const rx = await sendToSW(popupPage, { type: "connect", tabId: await tabIdOf(x) })
-      await testPage.bringToFront()
-      const sw = swTarget()
-      await (await sw.worker()).close()
-      await waitFor(async () => !browser.targets().includes(sw), 10000)
-      await x.close()  // wakes the worker with tabs.onRemoved, before it has restored anything
-      await waitFor(async () => (await fetch(rx.url)).status !== 200, 10000)
-        .catch(() => { throw new Error("the closed tab's link still serves agents.md") })
-      await waitFor(async () => eventsOf(await actEntries(), "tab_closed").some((e) => e.session === sid(rx.url)))
-    })
-
-    await step("edge: a saved session whose tab is gone is ended on the relay at the next restart", async () => {
-      const y = await browser.newPage()
-      await y.goto(`${otherUrl}?gone`, { waitUntil: "load" })
-      const yId = await tabIdOf(y)
-      const ry = await sendToSW(popupPage, { type: "connect", tabId: yId })
-      await testPage.bringToFront()
-      // As if the record had been saved under a tab id that no longer exists.
-      await popupPage.evaluate(async (id) => {
-        const v = (await chrome.storage.session.get(`as_session:${id}`))[`as_session:${id}`]
-        await chrome.storage.session.remove(`as_session:${id}`)
-        await chrome.storage.session.set({ "as_session:999999": { ...v, tabId: 999999 } })
-      }, yId)
-      await restartWorker()
-      await waitFor(async () => (await fetch(ry.url)).status !== 200, 10000)
-        .catch(() => { throw new Error("the unmappable session's link still serves agents.md") })
-      if ((await popupPage.evaluate(() => chrome.storage.session.getKeys())).some((k) => k.startsWith("as_session:"))) throw new Error("saved record kept")
-      await waitFor(async () => !(await hasPill(y)), 5000)
-      await y.close()
-    })
-
-    await step("edge: the popup's Activity card: this tab's own calls, or other tabs' labelled with their site", async () => {
-      const ra3 = await sendToSW(popupPage, { type: "connect", tabId: tabA })
-      await callAt(baseOf(ra3.url), "/get_text", { selector: "#counter" })
-      const blank = await browser.newPage()
-      await blank.goto(`http://${GENERIC_SITE_HOST}:${STATIC_PORT}/test-page.html?blank`, { waitUntil: "load" })
-      await waitFor(() => popupPage.evaluate((h) => document.querySelector("#activity-label").textContent === "Recent activity on other tabs"
-        && document.querySelector("#activity-list li .what")?.textContent === `${h} · get_text #counter`, localHost))
-      await testPage.bringToFront()
-      await blank.close()
-      await waitFor(() => popupPage.evaluate(() => document.querySelector("#activity-label").textContent === "Activity in this tab"
-        && document.querySelector("#activity-list li .what")?.textContent === "get_text #counter"))
-      // Nothing from other sessions on this tab's card.
-      const ids = await popupPage.evaluate(() => [...document.querySelectorAll("#activity-list li")].map((li) => li.dataset.id))
-      const mine = new Set(callsOf(await actEntries()).filter((e) => e.session === sid(ra3.url)).map((e) => e.id))
-      if (!ids.every((id) => mine.has(id))) throw new Error("another session's call on this tab's card")
-      await sendToSW(popupPage, { type: "disconnect", tabId: tabA })
-    })
-
-    let cspPage, cspId
-    await step("edge: the /eval CSP warning shows only for a connected tab whose page blocks it", async () => {
-      cspPage = await browser.newPage()
-      await cspPage.goto(`${testUrl}?csp`, { waitUntil: "load" })
-      cspId = await tabIdOf(cspPage)
-      await testPage.bringToFront()
-      await sendToSW(popupPage, { type: "connect", tabId: tabA })
-      const rc = await sendToSW(popupPage, { type: "connect", tabId: cspId })
-      const ev = await callAt(baseOf(rc.url), "/eval", { code: "return 1" })
-      if (ev.status !== 400 || ev.json?.error?.code !== "csp_blocked_enable_user_scripts") throw new Error(`eval on CSP page: ${ev.status} ${JSON.stringify(ev.json)}`)
-      const warn = () => popupPage.evaluate(() => !document.querySelector("#user-scripts-warn").hidden)
-      await popupPage.reload({ waitUntil: "domcontentloaded" })
-      await sleep(1500)
-      if (await warn()) throw new Error("warning on a normal page")
-      if (!(await sendToSW(popupPage, { type: "check_user_scripts", tabId: cspId, recheck: true })).blocked) throw new Error("probe says not blocked")
-      await cspPage.bringToFront()
-      await waitFor(warn)
-      await shotPopupFor(cspPage, "popup-csp-warning")
-      // Paused on a site the user hasn't allowed: that page isn't probed.
-      await cspPage.goto(`${otherUrl}?csp`, { waitUntil: "load" })
-      if ((await sendToSW(popupPage, { type: "check_user_scripts", tabId: cspId, recheck: true })).blocked) throw new Error("probed a paused tab")
-      await cspPage.goto(`${testUrl}?csp`, { waitUntil: "load" })
-      // An unconnected tab is never probed.
-      const plain = await browser.newPage()
-      await plain.goto(`${testUrl}?csp&unconnected`, { waitUntil: "load" })
-      await sleep(1500)
-      if (await warn()) throw new Error("warning on an unconnected tab")
-      await plain.close()
-      // Allow User Scripts on: no warning, and /eval works on the CSP page.
-      const d = await browser.newPage()
-      await d.goto(`chrome://extensions/?id=${extId}`)
-      await sleep(1000)
-      const row = await d.$("pierce/#allow-user-scripts")
-      await row.evaluate((n) => n.scrollIntoView())
-      await (await row.$("pierce/#crToggle")).click()
-      await d.close()
-      await cspPage.bringToFront()
-      await waitFor(async () => !(await warn()), 10000)
-      await waitFor(async () => (await callAt(baseOf(rc.url), "/eval", { code: "return 1" })).json?.value === 1, 10000)
-    })
-
-    await step("edge: site access turned off ends every session, with the reason", async () => {
-      const r1 = await sendToSW(popupPage, { type: "connect", tabId: tabA })
-      const r2 = await sendToSW(popupPage, { type: "connect", tabId: cspId })
-      const d = await browser.newPage()
-      await d.goto(`chrome://extensions/?id=${extId}`)
-      await sleep(1000)
-      await d.evaluate(() => {
-        const find = (n) => n && (n.id === "hostAccess" ? n : [...(n.children ?? []), ...(n.shadowRoot ? [n.shadowRoot] : [])].map(find).find(Boolean))
-        const sel = find(document.documentElement)
-        sel.value = "ON_CLICK"
-        sel.dispatchEvent(new Event("change", { bubbles: true }))
-      })
-      await d.close()
-      await waitFor(async () => (await agentStatus(baseOf(r1.url))) !== 200 && (await agentStatus(baseOf(r2.url))) !== 200, 10000)
-      const s = await snapOf(tabA)
-      if (s.boundTab || s.status.status !== "closed" || !/site access/.test(s.status.reason)) throw new Error(JSON.stringify(s.status))
-      await waitFor(async () => { const es = eventsOf(await actEntries(), "access_removed"); return [r1, r2].every((r) => es.some((e) => e.session === sid(r.url))) })
-      await testPage.bringToFront()
-      await waitFor(() => popupPage.evaluate(() => /site access for Agent Socket was turned off/.test(document.querySelector("#status-text").textContent)))
-      const again = await sendToSW(popupPage, { type: "connect", tabId: tabA })
-      if (again.ok || !/site access/.test(again.error)) throw new Error(JSON.stringify(again))
-      const act = await browser.newPage()
-      await act.goto(`chrome-extension://${extId}/activity.html`, { waitUntil: "domcontentloaded" })
-      await waitFor(() => act.evaluate((id) => /site access turned off/.test(document.querySelector(`.group[data-session="${id}"]`)?.textContent ?? ""), sid(r1.url)))
-      await act.close()
     })
 
     await browser.close()

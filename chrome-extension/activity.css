@@ -1,11 +1,3 @@
-@font-face {
-  /* Inter 4.1 (variable), SIL Open Font License 1.1: fonts/LICENSE.txt */
-  font-family: "Inter";
-  src: url("fonts/InterVariable.woff2") format("woff2");
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
-}
 :root {
   --bg: #0f0f12;
   --card: #1a1a1f;
@@ -21,14 +13,14 @@
 [hidden] { display: none !important; }
 html, body { margin: 0; padding: 0; }
 body {
-  font: 13px/1.4 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   background: var(--bg);
   color: var(--fg);
   max-width: 1100px;
   margin: 0 auto;
   padding: 20px 24px 40px;
 }
-h1 { font-size: 16px; margin: 0 0 4px; letter-spacing: 0.1px; }
+h1 { font-size: 16px; margin: 0 0 4px; letter-spacing: 0.5px; }
 header { margin-bottom: 14px; }
 header p { margin: 0; }
 .muted { color: var(--muted); }
@@ -67,12 +59,11 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .row:hover { background: #202027; }
 .row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .when, .row .host, .row .ms { color: var(--muted); }
-.row .when, .row .ms { font-variant-numeric: tabular-nums; }
 .row .ms { text-align: right; }
 .row .tool { color: var(--fg); }
 .entry.session .summary { color: var(--muted); font-style: italic; }
 .summary .err-code { color: var(--warn); }
-.st { font-weight: 600; font-variant-numeric: tabular-nums; }
+.st { font-weight: 600; }
 .st.ok { color: var(--ok); }
 .st.warn { color: var(--warn); }
 .st.err { color: var(--err); }
@@ -83,6 +74,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 pre.detail {
   margin: 0 10px 8px 112px; padding: 6px 8px; max-height: 320px; overflow: auto;
   background: #0a0a0d; border: 1px solid var(--border); border-radius: 3px;
-  font-family: inherit; font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: pre-wrap; word-break: break-word;
+  font-size: 11px; white-space: pre-wrap; word-break: break-word;
 }
 .empty { padding: 30px 0; text-align: center; }

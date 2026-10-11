@@ -70,7 +70,6 @@
   <section id="pending-card" hidden>
     <div class="muted small">The AI saved tools. They run only if you keep them:</div>
     <ul id="pending-list" class="profile-list"></ul>
-    <div class="muted small" id="pending-elsewhere" hidden></div>
   </section>
 
   <div class="actions">
@@ -87,16 +86,9 @@
     <div class="muted small" id="copy-hint">Anyone with this link can drive the tab until you stop.</div>
   </section>
 
-  <section id="others-card" hidden>
-    <div class="muted small" id="others-label"></div>
-    <ul id="others-list" class="profile-list"></ul>
-    <div class="muted small" id="cap-note" hidden></div>
-    <button id="stop-all" class="ghost small" hidden>Stop all</button>
-  </section>
-
   <section id="activity-card">
     <div class="row card-head">
-      <span class="muted small" id="activity-label">Activity</span>
+      <span class="muted small">Activity</span>
       <button id="open-activity" class="ghost small">Open activity log</button>
     </div>
     <ul id="activity-list" class="profile-list"></ul>
@@ -131,12 +123,8 @@
       <span class="muted small">Kept site profiles (load on this computer only):</span>
     </div>
     <ul id="profiles-list" class="profile-list"></ul>
-    <div class="row" id="pending-other-head" hidden>
-      <span class="muted small">Saved by the AI for other sites, waiting for you:</span>
-    </div>
-    <ul id="pending-other-list" class="profile-list" hidden></ul>
     <div class="row">
-      <span class="muted small">Recent connection events for this tab (kept in memory, cleared when the extension restarts):</span>
+      <span class="muted small">Recent connection events (kept in memory, cleared when the extension restarts):</span>
     </div>
     <ul id="events-list" class="profile-list"></ul>
   </details>

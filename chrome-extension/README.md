@@ -1,6 +1,6 @@
 # Agent Socket — Chrome Extension
 
-Connect any AI chat (Claude, ChatGPT, Gemini, …) to **a browser tab you
+Connect any AI chat (Claude, ChatGPT, Gemini, …) to **one browser tab you
 choose**. The extension acts as an agent-socket *app*: it opens a WebSocket
 to the relay, registers a toolset bound to that tab, and gives you a
 paste-able URL. Paste the URL into your AI chat and the AI can click, fill,
@@ -10,30 +10,6 @@ While a tab is connected it shows an in-page "AI has access to this tab" bar
 (last tool and when, time left + **Stop**) and an "AI" badge on the toolbar
 icon. Stop, the popup's **Stop & disconnect**, closing the tab, or the
 session timer running out ends the session and kills the URL.
-
-**Several tabs.** Each tab you connect (up to 10 at once) gets its own
-session: its own URL, bar, badge, timer, allowed sites and activity-log
-group. A URL only ever reaches its own tab, and ending one session leaves the
-others running. The popup is about the tab in front: on a connected tab it
-shows that tab's session; on any other tab it shows **Connect this tab** and
-the tabs that are connected, each with **Show** and **Stop**, plus **Stop all**.
-After a background-worker restart every connected tab resumes its own URL.
-
-- Settings (relay URL, registry URL, default timer, activity detail) apply to
-  new sessions; a live session keeps the relay and registry it started with.
-- Incognito tabs can't be connected, so nothing about them is stored.
-- Turning off the extension's site access (chrome://extensions → Details →
-  Site access) ends every session; the popup says why.
-- Separate Chrome profiles run separate copies of the extension with their
-  own storage and sessions; nothing is shared between them.
-- The "/eval is disabled on CSP-strict sites" warning shows only for a
-  connected tab whose page blocks running code without user scripts.
-
-The popup and activity page use [Inter](https://github.com/rsms/inter)
-(`fonts/InterVariable.woff2`, SIL Open Font License 1.1, see
-`fonts/LICENSE.txt`). The in-page bar uses the system sans-serif font
-instead: loading our font inside web pages would mean exposing it as a web
-accessible resource, which lets any site detect the extension.
 
 ## Activity log
 
@@ -135,7 +111,7 @@ connection events (drops, close codes, resumes), kept in memory only.
 **Site-specific tools** come from two places:
 
 - **The registry** ([`registry/`](../registry), default `https://registry.agentsocket.dev`, configurable in the popup's Settings). On Connect the extension fetches `GET /v1/sites/<hostname>` and registers its tools and notes; if the site has none it uses the generic profile (`*`). The fetch has a 3 s budget: if the registry is unreachable the tab connects with the built-in tools and the popup says so. Hostnames that can't be in the registry (IPs, `localhost`, `.local`/`.lan`/`.internal` names) are never sent; those tabs get the generic profile. Starter profiles live in [`registry/seed/`](../registry/seed).
-- **Local profiles** the AI saved with `/save_site_profile`. A session can only save for the sites it may act on (its allowed sites, or with "other sites" on, the tab's current site); any other host gets 403 `host_not_allowed`. A save is *pending*: the popup of a tab on that site shows "AI saved N tools for <host>", which tab it was saved from, **Keep** / **Discard** and a Review of the code. Only kept profiles load (stored in `chrome.storage.local` `kept_profiles[host]`, matched on `host:port` then hostname). A kept tool replaces a registry tool with the same method + path. Keeping (or deleting) a profile for the connected tab's host updates the live session through `session.updateTools()`, so the new tools show up in `tools.json` on the same URL. Profiles saved by older versions (`site_profiles`) are moved to pending on upgrade.
+- **Local profiles** the AI saved with `/save_site_profile`. A save is *pending*: the popup shows "AI saved N tools for <host>" with **Keep** / **Discard** and a Review of the code. Only kept profiles load (stored in `chrome.storage.local` `kept_profiles[host]`, matched on `host:port` then hostname). A kept tool replaces a registry tool with the same method + path. Keeping (or deleting) a profile for the connected tab's host updates the live session through `session.updateTools()`, so the new tools show up in `tools.json` on the same URL. Profiles saved by older versions (`site_profiles`) are moved to pending on upgrade.
 
 ## The agent flow
 

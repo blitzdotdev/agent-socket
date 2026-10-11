@@ -313,7 +313,7 @@ async function main() {
     }
     const j = await (await callTool(initialUrl)).json()
     if (j.session_ends_at !== new Date(limitsBefore.endsAt).toISOString() || j.allowed_origins.join() !== `${firstOrigin},${altOrigin}`) throw new Error(JSON.stringify(j))
-    const alarm = await popup.evaluate((id) => chrome.alarms.get(`as-session-end:${id}`), snap.boundTab?.id)
+    const alarm = await popup.evaluate(() => chrome.alarms.get("as-session-end"))
     if (alarm?.scheduledTime !== limitsBefore.endsAt) throw new Error(`alarm: ${JSON.stringify(alarm)}`)
   }
 

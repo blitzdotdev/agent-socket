@@ -20,7 +20,7 @@
   root.innerHTML = `<style>
     .pill { position: fixed; left: 12px; bottom: 12px; z-index: 2147483647; display: flex; align-items: center; gap: 8px;
       padding: 6px 6px 6px 10px; border-radius: 999px; background: #16161a; color: #f2f2f5; border: 1px solid #f06;
-      font: 12px/1.2 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-variant-numeric: tabular-nums; box-shadow: 0 2px 10px rgba(0,0,0,.35);
+      font: 12px/1.2 system-ui, -apple-system, sans-serif; box-shadow: 0 2px 10px rgba(0,0,0,.35);
       cursor: grab; user-select: none; touch-action: none; }
     .pill.dragging { cursor: grabbing; }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: #f06; flex: none; }
@@ -76,13 +76,6 @@
     }).catch(() => {})
   }
   addEventListener("resize", restore)
-  // The text changes length ("last: page_info 3s ago"); keep a placed pill on screen.
-  const fit = new ResizeObserver(() => {
-    if (!pill.style.top || drag) return
-    const r = pill.getBoundingClientRect()
-    if (r.right > innerWidth || r.bottom > innerHeight) place(r.left, r.top)
-  })
-  fit.observe(pill)
 
   const ago = (ms) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : ms < 3_600_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 3_600_000)}h`)
 
@@ -179,7 +172,6 @@
   function remove() {
     clearInterval(timer)
     seen.disconnect()
-    fit.disconnect()
     removeEventListener("resize", restore)
     keep.disconnect()
     chrome.runtime.onMessage.removeListener(onMessage)
