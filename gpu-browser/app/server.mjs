@@ -400,8 +400,14 @@ async function shoot(p, a = {}) {
   imageBytes += buf.length
   return imagePart(im, id, 0)
 }
-async function gpu() {
-  if (gpuInfo) return gpuInfo
+// Concurrent calls share one probe (each would open a page of its own).
+let gpuProbe = null
+function gpu() {
+  if (gpuInfo) return Promise.resolve(gpuInfo)
+  gpuProbe ??= probeGpu().finally(() => { gpuProbe = null })
+  return gpuProbe
+}
+async function probeGpu() {
   await ready()
   if (!keeper) throw fail("unavailable", "the browser is restarting; retry in a few seconds")
   const page = await keeper.newPage()
@@ -778,7 +784,7 @@ async function main() {
   session = await connect({
     baseUrl: cfg.relay, appId: "agent-socket-gpu-browser", appDescription: "Chromium with its owner's GPU, for WebGL/WebGPU renders",
     agentsMd: agentsMd(), tools: toolList(),
-    onSessionChanged: ({ tokensRemapped }) => { for (const url of Object.values(tokensRemapped || {})) event("link " + url) },
+    onSessionChanged: ({ tokensRemapped }) => { for (const url of tokensRemapped?.values() ?? []) event("link " + url) }, // a Map: old URL -> new
     onReconnect: () => resendAnswers(),
   })
   const link = await session.mintAgentToken({ label: "gpu-browser" })
