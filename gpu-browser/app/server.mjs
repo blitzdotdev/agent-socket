@@ -47,14 +47,16 @@ if (INSTALLED) {
 // prints them under DEBUG=pw:browser (read when it is imported); they are
 // kept here instead of going to stderr.
 const SELF_TEST = process.argv.includes("--self-test")
-const chromiumLog = []
+const chromiumLog = { errors: [], tail: [] } // errors: the first lines that name a failure
 if (SELF_TEST) {
   process.env.DEBUG = "pw:browser"
   process.stderr.write = (chunk) => {
-    for (const l of String(chunk).split("\n")) {
-      if (!l.trim() || /dbus|ssl_client|handshake failed/.test(l)) continue
-      chromiumLog.push(l.slice(0, 300))
-      if (chromiumLog.length > 30) chromiumLog.shift()
+    for (let l of String(chunk).split("\n")) {
+      if (!l.trim() || /dbus|ssl_client|handshake failed|cv_display_link/.test(l)) continue
+      l = l.replace(/^\S+ pw:browser /, "").slice(0, 300)
+      if (/ERROR|FATAL|Check failed|signal|Received|Terminating|exception/i.test(l) && chromiumLog.errors.length < 15) chromiumLog.errors.push(l)
+      chromiumLog.tail.push(l)
+      if (chromiumLog.tail.length > 8) chromiumLog.tail.shift()
     }
     return true
   }
@@ -674,7 +676,7 @@ async function selfTest() {
     out(JSON.stringify({ ok: true, chromium: "launched", ...g }))
     process.exit(0)
   } catch (e) {
-    out(JSON.stringify({ ok: false, error: String(e.message || e).split("\n")[0], chromium_log: chromiumLog.slice(-20) }))
+    out(JSON.stringify({ ok: false, error: String(e.message || e).split("\n")[0], chromium_log: chromiumLog }))
     process.exit(1)
   }
 }
