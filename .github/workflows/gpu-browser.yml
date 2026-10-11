@@ -51,18 +51,22 @@ jobs:
           npx -y playwright-core@1.64.0 install --no-shell chromium >/dev/null 2>&1
           try() { echo "== $1"; shift; timeout 30 "$@" --headless --dump-dom about:blank 2>&1 | grep -v 'dbus\|ssl_client\|WARNING' | tail -4; echo "exit=${PIPESTATUS[0]}"; }
           profile() { printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile %s %s flags=(unconfined) {\n  userns,\n}\n' "$1" "$2" | sudo tee "/etc/apparmor.d/$1" >/dev/null; sudo apparmor_parser -r "/etc/apparmor.d/$1"; }
-          sudo mkdir -p /opt/diagx/.new && sudo cp -R /tmp/diag-browsers /opt/diagx/.new/browsers && sudo chmod -R a+rX /opt/diagx
-          dotchrome=$(ls -d /opt/diagx/.new/browsers/chromium-*/chrome-linux64/chrome)
           tmpchrome=$(ls -d /tmp/diag-browsers/chromium-*/chrome-linux64/chrome)
-          profile diag-tmp '/tmp/diag-browsers/**/chrome'
-          try "runner, /tmp, profile /tmp/diag-browsers/**/chrome" "$tmpchrome"
-          profile diag-dot '/opt/diagx/**/chrome'
-          try "runner, .new dir, profile /opt/diagx/**/chrome" "$dotchrome"
-          profile diag-dot '/opt/diagx/.new/browsers/**/chrome'
-          try "runner, .new dir, profile /opt/diagx/.new/browsers/**/chrome" "$dotchrome"
           sudo useradd --system --home-dir /opt/diagx/home --no-create-home --shell /usr/sbin/nologin diaguser
           sudo mkdir -p /opt/diagx/home && sudo chown diaguser /opt/diagx/home
-          (cd / && try "system account via sudo -u -H, /tmp, profiled" sudo -u diaguser -H "$tmpchrome")
+          ud() { echo "--user-data-dir=/opt/diagx/home/ud$1"; }
+          sudo rm -f /etc/apparmor.d/diag-tmp; sudo apparmor_parser -R /etc/apparmor.d/diag-tmp 2>/dev/null || true
+          (cd / && try "system account, no profile" sudo -u diaguser -H "$tmpchrome" "$(ud 1)")
+          profile diag-tmp '/tmp/diag-browsers/**/chrome'
+          (cd / && try "system account, profiled" sudo -u diaguser -H "$tmpchrome" "$(ud 2)")
+          try "runner, profiled" "$tmpchrome" --user-data-dir=/tmp/ud3
+          # Through Playwright, like the self-test: as the runner, then as the account.
+          mkdir -p /tmp/pw && (cd /tmp/pw && npm i --no-save --silent playwright-core@1.64.0)
+          printf '%s\n' 'const { chromium } = await import("/tmp/pw/node_modules/playwright-core/index.mjs")' \
+            'try { const b = await chromium.launch({ executablePath: process.argv[2], chromiumSandbox: true }); console.log("ok"); await b.close() } catch (e) { console.log("FAIL", e.message.split("\n").slice(-4).join(" | ")) }' > /tmp/pw/t.mjs
+          chmod -R a+rX /tmp/pw
+          echo "== playwright, runner"; node /tmp/pw/t.mjs "$tmpchrome"
+          echo "== playwright, system account"; (cd / && sudo -u diaguser -H "$(command -v node)" /tmp/pw/t.mjs "$tmpchrome")
       - name: Diagnostics (on failure, macOS)
         if: failure() && runner.os == 'macOS'
         run: |
