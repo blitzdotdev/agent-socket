@@ -182,6 +182,7 @@ async function serveFile(route) {
 
 // ── Chromium and pages ───────────────────────────────────────────────
 let browser = null
+let keeper = null
 let gpuInfo = null
 let proxyPort = 0
 let launchOpts = {}
@@ -211,11 +212,15 @@ async function launch() {
     ],
   })
   // Without a display session (this account never logs in), Chromium on
-  // macOS crashes when its last window closes; one page stays open for good.
-  await (await browser.newContext()).newPage().catch(() => {})
+  // macOS crashes when its last window closes; one page stays open for good,
+  // and the GPU probe runs in a second page of its context.
+  const keeperCtx = await browser.newContext()
+  await keeperCtx.newPage()
+  keeper = keeperCtx
   browser.on("disconnected", () => {
     pages.clear()
     browser = null
+    keeper = null
     if (stopping) return
     log("browser exited, relaunching (open pages are gone)")
     setTimeout(() => launch().catch((e) => log("relaunch failed: " + e.message)), 1000)
@@ -225,6 +230,16 @@ async function ready() {
   for (let i = 0; !browser && i < 50; i++) await sleep(100)
   if (!browser) throw fail("unavailable", "the browser is restarting; retry in a few seconds")
   return browser
+}
+// A browser that has just exited still looks open until its `disconnected`
+// event; one retry lands on the relaunched one.
+async function newContext(opts) {
+  try { return await (await ready()).newContext(opts) } catch (e) {
+    if (!/has been closed/.test(e.message)) throw e
+    log("the browser closed under a new page; retrying on the relaunched one")
+    await sleep(1500)
+    return (await ready()).newContext(opts)
+  }
 }
 
 // Console output and blocked hosts since the last call, for one page.
@@ -261,7 +276,7 @@ async function openPageNow(a) {
   const w = Math.min(Math.max(a.width | 0 || 1280, 16), 4096)
   const h = Math.min(Math.max(a.height | 0 || 720, 16), 4096)
   const scale = Math.min(Math.max(Number(a.scale) || 1, 0.25), 3)
-  const ctx = await (await ready()).newContext({ viewport: { width: w, height: h }, deviceScaleFactor: scale, serviceWorkers: "block", acceptDownloads: false })
+  const ctx = await newContext({ viewport: { width: w, height: h }, deviceScaleFactor: scale, serviceWorkers: "block", acceptDownloads: false })
   await ctx.route(UPLOAD_ORIGIN + "/**", serveFile)
   const page = await ctx.newPage()
   const id = crypto.randomBytes(3).toString("hex")
@@ -343,9 +358,10 @@ async function shoot(p, a = {}) {
 }
 async function gpu() {
   if (gpuInfo) return gpuInfo
-  const ctx = await (await ready()).newContext()
+  await ready()
+  if (!keeper) throw fail("unavailable", "the browser is restarting; retry in a few seconds")
+  const page = await keeper.newPage()
   try {
-    const page = await ctx.newPage()
     gpuInfo = await withTimeout(page.evaluate(async () => {
       const c = document.createElement("canvas")
       const gl = c.getContext("webgl2") || c.getContext("webgl")
@@ -359,7 +375,7 @@ async function gpu() {
       return { webgl: gl ? (gl instanceof WebGL2RenderingContext ? 2 : 1) : 0, renderer, webgpu }
     }), 10_000, "gpu probe")
     gpuInfo.software = /swiftshader|llvmpipe|software/i.test(gpuInfo.renderer || "")
-  } finally { await ctx.close().catch(() => {}) }
+  } finally { await page.close().catch(() => {}) }
   return gpuInfo
 }
 
@@ -610,6 +626,13 @@ async function selfTest() {
   try {
     await launch()
     const g = await gpu()
+    // What every run does next: open a context and close it again. The
+    // browser must still be there afterwards (on macOS a crash here would
+    // only show up later, as "browser has been closed").
+    await (await (await browser.newContext()).newPage()).context().close()
+    await sleep(1500)
+    if (!browser?.isConnected()) throw new Error("Chromium exited after a context closed")
+    await (await browser.newContext()).close()
     stopping = true
     await browser?.close()
     out(JSON.stringify({ ok: true, chromium: "launched", ...g }))
