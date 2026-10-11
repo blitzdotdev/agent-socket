@@ -47,11 +47,17 @@ printf '%s' "$HASH" | grep -Eq '^[0-9a-f]{64}$' || die "bad --hash"
 # by a killed run (a dead pid) can be taken over safely.
 LOCK=/var/run/agent-socket-gpu-browser-install.lock
 locked=false
+# A pid counts only while it is still that program (pids get reused).
+runs() { ps -p "$1" -o args= 2>/dev/null | grep -q "$2"; }
 if ! ln -s "$$" "$LOCK" 2>/dev/null; then
   other=$(readlink "$LOCK" 2>/dev/null || true)
-  if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then die "another install is running (pid $other); try again when it has finished"; fi
+  if [ -n "$other" ] && runs "$other" 'install\.sh'; then die "another install is running (pid $other); try again when it has finished"; fi
   rm -rf "$LOCK"
   ln -s "$$" "$LOCK" 2>/dev/null || die "another install is starting; try again in a moment"
+  # Two runs that found the same stale lock can each remove it, the later
+  # removal taking the earlier one's new lock: make sure it's still ours.
+  sleep 1
+  [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ] || die "another install is starting; try again in a moment"
 fi
 locked=true
 unlock() { if [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ]; then rm -f "$LOCK"; fi; }
@@ -316,7 +322,9 @@ case "$result" in *'"software":true'*) event "software-rendering" ;; esac
 # then checks for this install's lock; this checks for the pid file while
 # holding the lock, so of two racing, at least one backs off.
 spid=$(cat "$DIR/home/server.pid" 2>/dev/null || true)
-if [ -n "$spid" ] && kill -0 "$spid" 2>/dev/null; then die "the GPU browser is running (pid $spid); stop it, then run the install again"; fi
+if [ -n "$spid" ] && [ "$(ps -p "$spid" -o uid= 2>/dev/null | tr -d ' ')" = "$ACCT_UID" ] && runs "$spid" 'server\.mjs'; then
+  die "the GPU browser is running (pid $spid); stop it, then run the install again"
+fi
 mkdir "$DIR/.old"
 for d in node app browsers VERSION; do
   if [ -e "$DIR/$d" ]; then mv "$DIR/$d" "$DIR/.old/"; fi
