@@ -329,6 +329,8 @@ async function openPageNow(a) {
     try { host = new URL(url).hostname.replace(/^\[|\]$/g, "") } catch {}
     rec.blocked.set(host, refused.get(host) || "blocked")
   }
+  // window.open() would make pages outside the page limit; they are closed.
+  ctx.on("page", (p) => { if (p !== page) { push("popup closed: " + p.url().slice(0, 200)); p.close().catch(() => {}) } })
   page.on("console", (m) => push(m.type() + ": " + m.text()))
   page.on("pageerror", (e) => push("pageerror: " + (e.stack || e.message)))
   page.on("requestfailed", (r) => {
@@ -436,12 +438,13 @@ function ask(kind, text, extra) {
 // kept and sent once the SDK has resumed the session (the task survives a
 // resume), so the agent's poll still gets them.
 // completeTask is also fire-and-forget: a frame sent just as the link drops
-// is lost without an error. So the last answers are kept and sent again
-// after every reconnect; completing a task twice stores the same reply.
+// is lost without an error. So answers are kept and sent again after every
+// reconnect (completing a task twice stores the same reply), as many as the
+// relay keeps tasks for one session.
 const answered = []
 function complete(taskId, reply) {
   answered.push([taskId, reply])
-  if (answered.length > 50) answered.shift()
+  if (answered.length > 100) answered.shift()
   try { session?.completeTask(taskId, reply) }
   catch { log("the relay link is down; the answer goes to the agent when it's back") }
 }
@@ -691,7 +694,16 @@ async function selfTest() {
 // ── start ────────────────────────────────────────────────────────────
 async function main() {
   const lines = readline.createInterface({ input: process.stdin })
-  const first = await new Promise((resolve) => { lines.once("line", resolve); lines.once("close", () => resolve(null)) })
+  // One listener from the start: later lines and the close can arrive in the
+  // same chunk as the config, before the control handlers below exist.
+  const early = []
+  let onLine = null, onClose = null, closed = false
+  lines.on("line", (l) => (onLine ? onLine(l) : early.push(l)))
+  lines.on("close", () => { closed = true; onClose?.() })
+  const first = await new Promise((resolve) => {
+    onLine = (l) => { onLine = null; resolve(l) }
+    onClose = () => resolve(null)
+  })
   let cfg
   try { cfg = JSON.parse(first) } catch { cfg = null }
   if (!cfg || typeof cfg.key !== "string" || !/^[0-9a-f]{16,64}$/.test(cfg.key) || typeof cfg.relay !== "string") {
@@ -740,14 +752,16 @@ async function main() {
     process.exit(0)
   }
   for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => stop("signal"))
-  lines.on("line", (line) => {
+  onLine = (line) => {
     try {
       const [cmd, x, y] = line.trim().split(/\s+/)
       if (cmd === "stop") stop("stopped")
       else if (cmd === "answer" && x) answer(x, ["allow", "always", "deny"].includes(y) ? y : "deny")
     } catch (e) { log("control line failed: " + e.message) }
-  })
-  lines.on("close", () => stop("owner gone"))
+  }
+  for (const l of early.splice(0)) onLine(l)
+  onClose = () => stop("owner gone")
+  if (closed) onClose()
   onBrowserGone = () => stop("browser failed")
   // A timer holds at most 2^31-1 ms (~24.8 days); longer sessions re-arm.
   const arm = () => {
