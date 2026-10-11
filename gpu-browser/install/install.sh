@@ -74,6 +74,10 @@ DIRMARK="$DIR/.created-by-agent-socket-gpu-browser"
 if [ -e "$DIR" ] && [ ! -f "$DIR/install.env" ] && [ ! -f "$DIRMARK" ]; then
   die "$DIR exists and wasn't made by this installer; not touching it"
 fi
+# Likewise a sudo rule or AppArmor profile of these names without the marker.
+for f in "/etc/sudoers.d/zz-$NAME" "/etc/apparmor.d/$NAME"; do
+  if [ -e "$f" ] && ! grep -q "$MARK" "$f" 2>/dev/null; then die "$f exists and wasn't written by this installer; not touching it"; fi
+done
 made_acct=false made_group=false made_dir=false made_aa=false done_ok=false
 cleanup() {
   [ "$done_ok" = true ] && return

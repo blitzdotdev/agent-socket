@@ -110,7 +110,7 @@ Remove everything later with: npx @agent-socket/gpu-browser uninstall`)
   if (events.includes("sudo-rule skipped")) say(yellow("⚠ No sudo rule: each start will ask for your password."))
   say(green("✓ installed"))
   if (events.includes("home-open")) {
-    const mode = (fs.statSync(os.homedir()).mode & 0o777).toString(8)
+    const mode = (fs.statSync(os.homedir()).mode & 0o7777).toString(8).padStart(3, "0") // setgid/sticky bits too
     say(yellow(`⚠ Your home folder (${os.homedir()}, mode ${mode}) can be opened by other accounts, so the browser's account could read files in it.`))
     say(dim("  Closing it (chmod 700) is what macOS does for new accounts; it can break sharing it with other local users (web servers in ~/public_html, Samba)."))
     if (!yes && /^(|y|yes)$/i.test(await ask("Close it? [Y/n] ", "n"))) {
@@ -334,7 +334,7 @@ async function uninstall(yes) {
   const before = path.join(SETTINGS, "home-mode-before.txt")
   if (fs.existsSync(before)) {
     const mode = fs.readFileSync(before, "utf8").trim()
-    if (!/^[0-7]{3}$/.test(mode)) fs.rmSync(before, { force: true })
+    if (!/^[0-7]{3,4}$/.test(mode)) fs.rmSync(before, { force: true })
     else if (yes || !TTY) {
       // Nobody to ask: keep the note, so a later run (or you) can still put it back.
       say(dim(`Install closed your home folder (it was ${mode}); to open it again: chmod ${mode} ~ (noted in ${before})`))
