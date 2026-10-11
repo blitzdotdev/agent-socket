@@ -12,7 +12,8 @@ on:
 
 concurrency:
   group: gpu-browser-${{ github.head_ref || github.run_id }}
-  cancel-in-progress: true
+  # A run already going finishes (its diagnostics are the point); newer pushes queue.
+  cancel-in-progress: false
 
 jobs:
   scripts:
@@ -55,18 +56,16 @@ jobs:
           sudo useradd --system --home-dir /opt/diagx/home --no-create-home --shell /usr/sbin/nologin diaguser
           sudo mkdir -p /opt/diagx/home && sudo chown diaguser /opt/diagx/home
           ud() { echo "--user-data-dir=/opt/diagx/home/ud$1"; }
-          sudo rm -f /etc/apparmor.d/diag-tmp; sudo apparmor_parser -R /etc/apparmor.d/diag-tmp 2>/dev/null || true
-          (cd / && try "system account, no profile" sudo -u diaguser -H "$tmpchrome" "$(ud 1)")
           profile diag-tmp '/tmp/diag-browsers/**/chrome'
-          (cd / && try "system account, profiled" sudo -u diaguser -H "$tmpchrome" "$(ud 2)")
-          try "runner, profiled" "$tmpchrome" --user-data-dir=/tmp/ud3
-          # Through Playwright, like the self-test: as the runner, then as the account.
-          mkdir -p /tmp/pw && (cd /tmp/pw && npm i --no-save --silent playwright-core@1.64.0)
-          printf '%s\n' 'const { chromium } = await import("/tmp/pw/node_modules/playwright-core/index.mjs")' \
-            'try { const b = await chromium.launch({ executablePath: process.argv[2], chromiumSandbox: true }); console.log("ok"); await b.close() } catch (e) { console.log("FAIL", e.message.split("\n").slice(-4).join(" | ")) }' > /tmp/pw/t.mjs
-          chmod -R a+rX /tmp/pw
-          echo "== playwright, runner"; node /tmp/pw/t.mjs "$tmpchrome"
-          echo "== playwright, system account"; (cd / && sudo -u diaguser -H "$(command -v node)" /tmp/pw/t.mjs "$tmpchrome")
+          sudo useradd -m diagregular
+          (cd / && try "runner through sudo -u runner, profiled" sudo -u runner -H "$tmpchrome" --user-data-dir=/tmp/ud4)
+          (cd / && try "regular account through sudo, profiled" sudo -u diagregular -H "$tmpchrome" --user-data-dir=/home/diagregular/ud)
+          (cd / && try "system account through sudo, profiled" sudo -u diaguser -H "$tmpchrome" "$(ud 2)")
+          (cd / && try "system account through sudo, --no-sandbox" sudo -u diaguser -H "$tmpchrome" "$(ud 3)" --no-sandbox)
+          sudo apt-get install -y -qq strace >/dev/null 2>&1 || true
+          echo "== strace: system account, profiled: failed calls before the crash"
+          (cd / && sudo strace -f -qq -o /tmp/st.txt -u diaguser env HOME=/opt/diagx/home "$tmpchrome" "$(ud 5)" --headless --dump-dom about:blank >/dev/null 2>&1) || true
+          grep -E '= -1 E(PERM|ACCES|INVAL|NOSYS)|SIGTRAP|clone|unshare' /tmp/st.txt | grep -v 'ENOENT' | tail -40
       - name: Diagnostics (on failure, macOS)
         if: failure() && runner.os == 'macOS'
         run: |
