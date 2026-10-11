@@ -53,17 +53,22 @@ if (INSTALLED) {
   const selfTest = process.argv.includes("--self-test")
   if (!selfTest) {
     const pidFile = path.join(os.homedir(), "server.pid")
+    const alive = (pid) => { try { process.kill(pid, 0); return true } catch (k) { return k.code === "EPERM" } }
     for (;;) {
       try { fs.writeFileSync(pidFile, String(process.pid), { flag: "wx", mode: 0o600 }); break } catch (e) {
         if (e.code !== "EEXIST") throw e
         const other = Number(fs.readFileSync(pidFile, "utf8")) || 0
-        let alive = false
-        try { if (other) { process.kill(other, 0); alive = true } } catch (k) { alive = k.code === "EPERM" }
-        if (alive) { process.stdout.write("the GPU browser is already running (pid " + other + ")\n"); process.exit(3) }
+        if (other && alive(other)) { process.stdout.write("the GPU browser is already running (pid " + other + ")\n"); process.exit(3) }
         fs.rmSync(pidFile, { force: true })
       }
     }
     process.on("exit", () => { try { if (fs.readFileSync(pidFile, "utf8") === String(process.pid)) fs.rmSync(pidFile) } catch {} })
+    // An update in progress (its lock: a symlink to the installer's pid) may
+    // be about to swap these files. It checks for the pid file above while
+    // holding that lock, so of a racing start and update one backs off.
+    let installer = 0
+    try { installer = Number(fs.readlinkSync("/var/run/agent-socket-gpu-browser-install.lock")) || 0 } catch {}
+    if (installer && alive(installer)) { process.stdout.write("the GPU browser is being updated (pid " + installer + "); start it again when that has finished\n"); process.exit(3) }
   }
   process.env.TMPDIR = path.join(os.homedir(), selfTest ? "tmp-self-test" : "tmp")
   fs.rmSync(process.env.TMPDIR, { recursive: true, force: true })
