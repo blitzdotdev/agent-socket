@@ -62,8 +62,10 @@ else
   if [ "$exists" = true ]; then say "an account named $NAME exists but wasn't made by this installer; left alone"; fi
 fi
 
-if [ -d "$DIR" ]; then
+if [ -f "$DIR/install.env" ] || [ -f "$DIR/.created-by-agent-socket-gpu-browser" ]; then
   rm -rf "$DIR"
   say "removed $DIR"
+elif [ -e "$DIR" ]; then
+  say "$DIR wasn't made by this installer; left alone"
 fi
 say "done (your settings stay in ~/.agent-socket/gpu-browser/)"

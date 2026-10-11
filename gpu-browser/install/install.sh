@@ -54,10 +54,23 @@ fi
 # that isn't success. A failed update keeps the working install it had.
 FRESH=true
 [ -f "$DIR/install.env" ] && FRESH=false
+# $DIR is ours if an install finished there (install.env) or one started
+# there (this marker); anything else with that name is left alone.
+DIRMARK="$DIR/.created-by-agent-socket-gpu-browser"
+if [ -e "$DIR" ] && [ ! -f "$DIR/install.env" ] && [ ! -f "$DIRMARK" ]; then
+  die "$DIR exists and wasn't made by this installer; not touching it"
+fi
 made_acct=false made_group=false made_dir=false made_aa=false done_ok=false
 cleanup() {
   [ "$done_ok" = true ] && return
   rm -rf "$DIR/.staging" "$DIR/.new" 2>/dev/null || true
+  # An update stopped in the middle of the swap: put the old copy back.
+  if [ -d "$DIR/.old" ]; then
+    for d in node app browsers VERSION; do
+      if [ -e "$DIR/.old/$d" ]; then rm -rf "${DIR:?}/$d"; mv "$DIR/.old/$d" "$DIR/"; fi
+    done
+    rm -rf "$DIR/.old"
+  fi
   [ "$FRESH" = true ] || return 0
   if [ "$made_aa" = true ]; then
     apparmor_parser -R "/etc/apparmor.d/$NAME" 2>/dev/null || true
@@ -154,6 +167,7 @@ ACCT_UID=$(id -u "$NAME")
 # ── 2. Directories ───────────────────────────────────────────────────
 [ -d "$DIR" ] || made_dir=true
 mkdir -p "$DIR"
+: > "$DIRMARK"
 chown "root:$ROOTGROUP" "$DIR"
 chmod 755 "$DIR"
 mkdir -p "$DIR/home"
