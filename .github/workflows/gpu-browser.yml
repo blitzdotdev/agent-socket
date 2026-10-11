@@ -39,19 +39,45 @@ jobs:
         with:
           node-version: '22'
       - run: sh gpu-browser/test/install-smoke.sh
-      - name: Diagnostics (on failure)
+      - name: Diagnostics (on failure, Linux)
         if: failure() && runner.os == 'Linux'
         run: |
           echo "apparmor_restrict_unprivileged_userns=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)"
-          sudo dmesg | grep -iE 'apparmor="DENIED"|traps: chrome|segfault' | tail -20 || true
-          # The same Chromium as the runner user: sandbox on, off, and with
-          # the installer's AppArmor profile, each with Chromium's own log.
+          sudo dmesg | grep -iE 'apparmor="DENIED"' | tail -20 || true
+          # The same Chromium, sandbox on, each way the installer differs
+          # from a plain run: a profile glob over a dot directory, and a
+          # system account started through sudo.
           export PLAYWRIGHT_BROWSERS_PATH=/tmp/diag-browsers
-          npx -y playwright-core@1.64.0 install --no-shell chromium >/dev/null
-          chrome=$(ls -d /tmp/diag-browsers/chromium-*/chrome-linux64/chrome)
-          try() { echo "== $1"; shift; timeout 30 "$chrome" --headless --enable-logging=stderr --v=0 "$@" --dump-dom about:blank 2>&1 | grep -v 'dbus\|ssl_client' | tail -12; echo "exit=${PIPESTATUS[0]}"; }
-          try "sandbox on"
-          try "sandbox off" --no-sandbox
-          printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile diag-chrome /tmp/diag-browsers/**/chrome flags=(unconfined) {\n  userns,\n}\n' | sudo tee /etc/apparmor.d/diag-chrome >/dev/null
-          sudo apparmor_parser -r /etc/apparmor.d/diag-chrome
-          try "sandbox on, AppArmor profile"
+          npx -y playwright-core@1.64.0 install --no-shell chromium >/dev/null 2>&1
+          try() { echo "== $1"; shift; timeout 30 "$@" --headless --dump-dom about:blank 2>&1 | grep -v 'dbus\|ssl_client\|WARNING' | tail -4; echo "exit=${PIPESTATUS[0]}"; }
+          profile() { printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile %s %s flags=(unconfined) {\n  userns,\n}\n' "$1" "$2" | sudo tee "/etc/apparmor.d/$1" >/dev/null; sudo apparmor_parser -r "/etc/apparmor.d/$1"; }
+          sudo mkdir -p /opt/diagx/.new && sudo cp -R /tmp/diag-browsers /opt/diagx/.new/browsers && sudo chmod -R a+rX /opt/diagx
+          dotchrome=$(ls -d /opt/diagx/.new/browsers/chromium-*/chrome-linux64/chrome)
+          tmpchrome=$(ls -d /tmp/diag-browsers/chromium-*/chrome-linux64/chrome)
+          profile diag-tmp '/tmp/diag-browsers/**/chrome'
+          try "runner, /tmp, profile /tmp/diag-browsers/**/chrome" "$tmpchrome"
+          profile diag-dot '/opt/diagx/**/chrome'
+          try "runner, .new dir, profile /opt/diagx/**/chrome" "$dotchrome"
+          profile diag-dot '/opt/diagx/.new/browsers/**/chrome'
+          try "runner, .new dir, profile /opt/diagx/.new/browsers/**/chrome" "$dotchrome"
+          sudo useradd --system --home-dir /opt/diagx/home --no-create-home --shell /usr/sbin/nologin diaguser
+          sudo mkdir -p /opt/diagx/home && sudo chown diaguser /opt/diagx/home
+          (cd / && try "system account via sudo -u -H, /tmp, profiled" sudo -u diaguser -H "$tmpchrome")
+      - name: Diagnostics (on failure, macOS)
+        if: failure() && runner.os == 'macOS'
+        run: |
+          # Does closing a browser context end Chromium for the runner (who
+          # has a window-server session) too, or only for the account?
+          mkdir -p /tmp/diag && cd /tmp/diag && npm i --no-save --silent playwright-core@1.64.0
+          PLAYWRIGHT_BROWSERS_PATH=/tmp/diag-browsers npx playwright-core install --no-shell chromium >/dev/null 2>&1
+          cat > t.mjs <<'EOF'
+          const { chromium } = await import("playwright-core")
+          const b = await chromium.launch({ channel: "chromium", headless: true, chromiumSandbox: true, args: ["--enable-logging=stderr", "--v=0"] })
+          let gone = false; b.on("disconnected", () => { gone = true })
+          await (await b.newContext()).newPage()
+          const c = await b.newContext(); await c.newPage(); await c.close()
+          await new Promise((r) => setTimeout(r, 3000))
+          console.log(gone ? "FAIL: Chromium exited after a context closed" : "ok: Chromium still running after a context closed")
+          if (!gone) await b.close()
+          EOF
+          PLAYWRIGHT_BROWSERS_PATH=/tmp/diag-browsers DEBUG=pw:browser node t.mjs 2>&1 | grep -v 'dbus' | tail -25
