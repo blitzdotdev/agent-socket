@@ -1,5 +1,7 @@
 // Popup controller. Talks to background via chrome.runtime.sendMessage and
-// polls its snapshot once a second while open.
+// polls its snapshot once a second while open. It is about one tab, the one
+// in front: that tab's session if it has one (each connected tab has its own
+// link, timer and sites), else Connect, plus the other connected tabs.
 
 import { DEFAULT_SESSION_MINUTES, TIMER_CHOICES, clock, lengthLabel, originLabel, sessionMinutes, timeLeft } from "./lib/limits.js"
 import { LEVELS, createActivityStore, levelOf } from "./lib/activity.js"
@@ -54,9 +56,25 @@ const anyDefault = $("#any-default")
 const activityList = $("#activity-list")
 const openActivity = $("#open-activity")
 const activityLevel = $("#activity-level")
+const othersCard = $("#others-card")
+const othersLabel = $("#others-label")
+const othersList = $("#others-list")
+const capNote = $("#cap-note")
 const activity = createActivityStore(chrome.storage.local)
 
 let shownTab = null  // { id, windowId } of the tab the card shows
+let tabId = null     // the tab this popup is about (see currentTab)
+
+// The tab in front: the active one in this window, or (when this page is
+// itself a tab, as in the e2e tests) the last one used.
+async function currentTab() {
+  const own = chrome.runtime.getURL("")
+  const tabs = (await chrome.tabs.query({ currentWindow: true })).filter((t) => !(t.url ?? "").startsWith(own))
+  return tabs.find((t) => t.active) ?? tabs.sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0))[0] ?? null
+}
+
+// Messages about this popup's tab's session.
+const send = (msg) => chrome.runtime.sendMessage({ ...msg, tabId })
 
 const ago = (ms) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : ms < 3_600_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 3_600_000)}h`)
 
@@ -139,15 +157,20 @@ function showTab(tab, bound) {
 }
 
 async function render() {
-  const snap = await chrome.runtime.sendMessage({ type: "snapshot" })
+  const tab = await currentTab()
+  tabId = tab?.id ?? null
+  const snap = await send({ type: "snapshot" })
   if (!snap?.ok) return
   const code = snap.status?.status ?? "idle"
   statusDot.dataset.status = code === "connected" && snap.linkChanged ? "changed" : code === "connected" && snap.lastToolCallAt ? "active" : code
   statusText.textContent = statusLabel(snap)
   if (snap.boundTab) showTab(snap.boundTab, true)
-  else showTab((await chrome.tabs.query({ active: true, currentWindow: true }))[0], false)
+  else showTab(tab, false)
   const bound = !!snap.boundTab
+  const full = !bound && snap.others.length >= snap.max
   connectBtn.hidden = bound
+  connectBtn.disabled = full
+  renderOthers(snap.others, bound, full ? snap.max : 0)
   disconnectBtn.hidden = !bound
   const changed = bound && snap.linkChanged
   changedCard.hidden = !changed
@@ -166,6 +189,42 @@ async function render() {
   renderLimits(bound ? snap : null)
   await renderProfiles()
   await renderActivity()
+}
+
+// ── the other connected tabs: Show (focus it) or Stop ────────────────
+
+let lastOthersJson = ""
+function renderOthers(others, bound, cap) {
+  const json = JSON.stringify([others.map((o) => [o.id, o.title, o.url, o.favIconUrl, o.status]), bound, cap])
+  if (json === lastOthersJson) return
+  lastOthersJson = json
+  othersCard.hidden = !others.length
+  othersCard.classList.toggle("also", bound)
+  othersLabel.textContent = bound ? "Also connected:"
+    : others.length === 1 ? "AI is connected to another tab:" : `AI is connected to ${others.length} other tabs:`
+  capNote.hidden = !cap
+  capNote.textContent = cap ? `${cap} tabs are connected, the most at once. Stop one to connect this tab.` : ""
+  othersList.replaceChildren(...others.map((o) => {
+    let host = ""
+    try { host = new URL(o.url).host } catch {}
+    const show = el("button", { class: "ghost small", "data-action": "show", text: "Show" })
+    show.addEventListener("click", async () => {
+      await chrome.tabs.update(o.id, { active: true }).catch(() => {})
+      await chrome.windows.update(o.windowId, { focused: true }).catch(() => {})
+    })
+    const stop = el("button", { class: "small", "data-action": "stop", text: "Stop" })
+    stop.addEventListener("click", async () => {
+      stop.disabled = true
+      await chrome.runtime.sendMessage({ type: "disconnect", tabId: o.id })
+      await render()
+    })
+    const icon = o.favIconUrl ? el("img", { alt: "", src: o.favIconUrl }) : null
+    return el("li", { "data-tab": String(o.id) }, icon,
+      el("span", { class: "tab-text" },
+        el("span", { class: "ellipsis", title: o.title ?? "", text: o.title || host || "Tab" }),
+        el("span", { class: "ellipsis muted", text: host })),
+      show, stop)
+  }))
 }
 
 // ── activity: the last few AI actions (full log in activity.html) ─────
@@ -219,7 +278,7 @@ function renderSites(lock) {
     const del = el("a", { href: "#", class: "link-danger", "data-action": "remove", text: "remove" })
     del.addEventListener("click", async (e) => {
       e.preventDefault()
-      await chrome.runtime.sendMessage({ type: "remove_origin", origin: o })
+      await send({ type: "remove_origin", origin: o })
       await render()
     })
     return el("li", { "data-origin": o }, el("span", { class: "ellipsis", title: o, text: originLabel(o) }), del)
@@ -235,14 +294,14 @@ for (const m of TIMER_CHOICES) {
 
 async function setTimer(minutes) {
   setError("")
-  const res = await chrome.runtime.sendMessage({ type: "set_timer", minutes })
+  const res = await send({ type: "set_timer", minutes })
   if (!res?.ok) setError(res?.error ?? "could not change the timer")
   timerChoices.hidden = true
   await render()
 }
 
 timerStop.addEventListener("click", async () => {
-  await chrome.runtime.sendMessage({ type: "disconnect" })
+  await send({ type: "disconnect" })
   render()
 })
 timerChange.addEventListener("click", () => { timerChoices.hidden = !timerChoices.hidden })
@@ -251,13 +310,13 @@ timerRemove.addEventListener("click", () => setTimer(0))
 allowBtn.addEventListener("click", async (e) => {
   if (!e.isTrusted) return
   setError("")
-  const res = await chrome.runtime.sendMessage({ type: "allow_origin", origin: allowBtn.dataset.origin })
+  const res = await send({ type: "allow_origin", origin: allowBtn.dataset.origin })
   if (!res?.ok) setError(res?.error ?? "could not allow the site")
   await render()
 })
 
 anySite.addEventListener("change", async () => {
-  await chrome.runtime.sendMessage({ type: "set_any_origin", any: anySite.checked })
+  await send({ type: "set_any_origin", any: anySite.checked })
   await render()
 })
 
@@ -398,8 +457,8 @@ connectBtn.addEventListener("click", async () => {
       return
     }
     statusText.textContent = "Connecting…"
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-    const res = await chrome.runtime.sendMessage({ type: "connect", tabId: tab?.id })
+    tabId = (await currentTab())?.id ?? null
+    const res = await send({ type: "connect" })
     if (!res?.ok) { setError(res?.error ?? "connect failed"); return }
     await render()
     const copied = await copyLinkToClipboard()
@@ -414,7 +473,7 @@ connectBtn.addEventListener("click", async () => {
 })
 
 disconnectBtn.addEventListener("click", async () => {
-  await chrome.runtime.sendMessage({ type: "disconnect" })
+  await send({ type: "disconnect" })
   render()
 })
 
@@ -426,7 +485,7 @@ copyBtn.addEventListener("click", async () => {
 // Copying the new link acknowledges the change: banner, pill and badge go back to normal.
 changedCopy.addEventListener("click", async () => {
   if (!(await copyLinkToClipboard(changedInput))) { setError("Couldn't copy; select the link and copy it."); return }
-  await chrome.runtime.sendMessage({ type: "ack_link", via: "popup" })
+  await send({ type: "ack_link", via: "popup" })
   linkInput.value = changedInput.value
   flashCopied()
   copyHint.textContent = "New link copied — paste it into your AI chat. The old one no longer works."

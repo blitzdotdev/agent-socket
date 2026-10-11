@@ -134,6 +134,13 @@ details > div, details > ul { margin-top: 6px; }
 a.link-danger { color: var(--err); }
 
 
+#others-card:not(.also) { border-color: var(--accent); }
+#others-list li { display: flex; gap: 6px; align-items: center; }
+#others-list img { width: 14px; height: 14px; flex: none; }
+#others-list .tab-text { flex: 1; }
+#others-list .tab-text .ellipsis { max-width: 200px; }
+#cap-note { margin-top: 6px; color: var(--warn); }
+
 .card-head { justify-content: space-between; }
 #activity-list li { display: flex; gap: 6px; align-items: baseline; }
 #activity-list .when { flex: none; color: var(--muted); }

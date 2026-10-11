@@ -597,12 +597,15 @@ async function main() {
       const md = await (await fetch(`${base}/agents.md`)).text()
       if (!md.includes("E2E GENERIC NOTES") || !md.includes("generic profile")) throw new Error("generic notes missing")
       if (!sameSet(await toolPaths(base), BASE_PATHS)) throw new Error(`tools: ${await toolPaths(base)}`)
-      await sendToSW(popupPage, { type: "disconnect" })
+      // The first tab stays connected meanwhile: each tab has its own session.
+      if ((await callTool("/page_info", {})).status !== 200) throw new Error("connecting a second tab ended the first")
+      await sendToSW(popupPage, { type: "disconnect", tabId })
       await page.close()
     })
 
     await step("registry down: Connect still works with base tools, popup says so", async () => {
       await testPage.bringToFront()
+      await sendToSW(popupPage, { type: "disconnect" })
       registry.mode = "hang"
       try {
         const t0 = Date.now()
@@ -1171,18 +1174,153 @@ async function main() {
       }
     })
 
-    await step("closing the bound tab ends the session", async () => {
+    // ── 13. Several tabs: one session (link, pill, timer, site lock) each ──
+    const callAt = async (base, p, body = {}) => {
+      const r = await fetch(`${base}${p}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+      let json = null
+      try { json = await r.json() } catch {}
+      return { status: r.status, json }
+    }
+    const tabIdOf = (page) => popupPage.evaluate(async (u) => (await chrome.tabs.query({})).find((t) => t.url === u)?.id, page.url())
+    const counter = (page) => page.evaluate(() => document.getElementById("counter").textContent)
+    const popupOthers = () => popupPage.evaluate(() => ({
+      shown: !document.querySelector("#others-card").hidden,
+      label: document.querySelector("#others-label").textContent,
+      tabs: [...document.querySelectorAll("#others-list li")].map((li) => Number(li.dataset.tab)),
+      connect: !document.querySelector("#connect-btn").hidden,
+      stop: !document.querySelector("#disconnect-btn").hidden,
+      linkShown: !document.querySelector("#link-card").hidden,
+      link: document.querySelector("#link-input").value,
+    }))
+    let tabA, tabB, rA, rB, baseA, baseB, third
+
+    await step("two tabs at once: each gets its own link, and each link only touches its tab", async () => {
+      await testPage.bringToFront()
+      if (!testPage.url().startsWith(firstOrigin)) await testPage.goto(testUrl, { waitUntil: "load" })
+      await testPage.reload({ waitUntil: "load" })
+      await other.reload({ waitUntil: "load" })
+      tabA = await tabIdOf(testPage)
+      tabB = await tabIdOf(other)
+      rA = await sendToSW(popupPage, { type: "connect", tabId: tabA })
+      rB = await sendToSW(popupPage, { type: "connect", tabId: tabB })
+      if (!rA.ok || !rB.ok || rA.status !== "connected" || rB.status !== "connected") throw new Error(JSON.stringify({ rA, rB }))
+      if (rA.url === rB.url || sid(rA.url) === sid(rB.url)) throw new Error("both tabs got the same link")
+      baseA = rA.url.replace(/\/agents\.md.*$/, "")
+      baseB = rB.url.replace(/\/agents\.md.*$/, "")
+      const [a, b] = [await callAt(baseA, "/page_info"), await callAt(baseB, "/page_info")]
+      if (a.status !== 200 || b.status !== 200 || a.json.url !== testPage.url() || b.json.url !== other.url()) throw new Error(JSON.stringify({ a: a.json?.url, b: b.json?.url }))
+      if ((await callAt(baseA, "/click", { selector: "#inc-btn" })).json?.clicked !== true) throw new Error("click on A failed")
+      if (await counter(testPage) !== "1" || await counter(other) !== "0") throw new Error(`after A: ${await counter(testPage)} / ${await counter(other)}`)
+      await callAt(baseB, "/click", { selector: "#inc-btn" })
+      await callAt(baseB, "/click", { selector: "#inc-btn" })
+      if (await counter(testPage) !== "1" || await counter(other) !== "2") throw new Error(`after B: ${await counter(testPage)} / ${await counter(other)}`)
+    })
+
+    await step("two tabs: badge, pill, timer and site lock are per tab", async () => {
+      if (await badge(tabA) !== "AI" || await badge(tabB) !== "AI") throw new Error(`badges ${await badge(tabA)} / ${await badge(tabB)}`)
+      await waitFor(async () => (await hasPill(testPage)) && (await hasPill(other)))
+      if (!(await sendToSW(popupPage, { type: "set_timer", tabId: tabA, minutes: 30 })).ok) throw new Error("set_timer failed")
+      await waitFor(async () => /· 30 min left/.test(await pillHtml(testPage)) && /· 60 min left/.test(await pillHtml(other)))
+      await waitFor(async () => /last: page_info \d+s ago/.test(await pillHtml(testPage)) && /last: click \d+s ago/.test(await pillHtml(other)))
+      const [sa, sb] = [await sendToSW(popupPage, { type: "snapshot", tabId: tabA }), await sendToSW(popupPage, { type: "snapshot", tabId: tabB })]
+      if (!near(sa.endsAt, Date.now() + 30 * 60_000) || !near(sb.endsAt, Date.now() + 60 * 60_000)) throw new Error("timers not independent")
+      if (sa.siteLock.origins.join() !== firstOrigin || sb.siteLock.origins.join() !== new URL(other.url()).origin) throw new Error(JSON.stringify([sa.siteLock, sb.siteLock]))
+      // "other sites" on B leaves A locked.
+      await sendToSW(popupPage, { type: "set_any_origin", tabId: tabB, any: true })
+      const nav = await callAt(baseA, "/navigate", { url: otherUrl })
+      if (nav.status !== 403 || nav.json?.error?.code !== "origin_not_allowed") throw new Error(`A navigate: ${nav.status}`)
+      if ((await callAt(baseB, "/page_info")).json?.allowed_origins !== "any") throw new Error("B not open")
+      if (JSON.stringify((await callAt(baseA, "/page_info")).json?.allowed_origins) !== JSON.stringify([firstOrigin])) throw new Error("A not locked")
+      await sendToSW(popupPage, { type: "set_any_origin", tabId: tabB, any: false })
+      await shotPill("pill-tab-a")
+      if (SHOT_DIR) {
+        await other.bringToFront()
+        await sleep(400)
+        const { cdp, pill } = await pillNodes(other)
+        const [x1, y1, , , x3, y3] = (await cdp.send("DOM.getBoxModel", { nodeId: pill.nodeId })).model.border
+        await other.screenshot({ path: path.join(SHOT_DIR, "pill-tab-b.png"), clip: { x: Math.max(0, x1 - 16), y: Math.max(0, y1 - 16), width: x3 - x1 + 32, height: y3 - y1 + 32 } })
+        await testPage.bringToFront()
+      }
+    })
+
+    await step("popup on a third tab: Connect, plus both connected tabs with Show and Stop", async () => {
+      third = await browser.newPage()
+      await third.goto(`http://${GENERIC_SITE_HOST}:${STATIC_PORT}/test-page.html?third`, { waitUntil: "load" })
+      await third.bringToFront()
+      await popupPage.reload({ waitUntil: "domcontentloaded" })
+      await waitFor(async () => { const u = await popupOthers(); return u.shown && u.tabs.length === 2 })
+      const u = await popupOthers()
+      if (!u.connect || u.stop || u.linkShown || u.link !== "" || u.label !== "AI is connected to 2 other tabs:") throw new Error(JSON.stringify(u))
+      if (!u.tabs.includes(tabA) || !u.tabs.includes(tabB)) throw new Error(JSON.stringify(u.tabs))
+      if (SHOT_DIR) {
+        await popupPage.bringToFront()
+        await popupPage.setViewport({ width: 384, height: 900 })
+        await sleep(1200)
+        const h = await popupPage.evaluate(() => document.body.scrollHeight)
+        await popupPage.screenshot({ path: path.join(SHOT_DIR, "popup-unconnected-2.png"), clip: { x: 0, y: 0, width: 384, height: h } })
+        await third.bringToFront()
+      }
+      await popupPage.$eval(`#others-list li[data-tab="${tabB}"] [data-action="show"]`, (n) => n.click())
+      await waitFor(() => popupPage.evaluate(async (id) => (await chrome.tabs.get(id)).active, tabB))
+    })
+
+    await step("popup on tab B shows B's link, not A's; A under \"Also connected\"", async () => {
       await other.bringToFront()
-      const r = await sendToSW(popupPage, { type: "connect" })
-      if (!r.ok || !r.url) throw new Error(JSON.stringify(r))
-      if (await hasPill(testPage)) throw new Error("old tab kept its pill")
-      await waitFor(() => hasPill(other))
-      const base = r.url.replace(/\/agents\.md.*$/, "")
-      if (await agentStatus(base) !== 200) throw new Error("new session not working")
+      await waitFor(async () => { const u = await popupOthers(); return u.link === rB.url && u.stop && !u.connect })
+      const u = await popupOthers()
+      if (u.label !== "Also connected:" || u.tabs.join() !== String(tabA)) throw new Error(JSON.stringify(u))
+      if ((await sendToSW(popupPage, { type: "snapshot", tabId: tabA })).url !== rA.url) throw new Error("A's snapshot lost its link")
+      await shotPopup("popup-connected")
+    })
+
+    await step("Stop on A (from the popup's list) leaves B working", async () => {
+      await clickInPopup(`#others-list li[data-tab="${tabA}"] [data-action="stop"]`)
+      await waitFor(async () => (await agentStatus(baseA)) !== 200)
+      await waitFor(async () => !(await hasPill(testPage)))
+      if (await badge(tabA) !== "") throw new Error("badge left on A")
+      if ((await callAt(baseB, "/page_info")).status !== 200 || !(await hasPill(other)) || await badge(tabB) !== "AI") throw new Error("B affected by stopping A")
+      await third.bringToFront()
+      await waitFor(async () => { const u = await popupOthers(); return u.label === "AI is connected to another tab:" && u.tabs.join() === String(tabB) })
+      if (SHOT_DIR) {
+        await popupPage.bringToFront()
+        await sleep(1200)
+        const h = await popupPage.evaluate(() => document.body.scrollHeight)
+        await popupPage.screenshot({ path: path.join(SHOT_DIR, "popup-unconnected-1.png"), clip: { x: 0, y: 0, width: 384, height: h } })
+      }
+      await third.close()
+      await testPage.bringToFront()
+    })
+
+    await step("timer expiry on A ends only A", async () => {
+      await popupPage.evaluate(() => chrome.storage.local.set({ test_session_ms: 6000 }))
+      try {
+        const r = await sendToSW(popupPage, { type: "connect", tabId: tabA })
+        const base = r.url.replace(/\/agents\.md.*$/, "")
+        if (await agentStatus(base) !== 200) throw new Error("A not working")
+        await waitFor(async () => (await sendToSW(popupPage, { type: "snapshot", tabId: tabA })).status.status === "closed", 20000)
+        await waitFor(async () => (await agentStatus(base)) !== 200)
+        if ((await callAt(baseB, "/page_info")).status !== 200 || !(await hasPill(other))) throw new Error("B ended with A's timer")
+      } finally {
+        await popupPage.evaluate(() => chrome.storage.local.remove("test_session_ms"))
+      }
+    })
+
+    await step("activity log keeps the two tabs' sessions apart", async () => {
+      const es = await actEntries()
+      const hostA = new URL(testUrl).host, hostB = new URL(other.url()).host
+      const clicks = (id) => callsOf(es, "click").filter((e) => e.session === id)
+      if (!clicks(sid(rA.url)).length || clicks(sid(rA.url)).some((e) => e.host !== hostA)) throw new Error(`A: ${JSON.stringify(clicks(sid(rA.url)))}`)
+      if (clicks(sid(rB.url)).length !== 2 || clicks(sid(rB.url)).some((e) => e.host !== hostB)) throw new Error(`B: ${JSON.stringify(clicks(sid(rB.url)))}`)
+      const conn = (id) => eventsOf(es, "connected").find((e) => e.session === id)
+      if (conn(sid(rA.url))?.host !== hostA || conn(sid(rB.url))?.host !== hostB) throw new Error("connected events")
+      if (!eventsOf(es, "stopped").some((e) => e.session === sid(rA.url))) throw new Error("A's stop not logged")
+    })
+
+    await step("closing a connected tab ends its session", async () => {
       await other.close()
-      await waitFor(async () => (await swState()).status.status === "idle")
-      await waitFor(async () => eventsOf(await actEntries(), "tab_closed").some((e) => e.session === sid(r.url)))
-      if (await agentStatus(base) === 200) throw new Error("agent URL still works after tab close")
+      await waitFor(async () => !(await sendToSW(popupPage, { type: "snapshot", tabId: tabA })).others.length)
+      await waitFor(async () => eventsOf(await actEntries(), "tab_closed").some((e) => e.session === sid(rB.url)))
+      if (await agentStatus(baseB) === 200) throw new Error("agent URL still works after tab close")
     })
 
     await step("Stop in the pill ends the session", async () => {
