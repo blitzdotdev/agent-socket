@@ -108,8 +108,10 @@ function connectAny(addrs, port, onConnect, onFail) {
   const next = (i) => {
     if (i >= addrs.length) return onFail()
     const sock = net.connect(port, addrs[i])
-    sock.once("connect", () => onConnect(sock))
-    sock.once("error", () => { sock.destroy(); next(i + 1) })
+    const fallback = () => { sock.destroy(); next(i + 1) }
+    sock.once("error", fallback)
+    // Once connected, errors belong to the tunnel, never to the next address.
+    sock.once("connect", () => { sock.off("error", fallback); onConnect(sock) })
   }
   next(0)
 }
@@ -141,6 +143,7 @@ function startProxy() {
     const v = await vet(req.url.slice(0, i), port)
     if (v.reason) { sock.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return }
     connectAny(v.addrs, port, (up) => {
+      if (sock.destroyed) return up.destroy()
       sock.write("HTTP/1.1 200 Connection Established\r\n\r\n")
       if (head?.length) up.write(head)
       up.pipe(sock)
@@ -393,16 +396,19 @@ function ask(kind, text, extra) {
 // completeTask throws while the link to the relay is down; such answers are
 // kept and sent once the SDK has resumed the session (the task survives a
 // resume), so the agent's poll still gets them.
-const unsent = []
+// completeTask is also fire-and-forget: a frame sent just as the link drops
+// is lost without an error. So the last answers are kept and sent again
+// after every reconnect; completing a task twice stores the same reply.
+const answered = []
 function complete(taskId, reply) {
+  answered.push([taskId, reply])
+  if (answered.length > 50) answered.shift()
   try { session?.completeTask(taskId, reply) }
-  catch { unsent.push([taskId, reply]); log("the relay link is down; the answer goes to the agent when it's back") }
+  catch { log("the relay link is down; the answer goes to the agent when it's back") }
 }
-function sendUnsent() {
-  while (unsent.length) {
-    const [taskId, reply] = unsent[0]
+function resendAnswers() {
+  for (const [taskId, reply] of answered) {
     try { session.completeTask(taskId, reply) } catch { return }
-    unsent.shift()
   }
 }
 function answer(id, choice) {
@@ -638,7 +644,14 @@ async function selfTest() {
     out(JSON.stringify({ ok: true, chromium: "launched", ...g }))
     process.exit(0)
   } catch (e) {
-    out(JSON.stringify({ ok: false, error: String(e.message || e).split("\n").slice(0, 6).join(" ") }))
+    // Chromium can die before its own logging starts; once more with its
+    // log on stderr, so the reason shows up in the error.
+    let detail = ""
+    if (!browser) {
+      launchOpts.args = ["--enable-logging=stderr", "--v=0"]
+      try { await launch(); stopping = true; await browser?.close() } catch (e2) { detail = String(e2.message || e2).split("\n").slice(-15).join(" | ") }
+    }
+    out(JSON.stringify({ ok: false, error: String(e.message || e).split("\n").slice(0, 6).join(" "), ...(detail && { chromium_log: detail }) }))
     process.exit(1)
   }
 }
@@ -703,7 +716,13 @@ async function main() {
     } catch (e) { log("control line failed: " + e.message) }
   })
   lines.on("close", () => stop("owner gone"))
-  if (endsAt) setTimeout(() => stop("timer"), endsAt - Date.now()).unref()
+  // A timer holds at most 2^31-1 ms (~24.8 days); longer sessions re-arm.
+  const arm = () => {
+    const left = endsAt - Date.now()
+    if (left <= 0) stop("timer")
+    else setTimeout(arm, Math.min(left, 2 ** 31 - 1)).unref()
+  }
+  if (endsAt) arm()
   setInterval(() => { for (const [id, p] of pages) if (Date.now() - p.last > LIMITS.idleMs) closePage(id) }, 60_000).unref()
 
   proxyPort = (await startProxy()).address().port
@@ -713,7 +732,7 @@ async function main() {
     baseUrl: cfg.relay, appId: "agent-socket-gpu-browser", appDescription: "Chromium with its owner's GPU, for WebGL/WebGPU renders",
     agentsMd: agentsMd(), tools: toolList(),
     onSessionChanged: ({ tokensRemapped }) => { for (const url of Object.values(tokensRemapped || {})) event("link " + url) },
-    onReconnect: () => sendUnsent(),
+    onReconnect: () => resendAnswers(),
   })
   const link = await session.mintAgentToken({ label: "gpu-browser" })
   event("link " + link.url)
