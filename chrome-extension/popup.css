@@ -1,3 +1,11 @@
+@font-face {
+  /* Inter 4.1 (variable), SIL Open Font License 1.1: fonts/LICENSE.txt */
+  font-family: "Inter";
+  src: url("fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
 :root {
   --bg: #0f0f12;
   --card: #1a1a1f;
@@ -14,7 +22,7 @@
 [hidden] { display: none !important; }
 html, body { margin: 0; padding: 0; }
 body {
-  font: 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font: 13px/1.4 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   background: var(--bg);
   color: var(--fg);
   width: 360px;
@@ -24,7 +32,7 @@ header {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 10px;
 }
-h1 { font-size: 14px; margin: 0; letter-spacing: 0.5px; }
+h1 { font-size: 14px; margin: 0; letter-spacing: 0.1px; }
 .dot {
   width: 10px; height: 10px; border-radius: 50%;
   background: var(--muted);
@@ -78,13 +86,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .changed-banner button { background: var(--warn); color: #000; }
 #changed-reason { margin-top: 6px; line-height: 1.4; }
 #events-list li { color: var(--muted); display: flex; gap: 6px; }
-#events-list .when { flex: none; }
+#events-list .when { flex: none; font-variant-numeric: tabular-nums; }
 .warn-body { color: var(--fg); margin-bottom: 6px; line-height: 1.45; }
 .paused-banner { background: #15182b; border: 1px solid var(--paused); box-shadow: 0 0 0 2px rgba(140,156,255,.2); }
 .paused-banner .warn-title { color: var(--paused); font-size: 13px; }
 .paused-banner button { background: var(--paused); color: #000; }
 
-#timer-text { font-size: 14px; font-weight: 600; }
+#timer-text { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
 #timer-card.soon { border-color: var(--err); }
 #timer-card.soon #timer-text { color: var(--err); }
 .timer-actions { margin-top: 6px; flex-wrap: wrap; gap: 6px; }
@@ -111,7 +119,7 @@ select.wide { display: block; width: 100%; margin-top: 2px; }
 .tab-row img { width: 16px; height: 16px; flex-shrink: 0; }
 .tab-text { display: flex; flex-direction: column; min-width: 0; }
 .tab-text .ellipsis { max-width: 300px; }
-.status-row { margin-top: 4px; }
+.status-row { margin-top: 4px; font-variant-numeric: tabular-nums; }
 
 details summary { cursor: pointer; color: var(--muted); font-size: 11px; padding: 4px 0; }
 details > div, details > ul { margin-top: 6px; }
@@ -129,7 +137,7 @@ details > div, details > ul { margin-top: 6px; }
 .profile-list pre {
   margin: 2px 0 0; padding: 4px 6px; max-height: 120px; overflow: auto;
   background: #0a0a0d; border: 1px solid var(--border); border-radius: 3px;
-  font-size: 10px; white-space: pre-wrap; word-break: break-word;
+  font-family: inherit; font-size: 11px; white-space: pre-wrap; word-break: break-word;
 }
 a.link-danger { color: var(--err); }
 
@@ -145,9 +153,9 @@ a.link-danger { color: var(--err); }
 
 .card-head { justify-content: space-between; }
 #activity-list li { display: flex; gap: 6px; align-items: baseline; }
-#activity-list .when { flex: none; color: var(--muted); }
+#activity-list .when { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
 #activity-list .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.st { flex: none; font-weight: 600; }
+.st { flex: none; font-weight: 600; font-variant-numeric: tabular-nums; }
 .st.ok { color: var(--ok); }
 .st.warn { color: var(--warn); }
 .st.err { color: var(--err); }

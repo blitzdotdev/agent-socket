@@ -29,6 +29,12 @@ After a background-worker restart every connected tab resumes its own URL.
 - The "/eval is disabled on CSP-strict sites" warning shows only for a
   connected tab whose page blocks running code without user scripts.
 
+The popup and activity page use [Inter](https://github.com/rsms/inter)
+(`fonts/InterVariable.woff2`, SIL Open Font License 1.1, see
+`fonts/LICENSE.txt`). The in-page bar uses the system sans-serif font
+instead: loading our font inside web pages would mean exposing it as a web
+accessible resource, which lets any site detect the extension.
+
 ## Activity log
 
 Every tool call the AI makes (refused ones too) and every session event
