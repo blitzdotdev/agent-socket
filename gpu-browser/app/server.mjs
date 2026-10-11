@@ -43,6 +43,22 @@ if (INSTALLED) {
   fs.rmSync(process.env.TMPDIR, { recursive: true, force: true })
   fs.mkdirSync(process.env.TMPDIR, { mode: 0o700, recursive: true })
 }
+// A self-test that fails reports Chromium's own last log lines: Playwright
+// prints them under DEBUG=pw:browser (read when it is imported); they are
+// kept here instead of going to stderr.
+const SELF_TEST = process.argv.includes("--self-test")
+const chromiumLog = []
+if (SELF_TEST) {
+  process.env.DEBUG = "pw:browser"
+  process.stderr.write = (chunk) => {
+    for (const l of String(chunk).split("\n")) {
+      if (!l.trim() || /dbus|ssl_client|handshake failed/.test(l)) continue
+      chromiumLog.push(l.slice(0, 300))
+      if (chromiumLog.length > 30) chromiumLog.shift()
+    }
+    return true
+  }
+}
 const { chromium } = await import("playwright-core")
 
 const LIMITS = {
@@ -641,7 +657,7 @@ Limits: request bodies 1 MiB (upload big files in base64 pieces with append), ${
 
 // ── self-test (installer) ────────────────────────────────────────────
 async function selfTest() {
-  launchOpts = { args: [], sandbox: true }
+  launchOpts = { args: ["--enable-logging=stderr", "--v=0"], sandbox: true }
   proxyPort = (await startProxy()).address().port
   try {
     await launch()
@@ -658,14 +674,7 @@ async function selfTest() {
     out(JSON.stringify({ ok: true, chromium: "launched", ...g }))
     process.exit(0)
   } catch (e) {
-    // Chromium can die before its own logging starts; once more with its
-    // log on stderr, so the reason shows up in the error.
-    let detail = ""
-    if (!browser) {
-      launchOpts.args = ["--enable-logging=stderr", "--v=0"]
-      try { await launch(); stopping = true; await browser?.close() } catch (e2) { detail = String(e2.message || e2).split("\n").slice(-15).join(" | ") }
-    }
-    out(JSON.stringify({ ok: false, error: String(e.message || e).split("\n").slice(0, 6).join(" "), ...(detail && { chromium_log: detail }) }))
+    out(JSON.stringify({ ok: false, error: String(e.message || e).split("\n")[0], chromium_log: chromiumLog.slice(-20) }))
     process.exit(1)
   }
 }
@@ -753,5 +762,5 @@ async function main() {
   event("link " + link.url)
 }
 
-if (process.argv.includes("--self-test")) await selfTest()
+if (SELF_TEST) await selfTest()
 else await main().catch((e) => { log("could not start: " + (e.message || e)); process.exit(1) })
