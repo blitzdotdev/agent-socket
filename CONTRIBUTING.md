@@ -28,6 +28,8 @@ npm run ext:test:reconnect    # headless
 npm run ext:test              # full suite, needs xvfb-run
 ```
 
+The GPU browser's real install (an OS account, sudo, ~250 MB of downloads) is tested by `gpu-browser/test/install-smoke.sh` on fresh CI runners (`.github/workflows/gpu-browser.yml`, only when `gpu-browser/` changes); run it only on a throwaway machine, since it ends with an uninstall.
+
 To run the relay on its own: `npm run dev` (port 8787). Layout and deploy notes are in each package's README and in [docs/](docs/).
 
 ## Changing the SDK

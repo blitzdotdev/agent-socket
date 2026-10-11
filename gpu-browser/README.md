@@ -4,14 +4,47 @@ A Chromium on your own machine, with your machine's GPU, that an agent anywhere 
 
 It is a separate app from the [Chrome extension](../chrome-extension/README.md): the extension lets an agent use a tab of *your* browser; the GPU browser is a different, headless Chromium that never sees your tabs, logins or files, and keeps rendering while you use your computer.
 
-## Status
+## Use it
 
-| Part | Where | State |
-|---|---|---|
-| Server: the browser, its network boundary, the agent's tools, the link | [`app/`](app/README.md) | this folder |
-| Installer + CLI: `npx @agent-socket/gpu-browser`, creates the separate OS account it runs as, approvals in your terminal | `install/`, `bin/` | next PR |
+```bash
+npx @agent-socket/gpu-browser
+```
 
-Until the CLI lands, the server only runs as a development run (below).
+The first run explains what it will install and asks once (one sudo password prompt). Then it prints a link and copies it to the clipboard: paste it into the agent's chat. The link works for 60 minutes (`--for 2h`, `--for none`); Ctrl-C ends it at once.
+
+| | |
+|---|---|
+| `npx @agent-socket/gpu-browser` | Start (installs or updates first if needed) |
+| `npx @agent-socket/gpu-browser status` | What is installed, where, the GPU it found, whether the sudo rule works, whether it runs |
+| `npx @agent-socket/gpu-browser stop` | Stop one running in another terminal |
+| `npx @agent-socket/gpu-browser uninstall` | Remove the account, the sudo rule and `/opt/agent-socket-gpu-browser` |
+
+When the agent wants a page to reach another host (a CDN, an API), the terminal rings and asks: `y` allows it for this session, `always` also remembers it, anything else refuses. Only that terminal can answer.
+
+macOS and Linux. Needs Node.js 18+ for `npx`; the browser brings its own Node.js 22. On a machine without a usable GPU (a VM, CI) it still works, rendering in software, and says so.
+
+### What gets installed
+
+One sudo prompt covers all of it (details and order: [install/README.md](install/README.md)):
+
+- **An account, `agent-socket-gpu-browser`**, that runs the browser. It can't log in, has no password, has its own group, and can't read your files. On macOS it doesn't appear in Users & Groups or at the login window.
+- **`/opt/agent-socket-gpu-browser/`**: Node.js (pinned by checksum), `playwright-core`, Chromium (~400 MB together). Owned by root, so the account can run it but not change it.
+- **One sudo rule**, `/etc/sudoers.d/zz-agent-socket-gpu-browser`. It lets you start that exact server as that account without a password. Nothing else.
+- **On Ubuntu 23.10+**, an AppArmor profile that lets this Chromium use its sandbox.
+- **If other accounts can open your home folder**, it offers to close it (`chmod 700`), and uninstall offers to reopen it.
+
+Before switching to a new version, it starts Chromium from the new copy the way every run does and checks it renders. Updates replace the copy only if that works.
+
+Your settings are in `~/.agent-socket/gpu-browser/`: `allowed-hosts.txt` (hosts you allowed with `always`; edit freely) and an optional `config.json`. See the README there.
+
+### Where things are
+
+| Part | Folder |
+|---|---|
+| The server: browser, network boundary, the agent's tools, the link | [`app/`](app/README.md) |
+| The CLI (`npx`), runs as you | [`bin/`](bin/README.md) |
+| What runs as root, once per install | [`install/`](install/README.md) |
+| Tests | [`test/`](test/README.md) |
 
 ## What the agent can do
 
@@ -37,12 +70,16 @@ Fixed in code ([`app/policy.mjs`](app/policy.mjs), applied by [`app/server.mjs`]
 - **Widening needs the owner.** `/request` sends an `ask` to whoever runs the server; the answer comes back on its stdin. Owner-supplied Chromium flags are limited to GPU settings; anything else (`--no-sandbox`, proxy or debugging flags) is dropped.
 - **The link** is a bearer credential, as everywhere in agent-socket, and dies when the server stops or its timer runs out.
 
-In an install (next PR) the server also runs as its own OS account, `agent-socket-gpu-browser`, which can't read your files.
+- **The account.** The server and Chromium run as `agent-socket-gpu-browser`, which can't log in and can't read your files (the installer checks your home folder from that account's side). World-readable files elsewhere on the machine are readable by it, as by any local account.
+
+The agent can use the machine's GPU, CPU and memory until the link ends.
 
 ## Development run
 
+Without installing (no separate account), from the repo root:
+
 ```bash
-npm install && npm run build            # from the repo root
+npm install && npm run build
 # the config line, then your terminal as the rest of stdin: type `answer <id> allow`, or Ctrl-D to stop
 ( echo '{"relay":"https://agentsocket.dev","key":"'"$(openssl rand -hex 16)"'","minutes":60}'; cat ) \
   | node gpu-browser/app/server.mjs     # the link arrives as a `link` event
@@ -54,3 +91,4 @@ The first line on stdin is the config; see the header of [`app/server.mjs`](app/
 
 - `npm run gpu:test:unit`: the boundary checks ([`test/`](test/README.md)).
 - `node harness/run.mjs 63` with `CHROMIUM_PATH` set: the server end to end against a local relay (uploads, pages, multi-part screenshots, the private-network refusal with a local server that must get 0 hits, the proxy's password, an approval round trip, forged events, `stop`).
+- `sh gpu-browser/test/install-smoke.sh`: a real install, start, use and uninstall. CI runs it on fresh Ubuntu and macOS runners (`.github/workflows/gpu-browser.yml`); don't run it on a machine where you use the GPU browser, since it ends by uninstalling.

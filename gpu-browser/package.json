@@ -1,0 +1,34 @@
+{
+  "name": "@agent-socket/gpu-browser",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Let an AI agent anywhere render on your machine's GPU through an agent-socket link: a headless Chromium under its own locked-down OS account.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blitzdotdev/agent-socket.git",
+    "directory": "gpu-browser"
+  },
+  "homepage": "https://github.com/blitzdotdev/agent-socket/tree/master/gpu-browser",
+  "bugs": "https://github.com/blitzdotdev/agent-socket/issues",
+  "bin": {
+    "agent-socket-gpu-browser": "bin/agent-socket-gpu-browser.mjs"
+  },
+  "files": [
+    "README.md",
+    "bin/agent-socket-gpu-browser.mjs",
+    "install/",
+    "app/README.md",
+    "app/package.json",
+    "app/policy.mjs",
+    "app/server.mjs",
+    "app/lib/"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

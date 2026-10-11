@@ -1,0 +1,41 @@
+name: GPU browser install
+
+# A real install → start → use the link → stop → uninstall on fresh Linux
+# and macOS runners (both have passwordless sudo). Only when gpu-browser/
+# changes: it downloads Node.js and Chromium (~250 MB) each time.
+on:
+  push:
+    branches: [master, main]
+    paths: ['gpu-browser/**', '.github/workflows/gpu-browser.yml']
+  pull_request:
+    paths: ['gpu-browser/**', '.github/workflows/gpu-browser.yml']
+
+concurrency:
+  group: gpu-browser-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  scripts:
+    name: Shell scripts (shellcheck, dash, sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y -qq shellcheck dash >/dev/null
+      - run: shellcheck -s sh gpu-browser/install/install.sh gpu-browser/install/uninstall.sh gpu-browser/test/install-smoke.sh
+      - run: shellcheck gpu-browser/scripts/vendor-sdk.sh
+      - run: for f in gpu-browser/install/*.sh gpu-browser/test/install-smoke.sh; do dash -n "$f"; done
+
+  install:
+    name: Install, run, uninstall (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: sh gpu-browser/test/install-smoke.sh
