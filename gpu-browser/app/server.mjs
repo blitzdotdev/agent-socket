@@ -41,6 +41,11 @@ if (INSTALLED) {
   // The account's own home, whatever HOME sudo passed on (Apple's sudoers
   // keeps the caller's). Chromium profiles and Playwright temp files stay there.
   process.env.HOME = os.userInfo().homedir
+  // Likewise the XDG directories (some sudoers keep them): Chromium puts its
+  // crash reports under XDG_CONFIG_HOME and dies if it can't create them.
+  for (const k of Object.keys(process.env)) if (k.startsWith("XDG_")) delete process.env[k]
+  process.env.XDG_CONFIG_HOME = path.join(os.homedir(), ".config")
+  process.env.XDG_CACHE_HOME = path.join(os.homedir(), ".cache")
   process.env.TMPDIR = path.join(os.homedir(), "tmp")
   fs.rmSync(process.env.TMPDIR, { recursive: true, force: true })
   fs.mkdirSync(process.env.TMPDIR, { mode: 0o700, recursive: true })
