@@ -90,7 +90,7 @@ async function install(yes, reason) {
   say(bold(reason))
   say(`It will, with one sudo password prompt:
   • create a separate account, ${NAME}, that can't log in and can't read your files
-  • put Node.js ${fs.readFileSync(path.join(PKG, "install/node.txt"), "utf8").match(/^version (.+)$/m)[1]}, Playwright and Chromium (~400 MB) in ${DIR}
+  • put Node.js ${fs.readFileSync(path.join(PKG, "install/node.txt"), "utf8").match(/^version (.+)$/m)[1]}, Playwright and Chromium (about 650 MB on disk) in ${DIR}
   • add one sudo rule that lets you start the browser as that account without a password
   • check that Chromium starts there with its sandbox and the GPU
 Remove everything later with: npx @agent-socket/gpu-browser uninstall`)

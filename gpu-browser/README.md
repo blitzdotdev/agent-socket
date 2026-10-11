@@ -28,7 +28,7 @@ macOS and Linux. Needs Node.js 18+ for `npx`; the browser brings its own Node.js
 One sudo prompt covers all of it (details and order: [install/README.md](install/README.md)):
 
 - **An account, `agent-socket-gpu-browser`**, that runs the browser. It can't log in, has no password, has its own group, and can't read your files. On macOS it doesn't appear in Users & Groups or at the login window.
-- **`/opt/agent-socket-gpu-browser/`**: Node.js (pinned by checksum), `playwright-core`, Chromium (~400 MB together). Owned by root, so the account can run it but not change it.
+- **`/opt/agent-socket-gpu-browser/`**: Node.js (pinned by checksum), `playwright-core`, Chromium (about 650 MB on disk, 250 MB to download). Owned by root, so the account can run it but not change it.
 - **One sudo rule**, `/etc/sudoers.d/zz-agent-socket-gpu-browser`. It lets you start that exact server as that account without a password. Nothing else.
 - **On Ubuntu 23.10+**, an AppArmor profile that lets this Chromium use its sandbox.
 - **If other accounts can open your home folder**, it offers to close it (`chmod 700`), and uninstall offers to reopen it.
