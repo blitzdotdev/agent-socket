@@ -11,6 +11,12 @@
     <div class="dot" id="status-dot" data-status="idle"></div>
   </header>
 
+  <section id="stale-card" class="changed-banner" role="alert" hidden>
+    <div class="warn-title">Agent Socket was updated</div>
+    <div class="warn-body">Chrome is still running the old version. Reload it to finish the update. Connected tabs disconnect; connect again for a new link.</div>
+    <button id="reload-ext">Reload Agent Socket</button>
+  </section>
+
   <section id="changed-card" class="changed-banner" role="alert" hidden>
     <div class="warn-title">Your link changed</div>
     <div class="warn-body">The old one no longer works — copy this one into your AI chat.</div>

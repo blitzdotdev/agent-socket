@@ -10,9 +10,11 @@ import { fileURLToPath } from "node:url"
 
 export const EXT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 
-export function testExtensionDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "as-ext-src-"))
-  fs.cpSync(EXT_DIR, dir, { recursive: true, filter: (src) => !/[/\\](test|scripts|dist|node_modules)$/.test(src) })
+// `src`: another checkout of the extension (an older build, for the upgrade
+// test). `dir`: write over this folder (emptied first) instead of a new one.
+export function testExtensionDir(src = EXT_DIR, dir = fs.mkdtempSync(path.join(os.tmpdir(), "as-ext-src-"))) {
+  for (const f of fs.readdirSync(dir)) fs.rmSync(path.join(dir, f), { recursive: true, force: true })
+  fs.cpSync(src, dir, { recursive: true, filter: (src) => !/[/\\](test|scripts|dist|node_modules)$/.test(src) })
   const manifestPath = path.join(dir, "manifest.json")
   const m = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
   m.host_permissions = m.optional_host_permissions

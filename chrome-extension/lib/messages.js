@@ -8,6 +8,14 @@
 // that can't call chrome.runtime itself, but anything a page can make the pill
 // do must stay limited to that tab's own session.
 
+// The shape of the background's "snapshot" reply; bump it whenever that shape
+// changes. The popup always loads from disk, but Chrome keeps running the
+// background worker it loaded (even across worker restarts) until the
+// extension is reloaded. So once the folder is updated, a new popup can be
+// talking to an old worker: it compares this number to tell, and asks for a
+// reload instead of drawing half a page from a reply it doesn't understand.
+export const SNAPSHOT_VERSION = 2
+
 // "popup": our pages only. "pill": the pill only. "either": both (the pill
 // acts on its own tab, the popup on the tab it names).
 export const MESSAGE_SENDERS = {

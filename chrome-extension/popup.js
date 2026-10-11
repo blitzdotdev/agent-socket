@@ -5,6 +5,7 @@
 
 import { DEFAULT_SESSION_MINUTES, TIMER_CHOICES, clock, lengthLabel, originLabel, sessionMinutes, timeLeft } from "./lib/limits.js"
 import { LEVELS, createActivityStore, levelOf } from "./lib/activity.js"
+import { SNAPSHOT_VERSION } from "./lib/messages.js"
 
 const $ = (s) => document.querySelector(s)
 const statusDot = $("#status-dot")
@@ -65,6 +66,8 @@ const stopAll = $("#stop-all")
 const pendingElsewhere = $("#pending-elsewhere")
 const pendingOtherHead = $("#pending-other-head")
 const pendingOtherList = $("#pending-other-list")
+const staleCard = $("#stale-card")
+const reloadExt = $("#reload-ext")
 const activity = createActivityStore(chrome.storage.local)
 
 let shownTab = null  // { id, windowId } of the tab the card shows
@@ -169,6 +172,11 @@ async function render() {
   tabId = tab?.id ?? null
   const snap = await send({ type: "snapshot" })
   if (!snap?.ok) return
+  // The folder was updated but Chrome still runs the old worker (see lib/messages.js).
+  const stale = snap.api !== SNAPSHOT_VERSION
+  document.body.classList.toggle("stale", stale)
+  staleCard.hidden = !stale
+  if (stale) return
   const code = snap.status?.status ?? "idle"
   statusDot.dataset.status = code === "connected" && snap.linkChanged ? "changed" : code === "connected" && snap.lastToolCallAt ? "active" : code
   statusText.textContent = statusLabel(snap)
@@ -540,6 +548,8 @@ changedCopy.addEventListener("click", async () => {
   await render()
 })
 
+reloadExt.addEventListener("click", () => chrome.runtime.reload())
+
 saveRelay.addEventListener("click", async () => {
   const v = relayInput.value.trim() || ""
   await chrome.runtime.sendMessage({ type: "set_relay_base", base: v })
@@ -555,6 +565,8 @@ saveRegistry.addEventListener("click", async () => {
   setTimeout(() => (saveRegistry.textContent = "Save"), 1500)
 })
 
-render()
+// A render that throws must not leave a half-drawn popup without saying so.
+const refresh = () => render().catch((e) => setError(`Couldn't show this tab: ${e?.message ?? e}`))
+refresh()
 loadSettings()
-setInterval(render, 1000)
+setInterval(refresh, 1000)

@@ -84,6 +84,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .changed-banner .warn-title { font-size: 13px; }
 .changed-banner .warn-body { font-size: 12px; }
 .changed-banner button { background: var(--warn); color: #000; }
+/* An old background worker: only the reload prompt makes sense. */
+body.stale > :not(header, #stale-card, footer, script) { display: none !important; }
 #changed-reason { margin-top: 6px; line-height: 1.4; }
 #events-list li { color: var(--muted); display: flex; gap: 6px; }
 #events-list .when { flex: none; font-variant-numeric: tabular-nums; }

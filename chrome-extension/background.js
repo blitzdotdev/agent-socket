@@ -16,7 +16,7 @@ import { buildAgentsMd, findLocalProfile, mergeSiteTools, sourceLabel } from "./
 import { DEFAULT_REGISTRY_BASE, buildRegistryTools, fetchSiteProfile } from "./lib/registry.js"
 import { TIMER_CHOICES, deadlineFor, originAllowed, originLabel, originOf, sessionMinutes, shortLeft, timeLeft } from "./lib/limits.js"
 import { createActivityStore, describeCall, eventSummary, levelOf, parseArgs, replyOf } from "./lib/activity.js"
-import { MESSAGE_SENDERS, senderAllowed, senderKind } from "./lib/messages.js"
+import { MESSAGE_SENDERS, SNAPSHOT_VERSION, senderAllowed, senderKind } from "./lib/messages.js"
 
 // ── state ──────────────────────────────────────────────────────────
 // One tab session per connected tab (tabId → newTabSession()). Each has its
@@ -932,6 +932,7 @@ async function snapshot(tabId) {
     if (t) others.push({ ...tabInfo(t), status: o.status.status, linkChanged: !!o.linkChanged })
   }
   return {
+    api: SNAPSHOT_VERSION,
     tabId,
     status: ts?.status ?? ended.get(tabId) ?? { status: "idle" },
     url: ts?.url ?? null,
