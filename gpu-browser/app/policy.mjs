@@ -32,12 +32,13 @@ for (const [a, p] of [
   ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
   ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 3],
 ]) private4.addSubnet(a, p, "ipv4")
-// ::/96 also covers :: and ::1 (IPv4-compatible); fec0::/10 is the old
+// ::/96 also covers :: and ::1 (IPv4-compatible); ::ffff:0:0/96 is
+// IPv4-mapped and ::ffff:0:0:0/96 IPv4-translated (SIIT); fec0::/10 is the old
 // site-local range (deprecated, still routable inside networks); 64:ff9b::/96
 // and 64:ff9b:1::/48 are NAT64, 2002::/16 6to4 and 2001::/32 Teredo: each
 // can carry an IPv4 address, so all are refused.
 for (const [a, p] of [
-  ["::", 96], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8], ["::ffff:0:0", 96],
+  ["::", 96], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8], ["::ffff:0:0", 96], ["::ffff:0:0:0", 96],
   ["64:ff9b::", 96], ["64:ff9b:1::", 48], ["2002::", 16], ["2001::", 32],
 ]) private6.addSubnet(a, p, "ipv6")
 
