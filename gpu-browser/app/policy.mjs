@@ -37,17 +37,23 @@ for (const [a, p] of [
 // IPv4-mapped and ::ffff:0:0:0/96 IPv4-translated (SIIT); fec0::/10 is the old
 // site-local range (deprecated, still routable inside networks); 64:ff9b::/96
 // and 64:ff9b:1::/48 are NAT64, 2002::/16 6to4 and 2001::/32 Teredo: each
-// can carry an IPv4 address, so all are refused.
+// can carry an IPv4 address, so all are refused. Beyond these, only global
+// unicast (2000::/3) is allowed at all, minus its documentation (2001:db8::/32,
+// 3fff::/20), benchmarking (2001:2::/48), ORCHID (2001:10::/28, 2001:20::/28)
+// and SRv6 SID (5f00::/16) ranges.
 for (const [a, p] of [
   ["::", 96], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8], ["::ffff:0:0", 96], ["::ffff:0:0:0", 96],
   ["64:ff9b::", 96], ["64:ff9b:1::", 48], ["2002::", 16], ["2001::", 32],
+  ["2001:db8::", 32], ["3fff::", 20], ["2001:2::", 48], ["2001:10::", 28], ["2001:20::", 28], ["5f00::", 16],
 ]) private6.addSubnet(a, p, "ipv6")
+const global6 = new net.BlockList()
+global6.addSubnet("2000::", 3, "ipv6")
 
 /** True for loopback, private, link-local (cloud metadata), CGNAT, multicast,
  *  reserved, unique-local, and IPv6 forms that embed an IPv4 address. */
 export function privateAddr(ip) {
   if (net.isIPv4(ip)) return private4.check(ip, "ipv4")
-  if (net.isIPv6(ip)) return private6.check(ip, "ipv6")
+  if (net.isIPv6(ip)) return !global6.check(ip, "ipv6") || private6.check(ip, "ipv6")
   return true
 }
 
