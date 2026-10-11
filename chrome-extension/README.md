@@ -1,6 +1,6 @@
 # Agent Socket — Chrome Extension
 
-Connect any AI chat (Claude, ChatGPT, Gemini, …) to **one browser tab you
+Connect any AI chat (Claude, ChatGPT, Gemini, …) to **a browser tab you
 choose**. The extension acts as an agent-socket *app*: it opens a WebSocket
 to the relay, registers a toolset bound to that tab, and gives you a
 paste-able URL. Paste the URL into your AI chat and the AI can click, fill,
@@ -10,6 +10,24 @@ While a tab is connected it shows an in-page "AI has access to this tab" bar
 (last tool and when, time left + **Stop**) and an "AI" badge on the toolbar
 icon. Stop, the popup's **Stop & disconnect**, closing the tab, or the
 session timer running out ends the session and kills the URL.
+
+**Several tabs.** Each tab you connect (up to 10 at once) gets its own
+session: its own URL, bar, badge, timer, allowed sites and activity-log
+group. A URL only ever reaches its own tab, and ending one session leaves the
+others running. The popup is about the tab in front: on a connected tab it
+shows that tab's session; on any other tab it shows **Connect this tab** and
+the tabs that are connected, each with **Show** and **Stop**, plus **Stop all**.
+After a background-worker restart every connected tab resumes its own URL.
+
+- Settings (relay URL, registry URL, default timer, activity detail) apply to
+  new sessions; a live session keeps the relay and registry it started with.
+- Incognito tabs can't be connected, so nothing about them is stored.
+- Turning off the extension's site access (chrome://extensions → Details →
+  Site access) ends every session; the popup says why.
+- Separate Chrome profiles run separate copies of the extension with their
+  own storage and sessions; nothing is shared between them.
+- The "/eval is disabled on CSP-strict sites" warning shows only for a
+  connected tab whose page blocks running code without user scripts.
 
 ## Activity log
 

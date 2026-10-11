@@ -76,6 +76,13 @@
     }).catch(() => {})
   }
   addEventListener("resize", restore)
+  // The text changes length ("last: page_info 3s ago"); keep a placed pill on screen.
+  const fit = new ResizeObserver(() => {
+    if (!pill.style.top || drag) return
+    const r = pill.getBoundingClientRect()
+    if (r.right > innerWidth || r.bottom > innerHeight) place(r.left, r.top)
+  })
+  fit.observe(pill)
 
   const ago = (ms) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : ms < 3_600_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 3_600_000)}h`)
 
@@ -172,6 +179,7 @@
   function remove() {
     clearInterval(timer)
     seen.disconnect()
+    fit.disconnect()
     removeEventListener("resize", restore)
     keep.disconnect()
     chrome.runtime.onMessage.removeListener(onMessage)

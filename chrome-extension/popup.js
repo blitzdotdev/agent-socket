@@ -60,10 +60,15 @@ const othersCard = $("#others-card")
 const othersLabel = $("#others-label")
 const othersList = $("#others-list")
 const capNote = $("#cap-note")
+const stopAll = $("#stop-all")
+const pendingElsewhere = $("#pending-elsewhere")
+const pendingOtherHead = $("#pending-other-head")
+const pendingOtherList = $("#pending-other-list")
 const activity = createActivityStore(chrome.storage.local)
 
 let shownTab = null  // { id, windowId } of the tab the card shows
 let tabId = null     // the tab this popup is about (see currentTab)
+let tabUrl = ""      // its address, to pick the AI's pending saves for its site
 
 // The tab in front: the active one in this window, or (when this page is
 // itself a tab, as in the e2e tests) the last one used.
@@ -103,7 +108,6 @@ function changeReason(c) {
       return "The relay no longer had the old session (it may have restarted), so a new link was created."
     case "replaced": return "Another connection took over the old session, so a new link was created."
     case "no_resume_secret": return "The connection dropped and this relay can't resume sessions, so a new link was created."
-    case "relay_changed": return "The relay URL changed in Settings, so a new link was created."
     default: return "The old link stopped working, so a new link was created."
   }
 }
@@ -128,6 +132,9 @@ const EVENT_TEXT = {
   origin_allowed: (e) => `Allowed ${e.host} for this session`,
   any_origin: (e) => e.on ? "Allowed other sites in this tab" : "Locked to the allowed sites",
   tools_swapped: (e) => `Loaded the tools for ${e.host}`,
+  tab_closed: () => "Tab closed: session ended",
+  tab_replaced: () => "Chrome replaced the tab; the session moved with it",
+  access_removed: () => "Site access turned off: session ended",
 }
 
 let lastEventsJson = ""
@@ -166,11 +173,14 @@ async function render() {
   statusText.textContent = statusLabel(snap)
   if (snap.boundTab) showTab(snap.boundTab, true)
   else showTab(tab, false)
+  tabUrl = (snap.boundTab ?? tab)?.url ?? ""
   const bound = !!snap.boundTab
   const full = !bound && snap.others.length >= snap.max
   connectBtn.hidden = bound
   connectBtn.disabled = full
   renderOthers(snap.others, bound, full ? snap.max : 0)
+  stopAll.hidden = snap.others.length + (bound ? 1 : 0) < 2
+  stopAll.textContent = `Stop all ${snap.others.length + (bound ? 1 : 0)} tabs`
   disconnectBtn.hidden = !bound
   const changed = bound && snap.linkChanged
   changedCard.hidden = !changed
@@ -188,14 +198,15 @@ async function render() {
   toolsSource.title = snap.source?.registry?.error ? `Registry: ${snap.source.registry.error}` : ""
   renderLimits(bound ? snap : null)
   await renderProfiles()
-  await renderActivity()
+  await renderActivity(snap.sessionId)
+  await checkUserScripts()
 }
 
 // ── the other connected tabs: Show (focus it) or Stop ────────────────
 
 let lastOthersJson = ""
 function renderOthers(others, bound, cap) {
-  const json = JSON.stringify([others.map((o) => [o.id, o.title, o.url, o.favIconUrl, o.status]), bound, cap])
+  const json = JSON.stringify([others.map((o) => [o.id, o.windowId, o.title, o.url, o.favIconUrl, o.status]), bound, cap])
   if (json === lastOthersJson) return
   lastOthersJson = json
   othersCard.hidden = !others.length
@@ -219,7 +230,7 @@ function renderOthers(others, bound, cap) {
       await render()
     })
     const icon = o.favIconUrl ? el("img", { alt: "", src: o.favIconUrl }) : null
-    return el("li", { "data-tab": String(o.id) }, icon,
+    return el("li", { "data-tab": String(o.id), "data-window": String(o.windowId) }, icon,
       el("span", { class: "tab-text" },
         el("span", { class: "ellipsis", title: o.title ?? "", text: o.title || host || "Tab" }),
         el("span", { class: "ellipsis muted", text: host })),
@@ -227,12 +238,19 @@ function renderOthers(others, bound, cap) {
   }))
 }
 
+stopAll.addEventListener("click", async () => {
+  stopAll.disabled = true
+  try { await chrome.runtime.sendMessage({ type: "disconnect_all" }) } finally { stopAll.disabled = false }
+  await render()
+})
+
 // ── activity: the last few AI actions (full log in activity.html) ─────
 
 const statusClass = (st) => (st < 300 ? "ok" : st < 500 ? "warn" : "err")
 let lastActivityJson = null
-async function renderActivity() {
-  const calls = (await activity.list(30)).filter((e) => e.kind === "call").slice(0, 3)
+// This tab's session's, while it has one; otherwise the latest of any.
+async function renderActivity(sessionId) {
+  const calls = (await activity.list(sessionId ? 200 : 30)).filter((e) => e.kind === "call" && (!sessionId || e.session === sessionId)).slice(0, 3)
   const json = JSON.stringify(calls.map((e) => e.id))
   if (json === lastActivityJson) return
   lastActivityJson = json
@@ -362,11 +380,23 @@ function pendingItem(p) {
       el("div", { text: `${t.method} ${t.path} — ${String(t.description ?? "").split("\n")[0].slice(0, 200)}` }),
       el("pre", { text: String(t.code ?? "") })))
   }
+  const r = p.replaced
+  const note = r ? el("div", { class: "replaced small", text: `Replaces an earlier save from another tab (${r.tool_count} tool${r.tool_count === 1 ? "" : "s"}) that you hadn't reviewed.` }) : null
   return el("li", { "data-host": p.host },
     el("div", { class: "profile-head" },
       el("span", { class: "pending-title", text: `AI saved ${n} tool${n === 1 ? "" : "s"} for ${p.host}` }),
       keep, discard),
+    note,
     review)
+}
+
+// A pending save is for this tab's site if its host is the tab's host (with
+// port) or hostname, the same match the extension loads kept profiles by.
+function forThisSite(p) {
+  try {
+    const u = new URL(tabUrl)
+    return p.host === u.host || p.host === u.hostname
+  } catch { return false }
 }
 
 function keptItem(p) {
@@ -382,11 +412,17 @@ async function renderProfiles() {
   const list = await chrome.runtime.sendMessage({ type: "list_profiles" })
   if (!list?.ok) return
   // Re-render only on change, so an open Review stays open.
-  const json = JSON.stringify([list.pending, list.kept])
+  const json = JSON.stringify([list.pending, list.kept, tabUrl])
   if (json === lastProfilesJson) return
   lastProfilesJson = json
-  pendingCard.hidden = !list.pending.length
-  pendingList.replaceChildren(...list.pending.map(pendingItem))
+  const here = list.pending.filter(forThisSite)
+  const elsewhere = list.pending.filter((p) => !forThisSite(p))
+  pendingCard.hidden = !here.length
+  pendingList.replaceChildren(...here.map(pendingItem))
+  pendingElsewhere.hidden = !elsewhere.length
+  pendingElsewhere.textContent = elsewhere.length ? `${elsewhere.length} more for other sites, in Settings.` : ""
+  pendingOtherHead.hidden = pendingOtherList.hidden = !elsewhere.length
+  pendingOtherList.replaceChildren(...elsewhere.map(pendingItem))
   profilesList.replaceChildren(...(list.kept.length ? list.kept.map(keptItem) : [el("li", { text: "none" })]))
 }
 
@@ -405,9 +441,10 @@ lengthSelect.addEventListener("change", () => chrome.storage.local.set({ session
 anyDefault.addEventListener("change", () => chrome.storage.local.set({ default_any_site: anyDefault.checked }))
 activityLevel.addEventListener("change", () => chrome.storage.local.set({ activity_level: activityLevel.value }))
 
-async function checkUserScripts() {
-  const us = await chrome.runtime.sendMessage({ type: "check_user_scripts" })
-  userScriptsWarn.hidden = !us?.ok || us.available
+// Shown only for a connected tab whose page blocks /eval without user scripts.
+async function checkUserScripts(recheck = false) {
+  const us = await send({ type: "check_user_scripts", recheck })
+  userScriptsWarn.hidden = !us?.ok || us.available || !us.blocked
   const major = Number(navigator.userAgent.match(/Chrome\/(\d+)/)?.[1] ?? 0)
   userScriptsHint.textContent = major >= 138
     ? "The AI's /eval needs user scripts on sites like x.com, Google, GitHub. Open the extension's details page and turn on \"Allow User Scripts\"."
@@ -429,7 +466,7 @@ openExtDetailsBtn.addEventListener("click", async () => {
 
 recheckUserScriptsBtn.addEventListener("click", async () => {
   recheckUserScriptsBtn.disabled = true
-  try { await checkUserScripts() } finally { recheckUserScriptsBtn.disabled = false }
+  try { await checkUserScripts(true) } finally { recheckUserScriptsBtn.disabled = false }
 })
 
 async function copyLinkToClipboard(input = linkInput) {
@@ -509,5 +546,4 @@ saveRegistry.addEventListener("click", async () => {
 
 render()
 loadSettings()
-checkUserScripts()
 setInterval(render, 1000)

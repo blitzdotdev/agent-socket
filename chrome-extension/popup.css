@@ -140,6 +140,8 @@ a.link-danger { color: var(--err); }
 #others-list .tab-text { flex: 1; }
 #others-list .tab-text .ellipsis { max-width: 200px; }
 #cap-note { margin-top: 6px; color: var(--warn); }
+#stop-all { margin-top: 6px; width: 100%; }
+.replaced { color: var(--warn); margin-top: 2px; }
 
 .card-head { justify-content: space-between; }
 #activity-list li { display: flex; gap: 6px; align-items: baseline; }

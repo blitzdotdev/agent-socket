@@ -15,7 +15,7 @@ import { BASE_TOOL_PATHS, buildBaseTools, buildSiteTools, userScriptsAvailable }
 import { buildAgentsMd, findLocalProfile, mergeSiteTools, sourceLabel } from "./lib/profiles.js"
 import { DEFAULT_REGISTRY_BASE, buildRegistryTools, fetchSiteProfile } from "./lib/registry.js"
 import { TIMER_CHOICES, deadlineFor, originAllowed, originLabel, originOf, sessionMinutes, shortLeft, timeLeft } from "./lib/limits.js"
-import { createActivityStore, describeCall, eventSummary, levelOf, parseArgs } from "./lib/activity.js"
+import { createActivityStore, describeCall, eventSummary, levelOf, parseArgs, replyOf } from "./lib/activity.js"
 
 // ── state ──────────────────────────────────────────────────────────
 // One tab session per connected tab (tabId → newTabSession()). Each has its
@@ -32,7 +32,8 @@ function newTabSession(tabId) {
     tabId,                 // the one tab this session's tool calls may touch
     session: null,         // SDK Session — owns the WS to the relay
     status: { status: "connecting" },  // connecting | connected | disconnected | reconnect-failed
-    base: null,            // relay base the session is on
+    base: null,            // relay base the session is on (Settings changes apply to new sessions only)
+    registryBase: null,    // registry it fetches site profiles from, likewise fixed at Connect
     url: null,
     token: null,
     registry: null,        // { status, profile?, error?, hostname, base }: registry answer for the loaded tools
@@ -122,6 +123,30 @@ async function frontTab() {
   const own = chrome.runtime.getURL("")
   const tabs = (await chrome.tabs.query({ currentWindow: true })).filter((t) => !(t.url ?? "").startsWith(own))
   return tabs.find((t) => t.active) ?? tabs.sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0))[0] ?? null
+}
+
+// ── /eval on CSP-strict pages ─────────────────────────────────────
+// Without chrome.userScripts, page code runs through new Function(), which a
+// page's Content Security Policy can forbid. The popup warns about it only
+// for a connected tab whose page does forbid it: probed once per document
+// (cleared when the tab starts loading another), or learned from a real
+// /eval that failed that way. Tabs that aren't connected are never touched.
+const evalBlocked = new Map()  // tabId → whether its current page blocks the fallback
+
+async function evalBlockedOn(tabId, recheck = false) {
+  if (userScriptsAvailable() || !sessions.has(tabId)) return false
+  if (!recheck && evalBlocked.has(tabId)) return evalBlocked.get(tabId)
+  let blocked = false
+  try {
+    const [r] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: () => { try { return new Function("return 1")() === 1 } catch { return false } },
+    })
+    blocked = r?.result === false
+  } catch {}  // can't probe this page (chrome://, no access): don't claim it's blocked
+  evalBlocked.set(tabId, blocked)
+  return blocked
 }
 
 // ── site lock ──────────────────────────────────────────────────────
@@ -218,15 +243,21 @@ function withProfiles(fn) {
   return p
 }
 
-function savePendingProfile(profile) {
-  return withProfiles((d) => { d.pending[profile.host] = { ...profile, savedAt: Date.now() } })
-}
+// Pending saves are one per host. A save from another session (another tab)
+// replaces the earlier one, and the popup says so ("replaces …").
+const savePendingProfile = (ts) => (profile) => withProfiles((d) => {
+  const prev = d.pending[profile.host]
+  const by = ts.session?.sessionId ?? null
+  const replaced = prev && prev.savedBy !== by ? { tool_count: prev.tools?.length ?? 0, savedAt: prev.savedAt ?? null } : prev?.replaced
+  d.pending[profile.host] = { ...profile, savedAt: Date.now(), savedBy: by, ...(replaced ? { replaced } : {}) }
+})
 
 const summarize = (p, withTools) => ({
   host: p.host,
   tool_count: p.tools?.length ?? 0,
   savedAt: p.savedAt ?? null,
   keptAt: p.keptAt ?? null,
+  replaced: p.replaced ?? null,
   ...(withTools ? {
     notes: p.notes ?? "",
     tools: (p.tools ?? []).map((t) => ({ method: (t?.method ?? "POST").toUpperCase(), path: t?.path, description: t?.description, code: t?.code })),
@@ -248,6 +279,7 @@ const track = (ts) => (t) => ({ ...t, handler: async (ctx) => {
     throw e
   }
   await logCall(t, ctx, call, at, result)
+  if (replyOf(result).body?.error?.code === "csp_blocked_enable_user_scripts") evalBlocked.set(ts.tabId, true)
   return result
 } })
 
@@ -273,9 +305,9 @@ function baseTools(ts) {
     allowed_origins: ts.anyOrigin ? "any" : ts.allowedOrigins,
   })
   return [
-    ...buildBaseTools({ getTabId, savePendingProfile, pinTab: pinTab(ts), navRefusal: navRefusal(ts), sessionInfo }),
+    ...buildBaseTools({ getTabId, savePendingProfile: savePendingProfile(ts), pinTab: pinTab(ts), navRefusal: navRefusal(ts), sessionInfo }),
     ...buildRegistryTools({
-      getBase: getRegistryBase,
+      getBase: async () => ts.registryBase ?? await getRegistryBase(),
       getHostname: async () => {
         const id = await getTabId()
         return id ? hostnameOf((await chrome.tabs.get(id).catch(() => null))?.url) : ""
@@ -408,6 +440,7 @@ async function clearLinkChanged(ts, via) {
 
 // Navigations reset per-tab badges and drop the pill; put both back.
 chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.status === "loading") evalBlocked.delete(tabId)
   const ts = sessions.get(tabId)
   if (!ts) return
   if (info.status === "complete") void showIndicator(ts)
@@ -429,7 +462,7 @@ async function swapTools(ts) {
   if (!tab || !originAllowed(tab.url, lock(ts))) return
   const host = hostOf(tab.url), hostname = hostnameOf(tab.url)
   if (!host || host === ts.toolsHost) return
-  const base = await getRegistryBase()
+  const base = ts.registryBase ?? await getRegistryBase()
   const registry = ts.registry?.hostname === hostname && ts.registry.base === base
     ? ts.registry
     : { ...(await fetchSiteProfile(base, hostname)), hostname, base }
@@ -438,10 +471,43 @@ async function swapTools(ts) {
   await refreshLiveTools(ts, 5000, host, registry)
 }
 
+// Closing a tab (or its whole window: one event per tab) ends its session.
 chrome.tabs.onRemoved.addListener((tabId) => {
   ended.delete(tabId)
+  evalBlocked.delete(tabId)
   const ts = sessions.get(tabId)
   if (ts) void stopConnect(ts, "tab_closed")
+})
+
+// Chrome can swap a tab's id (prerendered or restored pages): the session
+// moves to the new id with its link, timer and sites.
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  const ts = sessions.get(removedTabId)
+  if (ts) void rebind(ts, addedTabId)
+})
+
+async function rebind(ts, tabId) {
+  const old = ts.tabId
+  if (sessions.has(tabId)) return void stopConnect(ts, "tab_closed")
+  sessions.delete(old)
+  ts.tabId = tabId
+  sessions.set(tabId, ts)
+  evalBlocked.delete(old)
+  void chrome.alarms.clear(timerAlarm(old))
+  if (ts.endsAt != null) setDeadline(ts, ts.endsAt)
+  logEvent("tab_replaced", { from: old, tab: tabId })
+  await chrome.storage.session.remove(savedKey(old)).catch(() => {})
+  await saveSession(ts)
+  void showIndicator(ts)
+}
+
+// Site access turned off (chrome://extensions → Site access): no session can
+// act any more, so all of them end, and each popup says why.
+chrome.permissions.onRemoved.addListener(() => {
+  void (async () => {
+    if (await chrome.permissions.contains(SITE_ACCESS)) return
+    for (const ts of [...sessions.values()]) void stopConnect(ts, "access_removed")
+  })()
 })
 
 // ── surviving a service-worker restart ─────────────────────────────
@@ -454,7 +520,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // down), a saved session is kept and retried with backoff, here and on every
 // later worker start, until the relay answers: it then resumes, or refuses
 // and a new link is made.
-// `as_session:<tabId>` → { tabId, base, sessionId, secret, url, token, registry, linkChanged, endsAt, allowedOrigins, anyOrigin, toolsHost }
+// `as_session:<tabId>` → { tabId, base, registryBase, sessionId, secret, url, token, registry, linkChanged, endsAt, allowedOrigins, anyOrigin, toolsHost }
 const SAVED_PREFIX = "as_session:"
 const savedKey = (tabId) => `${SAVED_PREFIX}${tabId}`
 const LEGACY_SAVED_KEY = "as_session"  // before 0.6.0: the one session
@@ -474,6 +540,7 @@ async function saveSession(ts) {
     [savedKey(ts.tabId)]: {
       tabId: ts.tabId,
       base: ts.base,
+      registryBase: ts.registryBase,
       sessionId: ts.session.sessionId,
       secret: ts.session.resumeSecret,
       url: ts.url,
@@ -595,15 +662,25 @@ async function doConnect(ts, saved) {
     await discard(ts)
     throw new Error("no tab to bind")
   }
+  // Incognito tabs aren't connected at all: their activity log and session
+  // would otherwise outlive the private window.
+  if (tab.incognito) {
+    const e = new Error("Agent Socket doesn't connect incognito tabs. Use a normal window.")
+    await discard(ts, e.message)
+    throw e
+  }
   if (!(await chrome.permissions.contains(SITE_ACCESS))) {
     const e = new Error("site access not granted — click Connect in the extension popup to allow it")
     await discard(ts, e.message)
     throw e
   }
   const settings = await chrome.storage.local.get(["relay_base", "session_minutes", "default_any_site", "test_session_ms"])
-  const base = settings.relay_base || DEFAULT_BASE
-  const resume = saved && saved.base === base ? { sessionId: saved.sessionId, secret: saved.secret } : undefined
+  // A resumed session stays on the relay and registry it started with; new
+  // ones use the current Settings.
+  const base = saved?.base || settings.relay_base || DEFAULT_BASE
+  const resume = saved ? { sessionId: saved.sessionId, secret: saved.secret } : undefined
   ts.base = base
+  ts.registryBase = saved?.registryBase ?? saved?.registry?.base ?? await getRegistryBase()
 
   ts.toolCallAt = ts.toolName = null
   // A new session's timer counts from Connect and it is locked to this tab's
@@ -629,7 +706,7 @@ async function doConnect(ts, saved) {
     // answer it was started with (same tools as before the restart); if the
     // registry is down, connect anyway with base + local tools.
     const hostname = hostnameOf(`http://${host}`)
-    const registryBase = await getRegistryBase()
+    const registryBase = ts.registryBase
     registry = saved?.registry && saved.registry.hostname === hostname && saved.registry.base === registryBase
       ? saved.registry
       : { ...(await fetchSiteProfile(registryBase, hostname)), hostname, base: registryBase }
@@ -705,7 +782,6 @@ async function doConnect(ts, saved) {
     // carry over a change they haven't acknowledged; a new one → it changed.
     if (saved?.url) {
       ts.linkChanged = kept ? saved.linkChanged ?? null
-        : !resume ? { at: Date.now(), reason: "relay_changed", afterRestart: true }
         : s.sessionId === resume.sessionId ? { at: Date.now(), reason: "link_missing", afterRestart: true }
         : { at: Date.now(), reason: "resume_refused", closeCode: 4401, afterRestart: true }
     }
@@ -744,7 +820,14 @@ async function doConnect(ts, saved) {
   return { status: "connected", url: ts.url, host, profile: registry.profile?.host ?? null, source: toolSet.source, tool_count: toolSet.tools.length }
 }
 
-// `why`: "stopped" (the user, or a new Connect on the tab), "tab_closed" or "expired" (the timer).
+// Why a session ended, for its tab's popup, when the user didn't just press Stop.
+const ENDED_REASON = {
+  expired: "the session timer ran out",
+  access_removed: "site access for Agent Socket was turned off",
+}
+
+// `why`: "stopped" (the user, or a new Connect on the tab), "tab_closed",
+// "expired" (the timer) or "access_removed" (site access turned off).
 async function stopConnect(ts, why = "stopped") {
   cancelResumeRetry(ts)
   clearTimeout(ts.swapTimer)
@@ -755,10 +838,10 @@ async function stopConnect(ts, why = "stopped") {
   if (wasLive) {
     sessions.delete(ts.tabId)
     void chrome.alarms.clear(timerAlarm(ts.tabId))
-    if (why === "expired") ended.set(ts.tabId, { status: "closed", reason: "the session timer ran out" })
+    if (ENDED_REASON[why]) ended.set(ts.tabId, { status: "closed", reason: ENDED_REASON[why] })
     else ended.delete(ts.tabId)
   }
-  if (s || why === "expired") logEvent(why, { tab: ts.tabId })
+  if (s || ENDED_REASON[why]) logEvent(why, { tab: ts.tabId })
   if (wasLive) await chrome.storage.session.remove(savedKey(ts.tabId)).catch(() => {})
   const sid = s?.sessionId ?? held?.sessionId
   if (sid) void logSession(ts, why, { session: sid, host })
@@ -794,6 +877,7 @@ async function snapshot(tabId) {
     status: ts?.status ?? ended.get(tabId) ?? { status: "idle" },
     url: ts?.url ?? null,
     connected: ts?.session?.connected ?? false,
+    sessionId: ts?.session?.sessionId ?? null,
     boundTab: tab && tabInfo(tab),
     profileHost: ts?.registry?.profile?.host ?? null,
     source: ts?.session ? ts.source : null,
@@ -841,6 +925,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const tabId = fromPopup(sender) ? await popupTabId(msg) : pillTabId(sender)
         const ts = tabId == null ? null : sessions.get(tabId)
         sendResponse({ ok: true, ...(ts ? await stopConnect(ts) : { status: "idle" }) })
+      } else if (msg?.type === "disconnect_all") {
+        if (!fromPopup(sender)) throw new Error("not allowed")
+        await Promise.all([...sessions.values()].map((ts) => stopConnect(ts)))
+        sendResponse({ ok: true, status: "idle" })
       } else if (msg?.type === "snapshot") {
         sendResponse({ ok: true, ...(await snapshot(await popupTabId(msg))) })
       } else if (msg?.type === "pill_state") {
@@ -934,7 +1022,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         else await chrome.storage.local.remove("registry_base")
         sendResponse({ ok: true })
       } else if (msg?.type === "check_user_scripts") {
-        sendResponse({ ok: true, available: userScriptsAvailable() })
+        const tabId = await popupTabId(msg)
+        sendResponse({ ok: true, available: userScriptsAvailable(), blocked: tabId != null && await evalBlockedOn(tabId, msg.recheck === true) })
       } else if (msg?.type === "set_relay_base") {
         await chrome.storage.local.set({ relay_base: msg.base })
         sendResponse({ ok: true })
