@@ -368,9 +368,13 @@ let opening = 0
 async function openPage(a) {
   if (pages.size + opening >= LIMITS.pages) throw fail("too_many_pages", "at most " + LIMITS.pages + " pages; close some with POST /close")
   opening++
-  try { return await openPageNow(a) } finally { opening-- }
+  // The slot moves from `opening` to `pages` when the page is registered,
+  // not when its navigation ends (it would count twice meanwhile).
+  let held = true
+  const release = () => { if (held) { held = false; opening-- } }
+  try { return await openPageNow(a, release) } finally { release() }
 }
-async function openPageNow(a) {
+async function openPageNow(a, release) {
   const target = new URL(typeof a.url === "string" && a.url ? a.url : "index.html", UPLOAD_ORIGIN + "/")
   if (!/^https?:$/.test(target.protocol)) throw fail("bad_url", "only http(s) URLs")
   if (target.origin !== UPLOAD_ORIGIN && !hostAllowed(allowed, target.hostname)) {
@@ -401,6 +405,7 @@ async function openPageNow(a) {
   })
   page.on("response", (r) => { if (r.status() === 403 && r.headers()["x-agent-socket-blocked"]) block(r.url()) })
   pages.set(id, rec)
+  release()
   const wait = ["load", "domcontentloaded", "networkidle", "commit"].includes(a.wait) ? a.wait : "load"
   const resp = await page.goto(target.href, { waitUntil: wait, timeout: LIMITS.opMs - 2000 })
     .catch((e) => { push("goto: " + e.message.split("\n")[0]); return null })
