@@ -17,7 +17,8 @@
 // 6. /request asks the owner (an `ask` event); an `answer` on stdin
 //    completes the agent's task.
 // 7. Agent text in an error can't forge an event line.
-// 8. /define adds a tool to the same link.
+// 8. /define adds a tool to the same link; the 8-page limit holds when
+//    calls arrive at once.
 // 9. `stop` ends the session: the server exits 0 and the link is dead.
 //
 // SKIP without CHROMIUM_PATH (same as 50).
@@ -186,6 +187,13 @@ export default async function () {
     a.ok(tools.tools.some((t) => t.path === "/sum"), "the tool is in tools.json on the same link")
     const sum = await call("POST", "/sum", { a: 2, b: 3 })
     a.equal(sum.json.result, 5, "the defined tool runs in a fresh page")
+
+    // 8b: the page limit holds under concurrent calls
+    await call("POST", "/close", { all: true })
+    const burst = await Promise.all(Array.from({ length: 10 }, () => call("POST", "/page", { url: "lib/x.js", width: 64, height: 64 })))
+    const opened = burst.filter((r) => r.status === 200).length
+    a.ok(opened === 8 && burst.filter((r) => r.status === 429).length === 2, "10 concurrent /page calls open exactly 8 pages", { statuses: burst.map((r) => r.status) })
+    await call("POST", "/close", { all: true })
 
     // 9: stop
     child.stdin.write("stop\n")
