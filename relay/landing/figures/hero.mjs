@@ -23,7 +23,7 @@ import * as G from "../kit/lathe.mjs"
 import { tubePieces, tubeSvg } from "../kit/tube.mjs"
 
 export const WIDTH = 760
-export const HEIGHT = 440
+export const HEIGHT = 412
 export const AZIMUTH = 31
 
 // ── world plan (units ≈ px; x toward the viewer, y to the left, z up) ──
@@ -79,7 +79,7 @@ const PANEL_H = 40
 
 export function buildHero() {
   const pts = [...k.boxCorners(PLATE, -PLATE_H - FOOT_H, 0), [RISER.x, -20, RISER_TOP], [-60, -110, 118], [APP.x, APP.y, PANEL_Z + PANEL_H]]
-  const P = k.fitProjection(pts, WIDTH, HEIGHT, { pad: 20, azimuth: AZIMUTH })
+  const P = k.fitProjection(pts, WIDTH, HEIGHT, { pad: 12, azimuth: AZIMUTH })
   const V = G.viewOf(P)
   const at = (p) => k.iso(p, P)
   const S = (paths, style) => k.solidSvg(paths, style)
@@ -196,7 +196,7 @@ export function buildHero() {
       out.push(L(G.circleOf(F, 4.2, 3.4, P), { tone: "lo" }))
     })
     // a small engraved rule under each lamp, standing for its label
-    out.push(onFront(RISER_FACE, LAMPS.map((lamp) => line("faint", `M${-lamp.y - 4} ${-(lamp.z - 9)}H${-lamp.y + 4}`, ` data-free="true"`)).join("")))
+    out.push(onFront(RISER_FACE, LAMPS.map((lamp) => line("faint", `M${-lamp.y - 4} ${-(lamp.z - 9)}H${-lamp.y + 4}`, ` data-free="both"`)).join("")))
     put([RISER.x + 10, 0, 0], out.join(""), -60)
   }
   {
@@ -292,7 +292,7 @@ export function buildHero() {
       out.push(onFront(fx, units.map(([z0, z1], u) => {
         const slots = []
         for (let s = 0; s < 6; s++) { const y = c.y + 12 - s * 3.2; slots.push(rr(-y - 0.8, -(z1 - 2), -y + 0.8, -(z0 + 2), 0.8, 3)) }
-        return line("lo", slots.join("")) + `<circle class="as-led" data-caller="${ci}" cx="${-(c.y - 10)}" cy="${-(z0 + z1) / 2}" r="1.1"/>` + line("lo", `M${-(c.y - 6)} ${-(z0 + z1) / 2 - 2}V${-(z0 + z1) / 2 + 2}`, ` data-free="true"`)
+        return line("lo", slots.join("")) + `<circle class="as-led" data-caller="${ci}" cx="${-(c.y - 10)}" cy="${-(z0 + z1) / 2}" r="1.1"/>` + line("lo", `M${-(c.y - 6)} ${-(z0 + z1) / 2 - 2}V${-(z0 + z1) / 2 + 2}`, ` data-free="both"`)
       }).join("")))
       out.push(screws(units.flatMap(([z0, z1]) => [[fx, plan.y + 2.4, (z0 + z1) / 2], [fx, plan.y + plan.d - 2.4, (z0 + z1) / 2]]), 0.4))
     } else if (c.kind === "terminal") {
@@ -302,7 +302,7 @@ export function buildHero() {
       out.push(L(k.planOutline(k.insetPlan(body, 3), 40, P), { tone: "faint" }))
       const fx = body.x + body.w
       out.push(onFront(fx, `<path class="as-window" d="${rr(-(c.y + 12), -36, -(c.y - 12), -18, 3)}"/>` + line("mid", rr(-(c.y + 12), -36, -(c.y - 12), -18, 3))
-        + line("lo", [0, 1, 2].map((i) => `M${-(c.y + 8)} ${-(32 - i * 4)}H${-(c.y + 8) + [14, 10, 16][i]}`).join(""), ` data-free="true"`)
+        + line("lo", [0, 1, 2].map((i) => `M${-(c.y + 8)} ${-(32 - i * 4)}H${-(c.y + 8) + [14, 10, 16][i]}`).join(""), ` data-free="both"`)
         + `<rect class="as-led" data-caller="${ci}" x="${-(c.y + 8) + 1}" y="-23.4" width="2.4" height="3.2"/>`))
       const kb = { x: fx + 2, y: plan.y + 3, w: 10, d: plan.d - 6, r: 1.5 }
       out.push(box(kb, 6, 2.4, { tone: "mid" }, 3, 0.3))
@@ -440,12 +440,12 @@ export function buildHero() {
     parts.push(`<path class="as-ext" data-part="ext" d="${rr(x1 - 9, y0 + 10, x1 - 4.4, y0 + 14.6, 1)}"/>`)
     // page: a sidebar and a table of rows
     parts.push(line("faint", `M${x0 + 20} ${y0 + 16.6}V${y1}`))
-    for (let i = 0; i < 5; i++) parts.push(line("lo", `M${x0 + 4} ${y0 + 21 + i * 4.4}H${x0 + 4 + [12, 9, 13, 10, 8][i]}`, ` data-free="true"`))
-    parts.push(line("mid", `M${x0 + 24} ${y0 + 21}H${x0 + 44}`, ` data-free="true"`))
+    for (let i = 0; i < 5; i++) parts.push(line("lo", `M${x0 + 4} ${y0 + 21 + i * 4.4}H${x0 + 4 + [12, 9, 13, 10, 8][i]}`, ` data-free="both"`))
+    parts.push(line("mid", `M${x0 + 24} ${y0 + 21}H${x0 + 44}`, ` data-free="both"`))
     for (let i = 0; i < 4; i++) {
       const y = y0 + 27 + i * 5
       parts.push(line("faint", `M${x0 + 24} ${y + 2.6}H${x1 - 3}`))
-      parts.push(line("lo", `M${x0 + 24} ${y}H${x0 + 34}M${x0 + 40} ${y}H${x0 + 52}`, ` data-free="true"`))
+      parts.push(line("lo", `M${x0 + 24} ${y}H${x0 + 34}M${x0 + 40} ${y}H${x0 + 52}`, ` data-free="both"`))
       parts.push(`<path class="as-row-hit" data-part="row-${i}" d="${rr(x0 + 22.6, y - 2.2, x1 - 2.4, y + 2.2, 1)}"/>`)
     }
     // the bar the extension puts on the connected tab
@@ -461,11 +461,11 @@ export function buildHero() {
     const x0 = -yb, x1 = -ya, y0 = -zb, y1 = -za
     const parts = [`<path class="as-glass" d="${rr(x0, y0, x1, y1, 1.4)}"/>`, line("lo", rr(x0, y0, x1, y1, 1.4))]
     parts.push(line("faint", `M${x0} ${y0 + 5}H${x1}`))
-    parts.push(line("lo", `M${x0 + 3} ${y0 + 2.6}H${x0 + 14}`, ` data-free="true"`))
+    parts.push(line("lo", `M${x0 + 3} ${y0 + 2.6}H${x0 + 14}`, ` data-free="both"`))
     const cols = 3, cw = (x1 - x0 - 4) / cols
     for (let c = 0; c < cols; c++) {
       const cx = x0 + 2 + c * cw
-      parts.push(line("lo", `M${cx + 1.4} ${y0 + 8.4}H${cx + cw - 6}`, ` data-free="true"`))
+      parts.push(line("lo", `M${cx + 1.4} ${y0 + 8.4}H${cx + cw - 6}`, ` data-free="both"`))
       for (let r = 0; r < [3, 2, 2][c]; r++) parts.push(`<path class="as-card" data-part="card-${c}-${r}" d="${rr(cx + 1, y0 + 11 + r * 7.4, cx + cw - 1, y0 + 17 + r * 7.4, 1)}"/>`)
     }
     return parts.join("")

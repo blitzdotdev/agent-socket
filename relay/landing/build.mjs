@@ -90,8 +90,8 @@ function transcriptHtml() {
 // ── watch it ───────────────────────────────────────────────────────────
 function watchHtml() {
   if (existsSync(join(PUBLIC, "media", "demo.mp4"))) {
-    return `<p>A script with the page's link driving Fig 1, recorded in a headless browser: no cuts, real calls through the live relay.</p>
-    <figure class="video"><video src="/media/demo.mp4" poster="/media/demo.jpg" muted loop playsinline controls preload="none" width="1000" height="560" style="width:100%;height:auto;border-radius:12px;box-shadow:0 0 0 1px var(--rule)"></video></figure>`
+    return `<p>A script with this page's link, in the agent's seat, drives Fig 1 through the live relay: answered calls, the laptop asleep and the line held, the plug pulled and calls turned away, then plugged back in. Recorded in a headless browser with no cuts, shown at twice the speed. The script is <a href="https://github.com/blitzdotdev/agent-socket/blob/master/relay/landing/record.mjs">relay/landing/record.mjs</a>.</p>
+    <figure class="video wide"><video src="/media/demo.mp4" poster="/media/demo.jpg" muted loop playsinline controls preload="none" width="1000" height="650" style="width:100%;height:auto;border-radius:12px;box-shadow:0 0 0 1px var(--rule)"></video></figure>`
   }
   // No recording yet: leave the section out rather than show a fake one.
   return ""

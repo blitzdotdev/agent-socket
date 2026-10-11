@@ -44,13 +44,13 @@ export const POPUP_CSS = `
 .pp-pop{position:relative;background:#0f0f12;color:#e8e8ec;border-radius:12px;padding:12px;font-size:12px;line-height:1.4;box-shadow:0 1px 0 #ffffff14 inset,0 18px 40px -18px #00000066,0 0 0 1px #00000014}
 .pp-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px;font-size:13px}
 .pp-ok{width:9px;height:9px;border-radius:50%;background:#5ad06a;box-shadow:0 0 6px #5ad06a99}
-.pp-card{position:relative;background:#1a1a1f;border:1px solid #2a2a30;border-radius:8px;padding:9px 10px;margin-bottom:8px;display:grid;gap:6px}
+.pp-card{position:relative;min-width:0;background:#1a1a1f;border:1px solid #2a2a30;border-radius:8px;padding:9px 10px;margin-bottom:8px;display:grid;gap:6px}
 .pp-mut{color:#8c8c93;font-size:11.5px}
 .pp-strong{font-weight:600;font-size:13px}
 .pp-tab{display:flex;gap:8px;align-items:center}.pp-tab>span:last-child{display:grid}
 .pp-fav{width:14px;height:14px;border-radius:50%;background:#e8e8ec}
 .pp-row{display:flex;gap:6px;align-items:center}.pp-sb{justify-content:space-between}
-.pp-btn{padding:3px 8px;border-radius:5px;border:1px solid #34343b;color:#d8d8dd;font-size:11.5px;white-space:nowrap}
+.pp-btn{flex:none;padding:3px 8px;border-radius:5px;border:1px solid #34343b;color:#d8d8dd;font-size:11.5px;white-space:nowrap}
 .pp-red{background:#f06;border-color:#f06;color:#fff}.pp-pink{background:#f06;border-color:#f06;color:#fff}
 .pp-site{display:flex;justify-content:space-between}.pp-site u{color:#ff6b9a;text-decoration-color:#ff6b9a80}
 .pp-check{display:flex;gap:7px;align-items:center;color:#c8c8ce}.pp-check i{width:11px;height:11px;border:1px solid #55555d;border-radius:3px}
@@ -66,5 +66,5 @@ export const POPUP_CSS = `
 .pp-notes li{display:grid;grid-template-columns:28px 1fr;align-items:start}
 .pp-notes li .pp-n{margin-top:1px}
 .pp-notes b{color:var(--ink);font-weight:550}
-@media (max-width:820px){.pp-grid{grid-template-columns:1fr;gap:26px}.pp-pop{margin-left:30px;max-width:340px}}
+@media (max-width:820px){.pp-plate{padding:46px 16px 26px}.pp-grid{grid-template-columns:minmax(0,1fr);gap:26px}.pp-grid>*{min-width:0}.pp-pop{margin-left:30px;max-width:min(340px,calc(100% - 30px))}}
 `

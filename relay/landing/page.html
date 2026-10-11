@@ -65,9 +65,9 @@ h1 em{font-size:1.12em;letter-spacing:-.01em}
 .path:hover b::after{transform:translateX(2px);color:var(--ink)}
 .path span{display:block;margin-top:3px;font-size:13.5px;line-height:1.45;color:var(--muted)}
 .path.primary{border-color:#d8d8d5}
-.meta{margin:18px 0 0;font-size:13px;color:var(--muted)}
+.meta{margin:18px 0 0;font-size:13px;color:var(--muted);display:flex;flex-wrap:wrap;column-gap:8px}
 .meta span{white-space:nowrap}
-.meta span+span::before{content:"·";margin:0 8px;color:#c4c4c0}
+.meta span+span::before{content:"·";margin-right:8px;color:#c4c4c0}
 @media (max-width:560px){.paths{grid-template-columns:1fr}}
 
 /* sections */
@@ -97,6 +97,12 @@ figure{margin:28px 0 0}
 .iso-legend .iso-caption{color:var(--text);font-size:13.5px}
 .iso-legend .iso-caption b{color:var(--ink);font-weight:550}
 .figwrap{position:relative}
+@media (max-width:640px){
+  .iso-plate{padding:42px 10px 66px}
+  .iso-plate-corner[data-corner="hint"]{bottom:22px}
+  .iso-plate:has([data-hero]){overflow:hidden}
+  [data-hero] svg{width:113%;max-width:none;margin:-4% 0 -3% -7%}
+}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
 /* code card: the one place with a monospace face */
@@ -348,5 +354,16 @@ footer a:hover{color:var(--ink)}
 </main>
 </div>
 <!--SCRIPTS-->
+<script type="module">
+// Contents: mark the section being read.
+const links = new Map([...document.querySelectorAll('.toc a[href^="#"]')].map((a) => [a.getAttribute("href").slice(1), a]))
+const seen = new Map()
+const io = new IntersectionObserver((entries) => {
+  for (const e of entries) seen.set(e.target.id, e.isIntersecting)
+  const current = [...links.keys()].find((id) => seen.get(id))
+  links.forEach((a, id) => a.setAttribute("aria-current", String(id === current)))
+}, { rootMargin: "-15% 0px -70% 0px" })
+for (const id of links.keys()) { const el = document.getElementById(id); if (el) io.observe(el) }
+</script>
 </body>
 </html>
