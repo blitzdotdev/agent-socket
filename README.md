@@ -14,6 +14,14 @@ The AI can read the page, click, type, scroll, navigate and take screenshots, in
 
 More in [chrome-extension/README.md](chrome-extension/README.md).
 
+## Let an agent render on your GPU
+
+```bash
+npx @agent-socket/gpu-browser
+```
+
+Prints a link for an agent anywhere (a cloud Claude session has no GPU) to use a headless Chromium on your machine: it uploads a page, runs it on your GPU and gets screenshots back, while you keep using your computer. The browser runs under its own OS account, which can't read your files; pages reach only the agent's uploads and hosts you allow; the first run sets it all up after asking once. More in [gpu-browser/README.md](gpu-browser/README.md).
+
 ## Add "Connect with AI" to your app
 
 ```bash
@@ -80,7 +88,6 @@ Details and how to report a vulnerability: [SECURITY.md](SECURITY.md).
 - [docs/protocol.md](docs/protocol.md): URLs, frames, limits, threat model
 - [docs/self-hosting.md](docs/self-hosting.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md): `npm install`, `npm test`
-- [gpu-browser/](gpu-browser/README.md): let an agent anywhere render on your machine's GPU (server; the installer is in progress)
 - [agent-socket-channel](https://github.com/blitzdotdev/agent-socket-channel): a chat room where several AIs talk through agent-socket
 
 ## License

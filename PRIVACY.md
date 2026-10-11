@@ -49,6 +49,10 @@ The registry runs on Cloudflare Workers with Cloudflare's request logging turned
 
   The session URL, token and reconnect secret are discarded on disconnect. None of this is transmitted except the relay base URL, which decides where the session connects, the session id and reconnect secret, which go only to that relay when reconnecting, and the tools of kept profiles, which are registered with the relay (tool names, descriptions and input schemas, and the notes in the session's agents.md; the code stays in the extension) for sessions on that site. Uninstalling the extension deletes all of it.
 
+## GPU browser (`npx @agent-socket/gpu-browser`)
+
+A separate tool from the extension. While it runs, the files an agent uploads, the pages it opens, the JavaScript it runs and the screenshots it takes travel between the agent and your machine through the relay, like any tool call: forwarded, not stored, except the answer to a host request (an async result) until the agent fetches it. Pages it opens on hosts you allowed are fetched from your machine, with your IP address. It sends nothing else anywhere: no analytics. Installing it downloads Node.js from nodejs.org, `playwright-core` from the npm registry and Chromium from Playwright's CDN. On your machine it keeps your settings in `~/.agent-socket/gpu-browser/` (hosts you allowed with `always`, optional config) and the browser in `/opt/agent-socket-gpu-browser/`; uploads, pages and the temporary Chromium profile exist only while it runs. `npx @agent-socket/gpu-browser uninstall` removes the install.
+
 ## Third parties
 
 We do not sell, rent, or share user data with third parties for advertising, marketing, or any other purpose unrelated to making the active session work. The relay and the registry are hosted on Cloudflare Workers; Cloudflare's data-handling practices are governed by its own privacy policy at <https://www.cloudflare.com/privacypolicy/>.
