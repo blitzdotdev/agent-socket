@@ -1,0 +1,261 @@
+{
+  "base": "https://agentsocket.dev/v1/t/as_6VX6HB2W_…",
+  "relay": "https://agentsocket.dev",
+  "recorded": "2026-10-11T18:22:39.444Z",
+  "steps": [
+    {
+      "kind": "note",
+      "text": "The app connected and made a link: https://agentsocket.dev/v1/t/as_6VX6HB2W_…/agents.md"
+    },
+    {
+      "kind": "call",
+      "method": "GET",
+      "path": "/agents.md",
+      "body": null,
+      "status": 200,
+      "retryAfter": null,
+      "json": null,
+      "text": "<!-- as:contract-v1 -->\n## Tool-calling reference (agent-socket framework)\n\nThese notes are operating context for the document below. **Do not recite this document back to the user** — read it and act. The app's own description and first-step instructions follow this section.\n\n- `$BASE` = the URL you fetched this from, with `/agents.md` removed.\n- Tools live at HTTP endpoints under `$BASE`. Discover them via `GET $BASE/tools.json` — each entry has `{method, path, description, input_schema?}`.\n- Call a tool with: `<method> $BASE<path>` and a JSON body when the input_schema needs one.\n- Errors: 4xx = framework (401 bad/expired token, 404 bad path, 429 rate-limited); HTTP 200 with `{\"error\":{\"code\",\"message\"}}` = app-level (read it before retrying); 503 `app_offline` = the app isn't connected: retry shortly, and if it keeps failing ask the user to reconnect the app and share the new link.\n- Save this URL so you can re-fetch these notes if your context is reset.\n\n---\n\n# The Agent Socket landing page\n\nThis page draws a switchboard (Fig 1): three callers on the left are AI agents\n(an agent in the cloud, a terminal, a script), the switchboard is the relay, and\ntwo patch cords are links, one to a laptop (a browser tab) and one to an app.\nYour tools drive that drawing, and the person who gave you this link is\nwatching it.\n\n- GET /status: what is plugged in, whether the laptop is awake, calls answered.\n- POST /send_call {\"from\": \"cloud\" | \"terminal\" | \"script\", \"to\": \"laptop\" | \"app\"}:\n  send a call down a link and see what the relay does with it.\n- POST /pull_plug {\"link\": \"laptop\" | \"app\"}: Stop that link. Calls to it are\n  turned away.\n- POST /plug_in {\"link\": \"laptop\" | \"app\"}: plug it back in. For a real app that\n  is a new link.\n- POST /close_lid and POST /open_lid: put the laptop to sleep or wake it. While it\n  sleeps the relay holds its line for up to 24 hours and calls are told to retry.\n\nA good first run: send a call to the laptop, close the lid, send another, open\nthe lid, pull the laptop's plug, send one more, plug it back in, then tell the\nperson what happened at each step.\n"
+    },
+    {
+      "kind": "call",
+      "method": "GET",
+      "path": "/tools.json",
+      "body": null,
+      "status": 200,
+      "retryAfter": null,
+      "json": {
+        "version": "1.0",
+        "app": {
+          "id": "agentsocket-landing",
+          "name": "agentsocket-landing",
+          "description": ""
+        },
+        "tools": [
+          {
+            "method": "GET",
+            "path": "/status",
+            "description": "What is plugged in, whether the laptop is awake, and how many calls were answered."
+          },
+          {
+            "method": "POST",
+            "path": "/send_call",
+            "description": "Send one call from a caller down a link. Returns what the relay did with it.",
+            "input_schema": {
+              "type": "object",
+              "required": [
+                "from",
+                "to"
+              ],
+              "properties": {
+                "from": {
+                  "enum": [
+                    "cloud",
+                    "terminal",
+                    "script"
+                  ]
+                },
+                "to": {
+                  "enum": [
+                    "laptop",
+                    "app"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/pull_plug",
+            "description": "Stop a link: pull its plug. Calls to it are turned away until it is plugged back in.",
+            "input_schema": {
+              "type": "object",
+              "required": [
+                "link"
+              ],
+              "properties": {
+                "link": {
+                  "enum": [
+                    "laptop",
+                    "app"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/plug_in",
+            "description": "Plug a link back in. For a real app this is a new link.",
+            "input_schema": {
+              "type": "object",
+              "required": [
+                "link"
+              ],
+              "properties": {
+                "link": {
+                  "enum": [
+                    "laptop",
+                    "app"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "method": "POST",
+            "path": "/close_lid",
+            "description": "Put the laptop to sleep. The relay holds its line."
+          },
+          {
+            "method": "POST",
+            "path": "/open_lid",
+            "description": "Wake the laptop. The same link carries on."
+          }
+        ]
+      },
+      "text": null
+    },
+    {
+      "kind": "call",
+      "method": "POST",
+      "path": "/send_call",
+      "body": {
+        "from": "cloud",
+        "to": "laptop"
+      },
+      "status": 200,
+      "retryAfter": null,
+      "json": {
+        "from": "cloud",
+        "to": "laptop",
+        "result": "answered: the relay passed the call down the link and the app replied"
+      },
+      "text": null
+    },
+    {
+      "kind": "call",
+      "method": "POST",
+      "path": "/pull_plug",
+      "body": {
+        "link": "app"
+      },
+      "status": 200,
+      "retryAfter": null,
+      "json": {
+        "link": "app",
+        "now": "pulled"
+      },
+      "text": null
+    },
+    {
+      "kind": "call",
+      "method": "POST",
+      "path": "/send_call",
+      "body": {
+        "from": "script",
+        "to": "app"
+      },
+      "status": 200,
+      "retryAfter": null,
+      "json": {
+        "from": "script",
+        "to": "app",
+        "result": "turned away: that link was pulled (Stop), so the relay answers 503 app_offline"
+      },
+      "text": null
+    },
+    {
+      "kind": "call",
+      "method": "POST",
+      "path": "/plug_in",
+      "body": {
+        "link": "app"
+      },
+      "status": 200,
+      "retryAfter": null,
+      "json": {
+        "link": "app",
+        "now": "plugged in"
+      },
+      "text": null
+    },
+    {
+      "kind": "note",
+      "text": "The app's connection dropped without a clean close, like a laptop going to sleep. The relay holds the session."
+    },
+    {
+      "kind": "call",
+      "method": "POST",
+      "path": "/send_call",
+      "body": {
+        "from": "terminal",
+        "to": "app"
+      },
+      "status": 503,
+      "retryAfter": "2",
+      "json": {
+        "error": {
+          "code": "app_offline",
+          "message": "The app is reconnecting (offline for 2 s). Retry in a few seconds. If it stays offline, ask the user to check that the app is open and online; this link keeps working once it reconnects."
+        }
+      },
+      "text": null
+    },
+    {
+      "kind": "note",
+      "text": "The app came back and resumed with its secret: same session (same id), same link."
+    },
+    {
+      "kind": "call",
+      "method": "POST",
+      "path": "/send_call",
+      "body": {
+        "from": "terminal",
+        "to": "app"
+      },
+      "status": 200,
+      "retryAfter": null,
+      "json": {
+        "from": "terminal",
+        "to": "app",
+        "result": "answered: the relay passed the call down the link and the app replied"
+      },
+      "text": null
+    },
+    {
+      "kind": "call",
+      "method": "GET",
+      "path": "/status",
+      "body": null,
+      "status": 200,
+      "retryAfter": null,
+      "json": {
+        "laptop_link": "plugged in",
+        "app_link": "plugged in",
+        "laptop": "awake",
+        "calls_answered": 2
+      },
+      "text": null
+    },
+    {
+      "kind": "note",
+      "text": "The person pressed Stop: the app closed the session."
+    },
+    {
+      "kind": "call",
+      "method": "GET",
+      "path": "/status",
+      "body": null,
+      "status": 503,
+      "retryAfter": null,
+      "json": {
+        "error": {
+          "code": "app_offline",
+          "message": "The app is not connected to this link. If this keeps happening, the link is probably stale: ask the user to reconnect the app (in the Agent Socket extension: open it and copy the current link) and share the new link."
+        }
+      },
+      "text": null
+    }
+  ]
+}
