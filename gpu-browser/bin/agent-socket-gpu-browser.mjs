@@ -257,7 +257,9 @@ async function start(opts) {
       say(dim("sudo asks for your password to start the browser as " + NAME + "."))
       if (spawnSync("sudo", ["-v"], { stdio: "inherit" }).status !== 0) die("sudo failed")
     }
-    const p = spawn("sudo", ["-n", ...startArgs], { cwd: "/", stdio: ["pipe", "pipe", "pipe"], detached: nopass })
+    // -n only with the rule: without it sudo must be free to ask again (a
+    // zero timestamp_timeout doesn't keep the -v above).
+    const p = spawn("sudo", nopass ? ["-n", ...startArgs] : startArgs, { cwd: "/", stdio: ["pipe", "pipe", "pipe"], detached: nopass })
     child = p
     let errText = ""
     readline.createInterface({ input: p.stdout }).on("line", (line) => {
@@ -324,12 +326,17 @@ function stopOthers() {
 }
 async function uninstall(yes) {
   if (!fs.existsSync(DIR)) return say("not installed")
+  if (!fs.existsSync(path.join(DIR, "install.env")) && !fs.existsSync(path.join(DIR, ".created-by-agent-socket-gpu-browser"))) {
+    return say(DIR + " wasn't made by this installer; nothing to remove")
+  }
   say("This removes the browser's account (" + NAME + "), its sudo rule and " + DIR + ".")
   if (!yes) {
     if (!TTY) die("run it in a terminal to confirm, or pass --yes")
     if (!/^(|y|yes)$/i.test(await ask("Remove? [Y/n] ", "n"))) die("nothing changed", 0)
   }
-  const r = spawnSync("sudo", ["/bin/sh", DIR + "/uninstall.sh"], { cwd: "/", stdio: "inherit" })
+  // This package's own copy, not whatever DIR/uninstall.sh is: DIR may not
+  // be ours, and the script only removes what carries the installer's marks.
+  const r = spawnSync("sudo", ["/bin/sh", path.join(PKG, "install", "uninstall.sh")], { cwd: "/", stdio: "inherit" })
   if (r.status !== 0) die("uninstall failed (above)")
   const before = path.join(SETTINGS, "home-mode-before.txt")
   if (fs.existsSync(before)) {

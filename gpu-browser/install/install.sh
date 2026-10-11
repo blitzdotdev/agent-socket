@@ -92,7 +92,7 @@ restore_old() {
 }
 cleanup() {
   [ "$done_ok" = true ] && return
-  rm -rf "$DIR/.staging" "$DIR/.new" 2>/dev/null || true
+  rm -rf "$DIR/.staging" "$DIR/.new" "$DIR/install.env.new" 2>/dev/null || true
   # A profile this run added goes again, on an update too.
   if [ "$made_aa" = true ]; then
     apparmor_parser -R "/etc/apparmor.d/$NAME" 2>/dev/null || true
@@ -322,20 +322,22 @@ for d in node app browsers VERSION; do
   if [ -e "$DIR/$d" ]; then mv "$DIR/$d" "$DIR/.old/"; fi
 done
 for d in node app browsers VERSION; do mv "$DIR/.new/$d" "$DIR/"; done
-rm -rf "$DIR/.new" "$DIR/.old"
+rm -rf "$DIR/.new"
+# .old stays until the very end, so a failure from here on still puts the
+# working copy back; install.env is written aside and moved in last.
 cp "$PKG/install/uninstall.sh" "$DIR/uninstall.sh"
 cp "$PKG/install/system-README.md" "$DIR/README.md"
 chmod 755 "$DIR/uninstall.sh"
 chmod 644 "$DIR/README.md"
-cat > "$DIR/install.env" <<EOF
+cat > "$DIR/install.env.new" <<EOF
 user=$USER_NAME
 version=$VERSION
 hash=$HASH
 account_uid=$ACCT_UID
 gpu=$renderer
 EOF
-chmod 644 "$DIR/install.env"
-chown -R "root:$ROOTGROUP" "$DIR/uninstall.sh" "$DIR/README.md" "$DIR/install.env"
+chmod 644 "$DIR/install.env.new"
+chown "root:$ROOTGROUP" "$DIR/uninstall.sh" "$DIR/README.md" "$DIR/install.env.new"
 
 # ── 7. The sudo rule: start the server as the account, nothing else ────
 # sudo applies the LAST rule that matches, reading sudoers.d in name order,
@@ -373,6 +375,8 @@ fi
 
 # ── 8. Can the account see into your home? ───────────────────────────
 if sudo -u "$NAME" test -x "$USER_HOME" 2>/dev/null; then event "home-open"; fi
+mv -f "$DIR/install.env.new" "$DIR/install.env"
+rm -rf "$DIR/.old"
 : > "$DIRMARK"   # nothing left to undo: the journal is for unfinished first installs
 done_ok=true
 event "done"
