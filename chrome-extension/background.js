@@ -16,6 +16,7 @@ import { buildAgentsMd, findLocalProfile, mergeSiteTools, sourceLabel } from "./
 import { DEFAULT_REGISTRY_BASE, buildRegistryTools, fetchSiteProfile } from "./lib/registry.js"
 import { TIMER_CHOICES, deadlineFor, originAllowed, originLabel, originOf, sessionMinutes, shortLeft, timeLeft } from "./lib/limits.js"
 import { createActivityStore, describeCall, eventSummary, levelOf, parseArgs, replyOf } from "./lib/activity.js"
+import { MESSAGE_SENDERS, senderAllowed, senderKind } from "./lib/messages.js"
 
 // ── state ──────────────────────────────────────────────────────────
 // One tab session per connected tab (tabId → newTabSession()). Each has its
@@ -53,6 +54,7 @@ function newTabSession(tabId) {
     allowedOrigins: [],    // origins tool calls may act on
     anyOrigin: false,      // the user let the AI use any site in this tab
     connecting: null,      // in-flight connect, so double clicks don't open two sessions
+    sessionIds: [],        // relay session ids this tab has had (a changed link adds one), for its activity
     held: null,            // saved session the relay is holding while we wait to resume it
     resumeRetry: null,     // { timer, attempt }: pending retry of that resume
     swapTimer: null,
@@ -61,6 +63,7 @@ function newTabSession(tabId) {
 }
 // Still the tab's current session (not stopped, not replaced by a new Connect).
 const live = (ts) => sessions.get(ts.tabId) === ts
+const noteSessionId = (ts, id) => { if (id && !ts.sessionIds.includes(id)) ts.sessionIds = [...ts.sessionIds, id] }
 
 // Default relay base. Overridable in the popup via chrome.storage.local.relay_base.
 const DEFAULT_BASE = "https://agentsocket.dev"
@@ -134,8 +137,12 @@ async function frontTab() {
 const evalBlocked = new Map()  // tabId → whether its current page blocks the fallback
 
 async function evalBlockedOn(tabId, recheck = false) {
-  if (userScriptsAvailable() || !sessions.has(tabId)) return false
+  const ts = sessions.get(tabId)
+  if (userScriptsAvailable() || !ts) return false
   if (!recheck && evalBlocked.has(tabId)) return evalBlocked.get(tabId)
+  // Paused on a site the user hasn't allowed: leave that page alone.
+  const tab = await chrome.tabs.get(tabId).catch(() => null)
+  if (!tab || !originAllowed(tab.url, lock(ts))) return false
   let blocked = false
   try {
     const [r] = await chrome.scripting.executeScript({
@@ -243,14 +250,28 @@ function withProfiles(fn) {
   return p
 }
 
-// Pending saves are one per host. A save from another session (another tab)
-// replaces the earlier one, and the popup says so ("replaces …").
-const savePendingProfile = (ts) => (profile) => withProfiles((d) => {
-  const prev = d.pending[profile.host]
-  const by = ts.session?.sessionId ?? null
-  const replaced = prev && prev.savedBy !== by ? { tool_count: prev.tools?.length ?? 0, savedAt: prev.savedAt ?? null } : prev?.replaced
-  d.pending[profile.host] = { ...profile, savedAt: Date.now(), savedBy: by, ...(replaced ? { replaced } : {}) }
-})
+// A session may only save tools for the sites it may act on (its allowed
+// origins, or with "other sites" on, the site the tab is on now): otherwise
+// the AI in one tab could plant a pending save for an unrelated site that the
+// user later reviews from that site's own popup. Pending saves are one per
+// host; a save from another session (another tab) replaces the earlier one,
+// and the popup says so ("replaces …").
+const savePendingProfile = (ts) => async (profile) => {
+  const tab = live(ts) ? await chrome.tabs.get(ts.tabId).catch(() => null) : null
+  const hosts = new Set(ts.allowedOrigins.flatMap((o) => [hostOf(o), hostnameOf(o)]))
+  if (ts.anyOrigin && tab) for (const h of [hostOf(tab.url), hostnameOf(tab.url)]) hosts.add(h)
+  if (!hosts.has(profile.host)) {
+    return { status: 403, body: { error: { code: "host_not_allowed", message: `This session can only save tools for the sites it may act on (${[...hosts].filter(Boolean).join(", ") || "none"}), not ${profile.host}.`, host: profile.host } } }
+  }
+  const from = { host: tab ? hostOf(tab.url) : ts.toolsHost ?? "", title: tab?.title ?? "" }
+  await withProfiles((d) => {
+    const prev = d.pending[profile.host]
+    const by = ts.session?.sessionId ?? null
+    const replaced = prev && prev.savedBy !== by ? { tool_count: prev.tools?.length ?? 0, savedAt: prev.savedAt ?? null, from: prev.savedFrom ?? null } : prev?.replaced
+    d.pending[profile.host] = { ...profile, savedAt: Date.now(), savedBy: by, savedFrom: from, ...(replaced ? { replaced } : {}) }
+  })
+  return null
+}
 
 const summarize = (p, withTools) => ({
   host: p.host,
@@ -258,6 +279,7 @@ const summarize = (p, withTools) => ({
   savedAt: p.savedAt ?? null,
   keptAt: p.keptAt ?? null,
   replaced: p.replaced ?? null,
+  savedFrom: p.savedFrom ?? null,
   ...(withTools ? {
     notes: p.notes ?? "",
     tools: (p.tools ?? []).map((t) => ({ method: (t?.method ?? "POST").toUpperCase(), path: t?.path, description: t?.description, code: t?.code })),
@@ -395,33 +417,45 @@ async function updateBadge(ts) {
   await chrome.action.setTitle({ tabId, title: changed ? "Agent Socket: your link changed. Click to copy the new one." : "Agent Socket" }).catch(() => {})
 }
 
-// Indicator updates run one at a time, and a show re-checks the session when
-// its turn comes: otherwise a show started by a page load can land after
-// Stop's hide and leave "AI" on a tab that is no longer connected.
-let indicatorQueue = Promise.resolve()
-function queueIndicator(fn) {
-  indicatorQueue = indicatorQueue.then(fn, fn)
-  return indicatorQueue
+// Badge updates for a tab run one at a time, and each re-checks the session
+// when its turn comes: otherwise a show started by a page load can land after
+// Stop's hide and leave "AI" on a tab that is no longer connected. One queue
+// per tab, and only the badge (browser-side, quick) is queued: the pill goes
+// into the page, which can be busy for seconds, so nothing waits on it.
+const badgeQueues = new Map()  // tabId → the tab's last queued badge update
+function queueBadge(tabId, fn) {
+  const p = (badgeQueues.get(tabId) ?? Promise.resolve()).then(fn, fn)
+  const tail = p.catch(() => {})
+  badgeQueues.set(tabId, tail)
+  void tail.then(() => { if (badgeQueues.get(tabId) === tail) badgeQueues.delete(tabId) })
+  return p
+}
+
+const PILL_INJECT_MS = 3000
+// Fire and forget. A pill injected after its session ended asks for its state,
+// learns the tab isn't connected and removes itself.
+function injectPill(ts) {
+  if (!live(ts)) return
+  const done = chrome.scripting.executeScript({ target: { tabId: ts.tabId }, files: ["pill.js"] }).catch(() => {})
+  void Promise.race([done, new Promise((r) => setTimeout(r, PILL_INJECT_MS))])
 }
 
 function showIndicator(ts) {
-  return queueIndicator(async () => {
-    if (!live(ts)) return
-    await updateBadge(ts)
-    await chrome.scripting.executeScript({ target: { tabId: ts.tabId }, files: ["pill.js"] }).catch(() => {})
-  })
+  const p = queueBadge(ts.tabId, () => live(ts) ? updateBadge(ts) : undefined)
+  injectPill(ts)
+  return p
 }
 
 function hideIndicator(tabId) {
-  return queueIndicator(async () => {
+  void chrome.tabs.sendMessage(tabId, { type: "as_pill_remove" }).catch(() => {})
+  return queueBadge(tabId, async () => {
     if (sessions.has(tabId)) return  // a new session on the tab took over
     await chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {})
     await chrome.action.setTitle({ tabId, title: "Agent Socket" }).catch(() => {})
-    await chrome.tabs.sendMessage(tabId, { type: "as_pill_remove" }).catch(() => {})
   })
 }
 
-const refreshBadge = (ts) => queueIndicator(() => live(ts) ? updateBadge(ts) : undefined)
+const refreshBadge = (ts) => queueBadge(ts.tabId, () => live(ts) ? updateBadge(ts) : undefined)
 
 async function markLinkChanged(ts, info) {
   ts.linkChanged = { at: Date.now(), ...info }
@@ -472,18 +506,24 @@ async function swapTools(ts) {
 }
 
 // Closing a tab (or its whole window: one event per tab) ends its session.
+// After a worker wake these can fire before the saved sessions are restored,
+// so they wait for that first.
 chrome.tabs.onRemoved.addListener((tabId) => {
   ended.delete(tabId)
   evalBlocked.delete(tabId)
-  const ts = sessions.get(tabId)
-  if (ts) void stopConnect(ts, "tab_closed")
+  void restored.then(() => {
+    const ts = sessions.get(tabId)
+    if (ts) return stopConnect(ts, "tab_closed")
+  })
 })
 
 // Chrome can swap a tab's id (prerendered or restored pages): the session
 // moves to the new id with its link, timer and sites.
 chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
-  const ts = sessions.get(removedTabId)
-  if (ts) void rebind(ts, addedTabId)
+  void restored.then(() => {
+    const ts = sessions.get(removedTabId)
+    if (ts) return rebind(ts, addedTabId)
+  })
 })
 
 async function rebind(ts, tabId) {
@@ -491,6 +531,7 @@ async function rebind(ts, tabId) {
   if (sessions.has(tabId)) return void stopConnect(ts, "tab_closed")
   sessions.delete(old)
   ts.tabId = tabId
+  if (ts.held) ts.held = { ...ts.held, tabId }
   sessions.set(tabId, ts)
   evalBlocked.delete(old)
   void chrome.alarms.clear(timerAlarm(old))
@@ -505,6 +546,7 @@ async function rebind(ts, tabId) {
 // act any more, so all of them end, and each popup says why.
 chrome.permissions.onRemoved.addListener(() => {
   void (async () => {
+    await restored
     if (await chrome.permissions.contains(SITE_ACCESS)) return
     for (const ts of [...sessions.values()]) void stopConnect(ts, "access_removed")
   })()
@@ -531,7 +573,7 @@ async function saveSession(ts) {
   if (!ts.session) {
     // Still waiting to resume: keep the saved session, with the user's latest timer and sites.
     if (ts.held) {
-      ts.held = { ...ts.held, ...limits }
+      ts.held = { ...ts.held, ...limits, tabId: ts.tabId }
       await chrome.storage.session.set({ [savedKey(ts.tabId)]: ts.held }).catch(() => {})
     }
     return
@@ -547,6 +589,7 @@ async function saveSession(ts) {
       token: ts.token,
       registry: ts.registry,
       linkChanged: ts.linkChanged,
+      sessionIds: ts.sessionIds,
       ...limits,
     },
   }).catch(() => {})
@@ -566,19 +609,30 @@ const restored = (async () => {
       saved.push(legacy)
     }
   }
-  await Promise.all(saved.map(restoreSession))
+  await Promise.all(saved.map((v) => restoreSession(v).catch(() => endHeld(v))))
 })().catch(() => {})
+
+// A saved session we won't resume: the relay is holding it, so end it there
+// (the resume secret allows that); otherwise its link would keep answering
+// agents.md and tools.json for up to 24 h.
+function endHeld(saved) {
+  if (saved?.secret && saved.sessionId && saved.base) void endSession({ baseUrl: saved.base, sessionId: saved.sessionId, secret: saved.secret }).catch(() => {})
+}
 
 async function restoreSession(saved) {
   if (sessions.has(saved.tabId)) return
   const tab = await chrome.tabs.get(saved.tabId).catch(() => null)
   if (!tab || !saved.sessionId || !saved.secret) {
+    endHeld(saved)
+    // Its tab closed while the worker was stopped.
+    if (!tab && saved.sessionId) void logSession({ toolsHost: saved.toolsHost }, "tab_closed", { session: saved.sessionId })
     await chrome.storage.session.remove(savedKey(saved.tabId)).catch(() => {})
     if (tab) void hideIndicator(tab.id)
     return
   }
   const ts = newTabSession(tab.id)
   ts.held = saved
+  ts.sessionIds = saved.sessionIds ?? [saved.sessionId]
   ts.allowedOrigins = saved.allowedOrigins ?? [originOf(tab.url)].filter(Boolean)
   ts.anyOrigin = !!saved.anyOrigin
   ts.toolsHost = saved.toolsHost ?? null
@@ -643,10 +697,13 @@ function scheduleResumeRetry(ts, saved) {
   }
 }
 
-// Drops a session that never got going from the map (and its saved copy).
+// Drops a session that never got going from the map (and its saved copy),
+// ending on the relay any saved session it was resuming.
 async function discard(ts, reason) {
   cancelResumeRetry(ts)
   clearTimeout(ts.swapTimer)
+  endHeld(ts.held)
+  ts.held = null
   if (!live(ts)) return
   sessions.delete(ts.tabId)
   void chrome.alarms.clear(timerAlarm(ts.tabId))
@@ -757,6 +814,7 @@ async function doConnect(ts, saved) {
           await markLinkChanged(ts, { reason: reason ?? "resume_refused", closeCode, offlineMs })
           void logSession(ts, "link_changed", { session: sessionId, prior: priorSessionId })
         }
+        noteSessionId(ts, sessionId)
         ts.status = { status: "connected", sessionId }
         await saveSession(ts)
       },
@@ -788,6 +846,7 @@ async function doConnect(ts, saved) {
     if (saved?.url && !kept) void logSession(ts, "link_changed", { session: s.sessionId, prior: saved.sessionId })
     ts.session = s
     ts.held = null
+    noteSessionId(ts, s.sessionId)
     ts.url = link.url
     ts.token = link.token
     ts.registry = registry
@@ -849,9 +908,9 @@ async function stopConnect(ts, why = "stopped") {
     // close() ends the session on the relay, killing every token; revoke first anyway.
     if (token && s.connected) await Promise.race([s.revokeAgentToken(token).catch(() => {}), new Promise((r) => setTimeout(r, 2000))])
     s.close()
-  } else if (held?.secret && held.sessionId) {
+  } else {
     // Stopped while still waiting to resume: the relay is holding it, so end it there too.
-    void endSession({ baseUrl: held.base, sessionId: held.sessionId, secret: held.secret })
+    endHeld(held)
   }
   if (wasLive) await hideIndicator(ts.tabId)
   return { status: "idle" }
@@ -877,7 +936,8 @@ async function snapshot(tabId) {
     status: ts?.status ?? ended.get(tabId) ?? { status: "idle" },
     url: ts?.url ?? null,
     connected: ts?.session?.connected ?? false,
-    sessionId: ts?.session?.sessionId ?? null,
+    sessionId: ts?.session?.sessionId ?? ts?.held?.sessionId ?? null,
+    sessionIds: ts?.sessionIds ?? [],
     boundTab: tab && tabInfo(tab),
     profileHost: ts?.registry?.profile?.host ?? null,
     source: ts?.session ? ts.source : null,
@@ -890,13 +950,16 @@ async function snapshot(tabId) {
     paused: tab ? pauseInfo(ts, tab.url) : null,
     others,
     max: MAX_SESSIONS,
-    events: events.slice(-10),
+    // This tab's connection events (and the worker's own).
+    events: events.filter((e) => e.tab == null || e.tab === tabId || ts?.sessionIds.includes(e.sessionId)).slice(-10),
   }
 }
 
-// Our own pages (the popup) vs content scripts (the pill, in a connected tab's top frame).
-const fromPopup = (sender) => sender.id === chrome.runtime.id && !!sender.url?.startsWith(chrome.runtime.getURL(""))
-const pillTabId = (sender) => (sender.tab?.id != null && sender.frameId === 0 ? sender.tab.id : null)
+// Our own pages (the popup) vs content scripts (the pill, in a connected
+// tab's top frame); see lib/messages.js.
+const kindOf = (sender) => senderKind(sender, chrome.runtime.id, chrome.runtime.getURL(""))
+const fromPopup = (sender) => kindOf(sender) === "popup"
+const pillTabId = (sender) => (kindOf(sender) === "pill" ? sender.tab.id : null)
 
 // The tab a popup message is about: `msg.tabId`, else the tab in front.
 async function popupTabId(msg) {
@@ -912,10 +975,16 @@ async function sessionFor(msg, sender, { pill = false } = {}) {
 }
 
 // ── popup + pill messaging ──────────────────────────────────────────
+// Every message is checked against lib/messages.js before it is handled.
+const MESSAGE_KNOWN = (type) => Object.hasOwn(MESSAGE_SENDERS, type ?? "")
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   ;(async () => {
     try {
+      if (!senderAllowed(msg?.type, kindOf(sender))) {
+        sendResponse({ ok: false, error: MESSAGE_KNOWN(msg?.type) ? "not allowed from here" : `unknown message: ${msg?.type}` })
+        return
+      }
       await restored
       if (msg?.type === "connect") {
         const tabId = await popupTabId(msg)
@@ -926,7 +995,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const ts = tabId == null ? null : sessions.get(tabId)
         sendResponse({ ok: true, ...(ts ? await stopConnect(ts) : { status: "idle" }) })
       } else if (msg?.type === "disconnect_all") {
-        if (!fromPopup(sender)) throw new Error("not allowed")
         await Promise.all([...sessions.values()].map((ts) => stopConnect(ts)))
         sendResponse({ ok: true, status: "idle" })
       } else if (msg?.type === "snapshot") {
@@ -941,7 +1009,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         })
       } else if (msg?.type === "set_timer") {
         // A new length from now (popup Change), or 0: no limit (Remove timer).
-        if (!fromPopup(sender)) throw new Error("not connected")
         const ts = await sessionFor(msg, sender)
         const minutes = Number(msg.minutes)
         if (minutes !== 0 && !TIMER_CHOICES.includes(minutes)) throw new Error(`timer must be one of ${TIMER_CHOICES.join(", ")} minutes, or 0`)
@@ -964,14 +1031,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         scheduleToolSwap(ts, 0)
         sendResponse({ ok: true })
       } else if (msg?.type === "remove_origin") {
-        if (!fromPopup(sender)) throw new Error("not connected")
         const ts = await sessionFor(msg, sender)
         if (ts.allowedOrigins.includes(msg.origin)) void logSession(ts, "origin_removed", { site: originLabel(msg.origin) })
         ts.allowedOrigins = ts.allowedOrigins.filter((o) => o !== msg.origin)
         await saveSession(ts)
         sendResponse({ ok: true })
       } else if (msg?.type === "set_any_origin") {
-        if (!fromPopup(sender)) throw new Error("not connected")
         const ts = await sessionFor(msg, sender)
         ts.anyOrigin = msg.any === true
         logEvent("any_origin", { on: ts.anyOrigin, tab: ts.tabId })

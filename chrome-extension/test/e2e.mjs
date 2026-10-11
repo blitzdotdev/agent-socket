@@ -175,6 +175,11 @@ function startStatic() {
     const ct = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json" }[ext] ?? "application/octet-stream"
     // ?csp: a page whose CSP forbids eval (new Function), like x.com or GitHub.
     const csp = url.searchParams.has("csp") ? { "content-security-policy": "script-src 'self' 'unsafe-inline'" } : {}
+    // ?spin=<ms>: the page's main thread is busy for that long right after load.
+    const spin = parseInt(url.searchParams.get("spin") ?? "", 10)
+    if (spin > 0 && ext === ".html") {
+      body = String(body).replace("</body>", `<script>addEventListener("load", () => setTimeout(() => { const t = Date.now(); while (Date.now() - t < ${spin}) {} }, 0))</script></body>`)
+    }
     res.writeHead(200, { "content-type": `${ct}; charset=utf-8`, ...csp })
     res.end(body)
   })
@@ -551,9 +556,12 @@ async function main() {
     })
 
     await step("Discard drops a pending save without loading it", async () => {
-      const { json } = await callTool("/save_site_profile", { host: "elsewhere.example", tools: [{ path: "/nope", description: "x", code: "return 1" }] })
+      // Only for the sites this session may act on.
+      const far = await callTool("/save_site_profile", { host: "elsewhere.example", tools: [{ path: "/nope", description: "x", code: "return 1" }] })
+      if (far.status !== 403 || far.json?.error?.code !== "host_not_allowed") throw new Error(`other host: ${far.status} ${JSON.stringify(far.json)}`)
+      const { json } = await callTool("/save_site_profile", { tools: [{ path: "/nope", description: "x", code: "return 1" }] })
       if (json.status !== "pending_user_approval") throw new Error(JSON.stringify(json))
-      await clickInPopup(`#pending-other-list li[data-host="elsewhere.example"] button[data-action="discard"]`)
+      await clickInPopup(`#pending-list li[data-host="${localHost}"] button[data-action="discard"]`)
       await until(async () => !(await sendToSW(popupPage, { type: "list_profiles" })).pending.length)
       const list = await sendToSW(popupPage, { type: "list_profiles" })
       if (list.kept.map((k) => k.host).join() !== localHost) throw new Error(JSON.stringify(list))
@@ -1397,7 +1405,7 @@ async function main() {
       if (p?.tool_count !== 2 || p.replaced?.tool_count !== 1) throw new Error(JSON.stringify(p))
       await testPage.bringToFront()
       await popupPage.reload({ waitUntil: "domcontentloaded" })
-      await waitFor(() => popupPage.evaluate((h) => /Replaces an earlier save from another tab \(1 tool\)/.test(document.querySelector(`#pending-list li[data-host="${h}"]`)?.textContent ?? ""), localHost))
+      await waitFor(() => popupPage.evaluate((h) => /Replaces an earlier save from another tab \(on e2e-site\.test:\d+\) with 1 tool that you hadn't reviewed/.test(document.querySelector(`#pending-list li[data-host="${h}"]`)?.textContent ?? ""), localHost))
       await shotPopup("popup-pending-replaced")
       await sendToSW(popupPage, { type: "keep_profile", host: localHost })
       await toolsHave(baseA, "/twin_b"); await toolsHave(baseT, "/twin_b")
@@ -1406,17 +1414,27 @@ async function main() {
       await toolsLack(baseA, "/twin_b"); await toolsLack(baseT, "/twin_b")
     })
 
-    await step("edge: the popup shows the AI's pending saves for its own tab's site; others in Settings", async () => {
-      await callAt(baseA, "/save_site_profile", { host: "elsewhere.example", tools: [{ path: "/far", description: "far", code: "return 1" }] })
+    await step("edge: the popup shows the AI's pending saves for its own tab's site (with where they came from); others in Settings", async () => {
+      // A session can't save for a site it may not act on.
+      const bank = await callAt(baseA, "/save_site_profile", { host: "bank.example", tools: [{ path: "/x", description: "x", code: "return 1" }] })
+      if (bank.status !== 403 || bank.json?.error?.code !== "host_not_allowed") throw new Error(`bank: ${bank.status} ${JSON.stringify(bank.json)}`)
+      if ((await sendToSW(popupPage, { type: "list_profiles" })).pending.some((p) => p.host === "bank.example")) throw new Error("refused save stored")
+      const far = await browser.newPage()
+      await far.goto(`${otherUrl}?far`, { waitUntil: "load" })
+      const farId = await tabIdOf(far)
+      const rf = await sendToSW(popupPage, { type: "connect", tabId: farId })
+      if ((await callAt(baseOf(rf.url), "/save_site_profile", { tools: [{ path: "/far", description: "far", code: "return 1" }] })).status !== 200) throw new Error("far save")
       await testPage.bringToFront()
-      await waitFor(() => popupPage.evaluate(() => document.querySelector("#pending-card").hidden
-        && !!document.querySelector('#pending-other-list li[data-host="elsewhere.example"]')))
+      await waitFor(() => popupPage.evaluate((h) => document.querySelector("#pending-card").hidden
+        && /Saved by the AI on e2e-other\.test/.test(document.querySelector(`#pending-other-list li[data-host="${h}"]`)?.textContent ?? ""), otherHost))
       await callAt(baseA, "/save_site_profile", { tools: [{ path: "/near", description: "near", code: "return 1" }] })
       await waitFor(() => popupPage.evaluate((h) => !document.querySelector("#pending-card").hidden
         && [...document.querySelectorAll("#pending-list li")].map((li) => li.dataset.host).join() === h
+        && /Saved by the AI on e2e-site\.test/.test(document.querySelector("#pending-list li").textContent)
         && /1 more for other sites/.test(document.querySelector("#pending-elsewhere").textContent), localHost))
       await sendToSW(popupPage, { type: "discard_profile", host: localHost })
-      await sendToSW(popupPage, { type: "discard_profile", host: "elsewhere.example" })
+      await sendToSW(popupPage, { type: "discard_profile", host: otherHost })
+      await far.close()
     })
 
     await step("edge: two connected tabs in one window — /screenshot of the one behind is refused", async () => {
@@ -1471,11 +1489,20 @@ async function main() {
       await testPage.bringToFront()
       // A plain restart: both resume, same links.
       await restartWorker()
+      // Right away (resume maybe still in flight) each tab knows its own session id.
+      for (const [r, id] of [[r1, tabA], [r2, b2Id]]) {
+        const sn = await snapOf(id)
+        if (!sn.sessionIds.includes(sid(r.url)) || sn.sessionIds.length !== 1) throw new Error(`session ids: ${JSON.stringify(sn.sessionIds)}`)
+      }
       for (const [r, id] of [[r1, tabA], [r2, b2Id]]) {
         await waitFor(async () => (await agentStatus(baseOf(r.url))) === 200, 20000)
         const sn = await snapOf(id)
         if (sn.url !== r.url || sn.linkChanged) throw new Error(`after restart: ${JSON.stringify({ url: sn.url, changed: sn.linkChanged })}`)
       }
+      // Each tab's popup lists only its own connection events.
+      const evA = (await snapOf(tabA)).events
+      if (evA.some((e) => e.tab === b2Id || e.sessionId === sid(r2.url))) throw new Error(`A's events include B2's: ${JSON.stringify(evA)}`)
+      if (!evA.some((e) => e.type === "resumed" && e.sessionId === sid(r1.url))) throw new Error(`A's resume not listed: ${JSON.stringify(evA)}`)
       // Spoil B2's saved resume secret: the relay will refuse that resume.
       await popupPage.evaluate(async (id) => {
         const k = `as_session:${id}`
@@ -1497,6 +1524,90 @@ async function main() {
       await sendToSW(popupPage, { type: "disconnect", tabId: tabA })
     })
 
+    await step("edge: a busy page in one tab doesn't hold up Stop or Connect in others", async () => {
+      const q = await browser.newPage()
+      await q.goto(`${otherUrl}?q`, { waitUntil: "load" })
+      const r = await browser.newPage()
+      await r.goto(`http://${GENERIC_SITE_HOST}:${STATIC_PORT}/test-page.html?r`, { waitUntil: "load" })
+      const [qId, rId] = [await tabIdOf(q), await tabIdOf(r)]
+      await testPage.bringToFront()
+      const ra2 = await sendToSW(popupPage, { type: "connect", tabId: tabA })
+      const rq = await sendToSW(popupPage, { type: "connect", tabId: qId })
+      if (!ra2.ok || !rq.ok) throw new Error(JSON.stringify({ ra2, rq }))
+      // A loads a page that keeps its main thread busy for 10 s; the pill can't go in meanwhile.
+      await testPage.evaluate((u) => { location.href = u }, `${testUrl}?spin=10000`)
+      await sleep(1500)
+      let t0 = Date.now()
+      const stopQ = await sendToSW(popupPage, { type: "disconnect", tabId: qId })
+      const stopMs = Date.now() - t0
+      if (!stopQ.ok || stopMs > 3000) throw new Error(`Stop on Q took ${stopMs} ms: ${JSON.stringify(stopQ)}`)
+      if (await badge(qId) !== "") throw new Error(`Q's badge: ${await badge(qId)}`)
+      t0 = Date.now()
+      const conR = await sendToSW(popupPage, { type: "connect", tabId: rId })
+      const conMs = Date.now() - t0
+      if (!conR.ok || conMs > 5000) throw new Error(`Connect on R took ${conMs} ms: ${JSON.stringify(conR)}`)
+      if (await badge(rId) !== "AI") throw new Error(`R's badge: ${await badge(rId)}`)
+      console.log(`       with tab A busy: Stop ${stopMs} ms, Connect ${conMs} ms`)
+      // Once A is free again its pill arrives.
+      await waitFor(async () => { try { return await hasPill(testPage) } catch { return false } }, 20000)
+      await sendToSW(popupPage, { type: "disconnect", tabId: rId })
+      await sendToSW(popupPage, { type: "disconnect", tabId: tabA })
+      await q.close(); await r.close()
+      await testPage.goto(testUrl, { waitUntil: "load" })
+    })
+
+    await step("edge: a tab closed while the worker is asleep: its link dies at once", async () => {
+      const x = await browser.newPage()
+      await x.goto(`${otherUrl}?asleep`, { waitUntil: "load" })
+      const rx = await sendToSW(popupPage, { type: "connect", tabId: await tabIdOf(x) })
+      await testPage.bringToFront()
+      const sw = swTarget()
+      await (await sw.worker()).close()
+      await waitFor(async () => !browser.targets().includes(sw), 10000)
+      await x.close()  // wakes the worker with tabs.onRemoved, before it has restored anything
+      await waitFor(async () => (await fetch(rx.url)).status !== 200, 10000)
+        .catch(() => { throw new Error("the closed tab's link still serves agents.md") })
+      await waitFor(async () => eventsOf(await actEntries(), "tab_closed").some((e) => e.session === sid(rx.url)))
+    })
+
+    await step("edge: a saved session whose tab is gone is ended on the relay at the next restart", async () => {
+      const y = await browser.newPage()
+      await y.goto(`${otherUrl}?gone`, { waitUntil: "load" })
+      const yId = await tabIdOf(y)
+      const ry = await sendToSW(popupPage, { type: "connect", tabId: yId })
+      await testPage.bringToFront()
+      // As if the record had been saved under a tab id that no longer exists.
+      await popupPage.evaluate(async (id) => {
+        const v = (await chrome.storage.session.get(`as_session:${id}`))[`as_session:${id}`]
+        await chrome.storage.session.remove(`as_session:${id}`)
+        await chrome.storage.session.set({ "as_session:999999": { ...v, tabId: 999999 } })
+      }, yId)
+      await restartWorker()
+      await waitFor(async () => (await fetch(ry.url)).status !== 200, 10000)
+        .catch(() => { throw new Error("the unmappable session's link still serves agents.md") })
+      if ((await popupPage.evaluate(() => chrome.storage.session.getKeys())).some((k) => k.startsWith("as_session:"))) throw new Error("saved record kept")
+      await waitFor(async () => !(await hasPill(y)), 5000)
+      await y.close()
+    })
+
+    await step("edge: the popup's Activity card: this tab's own calls, or other tabs' labelled with their site", async () => {
+      const ra3 = await sendToSW(popupPage, { type: "connect", tabId: tabA })
+      await callAt(baseOf(ra3.url), "/get_text", { selector: "#counter" })
+      const blank = await browser.newPage()
+      await blank.goto(`http://${GENERIC_SITE_HOST}:${STATIC_PORT}/test-page.html?blank`, { waitUntil: "load" })
+      await waitFor(() => popupPage.evaluate((h) => document.querySelector("#activity-label").textContent === "Recent activity on other tabs"
+        && document.querySelector("#activity-list li .what")?.textContent === `${h} · get_text #counter`, localHost))
+      await testPage.bringToFront()
+      await blank.close()
+      await waitFor(() => popupPage.evaluate(() => document.querySelector("#activity-label").textContent === "Activity in this tab"
+        && document.querySelector("#activity-list li .what")?.textContent === "get_text #counter"))
+      // Nothing from other sessions on this tab's card.
+      const ids = await popupPage.evaluate(() => [...document.querySelectorAll("#activity-list li")].map((li) => li.dataset.id))
+      const mine = new Set(callsOf(await actEntries()).filter((e) => e.session === sid(ra3.url)).map((e) => e.id))
+      if (!ids.every((id) => mine.has(id))) throw new Error("another session's call on this tab's card")
+      await sendToSW(popupPage, { type: "disconnect", tabId: tabA })
+    })
+
     let cspPage, cspId
     await step("edge: the /eval CSP warning shows only for a connected tab whose page blocks it", async () => {
       cspPage = await browser.newPage()
@@ -1515,6 +1626,10 @@ async function main() {
       await cspPage.bringToFront()
       await waitFor(warn)
       await shotPopupFor(cspPage, "popup-csp-warning")
+      // Paused on a site the user hasn't allowed: that page isn't probed.
+      await cspPage.goto(`${otherUrl}?csp`, { waitUntil: "load" })
+      if ((await sendToSW(popupPage, { type: "check_user_scripts", tabId: cspId, recheck: true })).blocked) throw new Error("probed a paused tab")
+      await cspPage.goto(`${testUrl}?csp`, { waitUntil: "load" })
       // An unconnected tab is never probed.
       const plain = await browser.newPage()
       await plain.goto(`${testUrl}?csp&unconnected`, { waitUntil: "load" })
@@ -1555,6 +1670,10 @@ async function main() {
       await waitFor(() => popupPage.evaluate(() => /site access for Agent Socket was turned off/.test(document.querySelector("#status-text").textContent)))
       const again = await sendToSW(popupPage, { type: "connect", tabId: tabA })
       if (again.ok || !/site access/.test(again.error)) throw new Error(JSON.stringify(again))
+      const act = await browser.newPage()
+      await act.goto(`chrome-extension://${extId}/activity.html`, { waitUntil: "domcontentloaded" })
+      await waitFor(() => act.evaluate((id) => /site access turned off/.test(document.querySelector(`.group[data-session="${id}"]`)?.textContent ?? ""), sid(r1.url)))
+      await act.close()
     })
 
     await browser.close()

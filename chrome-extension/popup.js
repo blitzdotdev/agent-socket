@@ -54,6 +54,7 @@ const anySite = $("#any-site")
 const lengthSelect = $("#length-select")
 const anyDefault = $("#any-default")
 const activityList = $("#activity-list")
+const activityLabel = $("#activity-label")
 const openActivity = $("#open-activity")
 const activityLevel = $("#activity-level")
 const othersCard = $("#others-card")
@@ -198,7 +199,7 @@ async function render() {
   toolsSource.title = snap.source?.registry?.error ? `Registry: ${snap.source.registry.error}` : ""
   renderLimits(bound ? snap : null)
   await renderProfiles()
-  await renderActivity(snap.sessionId)
+  await renderActivity(bound, snap.sessionIds)
   await checkUserScripts()
 }
 
@@ -248,16 +249,23 @@ stopAll.addEventListener("click", async () => {
 
 const statusClass = (st) => (st < 300 ? "ok" : st < 500 ? "warn" : "err")
 let lastActivityJson = null
-// This tab's session's, while it has one; otherwise the latest of any.
-async function renderActivity(sessionId) {
-  const calls = (await activity.list(sessionId ? 200 : 30)).filter((e) => e.kind === "call" && (!sessionId || e.session === sessionId)).slice(0, 3)
-  const json = JSON.stringify(calls.map((e) => e.id))
+// A connected tab shows its own session's calls (all its session ids, so a
+// changed link or a resume in progress keeps them). Any other tab shows the
+// latest calls anywhere, labelled with their site.
+async function renderActivity(bound, sessionIds) {
+  const mine = (e) => sessionIds.includes(e.session)
+  const calls = (await activity.list(200)).filter((e) => e.kind === "call" && (!bound || mine(e))).slice(0, 3)
+  const json = JSON.stringify([bound, calls.map((e) => e.id)])
   if (json === lastActivityJson) return
   lastActivityJson = json
-  const items = calls.map((e) => el("li", { "data-id": e.id },
-    el("span", { class: "when", text: new Date(e.at).toLocaleTimeString() }),
-    el("span", { class: "what", title: e.summary, text: e.summary }),
-    el("span", { class: `st ${statusClass(e.status)}`, text: String(e.status) })))
+  activityLabel.textContent = bound ? "Activity in this tab" : "Recent activity on other tabs"
+  const items = calls.map((e) => {
+    const what = bound ? e.summary : `${e.host || "?"} · ${e.summary}`
+    return el("li", { "data-id": e.id },
+      el("span", { class: "when", text: new Date(e.at).toLocaleTimeString() }),
+      el("span", { class: "what", title: what, text: what }),
+      el("span", { class: `st ${statusClass(e.status)}`, text: String(e.status) }))
+  })
   activityList.replaceChildren(...(items.length ? items : [el("li", { class: "muted", text: "No AI actions yet." })]))
 }
 
@@ -381,11 +389,14 @@ function pendingItem(p) {
       el("pre", { text: String(t.code ?? "") })))
   }
   const r = p.replaced
-  const note = r ? el("div", { class: "replaced small", text: `Replaces an earlier save from another tab (${r.tool_count} tool${r.tool_count === 1 ? "" : "s"}) that you hadn't reviewed.` }) : null
+  const note = r ? el("div", { class: "replaced small", text: `Replaces an earlier save from another tab${r.from?.host ? ` (on ${r.from.host})` : ""} with ${r.tool_count} tool${r.tool_count === 1 ? "" : "s"} that you hadn't reviewed.` }) : null
+  const from = p.savedFrom
+  const by = from ? el("div", { class: "muted small saved-from", text: `Saved by the AI on ${from.host || "a tab"}${from.title ? ` (“${from.title.slice(0, 60)}”)` : ""}` }) : null
   return el("li", { "data-host": p.host },
     el("div", { class: "profile-head" },
       el("span", { class: "pending-title", text: `AI saved ${n} tool${n === 1 ? "" : "s"} for ${p.host}` }),
       keep, discard),
+    by,
     note,
     review)
 }
