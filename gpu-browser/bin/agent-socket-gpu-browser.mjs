@@ -67,15 +67,13 @@ const newer = (a, b) => {
   return false
 }
 const running = () => spawnSync("pgrep", ["-f", SERVER], { encoding: "utf8" }).stdout.trim()
-// Exactly the command the installed sudo rule allows. macOS: root joins the
-// account's launchd domain (Chromium needs it) and runs the inner sudo, whose
-// -H is needed because Apple's sudoers keeps HOME. Linux: sudo sets HOME to
-// the account's anyway, and -H would make sudo ask for a password.
-const startArgs = (acctUid) => MAC
-  ? ["/bin/launchctl", "asuser", String(acctUid), "/usr/bin/sudo", "-u", NAME, "-H", NODE, SERVER]
-  : ["-u", NAME, NODE, SERVER]
+// Exactly the command the installed sudo rule allows, on macOS and Linux
+// alike. No -H (it can make sudo ask for a password); the server takes its
+// account's home itself. Not launchctl asuser on macOS: in the launchd domain
+// of an account that never logs in, Chromium crashes when a context closes.
+const startArgs = ["-u", NAME, NODE, SERVER]
 // Does the installed sudo rule let us start without a password?
-const ruleActive = (acctUid) => spawnSync("sudo", ["-n", "-l", ...startArgs(acctUid)], { stdio: "ignore" }).status === 0
+const ruleActive = () => spawnSync("sudo", ["-n", "-l", ...startArgs], { stdio: "ignore" }).status === 0
 
 async function ask(question, def) {
   if (!TTY) return def
@@ -259,7 +257,7 @@ async function start(opts) {
       say(dim("sudo asks for your password to start the browser as " + NAME + "."))
       if (spawnSync("sudo", ["-v"], { stdio: "inherit" }).status !== 0) die("sudo failed")
     }
-    const p = spawn("sudo", ["-n", ...startArgs(inst.account_uid)], { cwd: "/", stdio: ["pipe", "pipe", "pipe"], detached: nopass })
+    const p = spawn("sudo", ["-n", ...startArgs], { cwd: "/", stdio: ["pipe", "pipe", "pipe"], detached: nopass })
     child = p
     let errText = ""
     readline.createInterface({ input: p.stdout }).on("line", (line) => {
@@ -293,7 +291,7 @@ async function start(opts) {
     setTimeout(() => process.exit(0), 8_000).unref()
   }
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, () => stop(sig))
-  launch(ruleActive(inst.account_uid))
+  launch(ruleActive())
 }
 
 function copy(text) {
@@ -313,7 +311,7 @@ function status() {
   say(`  installed: ${DIR}, version ${inst.version}${inst.hash === packageHash() ? "" : dim(" (this package differs: the next start updates it)")}`)
   say(`  account:   ${NAME} (uid ${inst.account_uid}), installed by ${inst.user}`)
   say(`  GPU:       ${inst.gpu || "unknown"}`)
-  say(`  sudo rule: ${ruleActive(inst.account_uid) ? "active (starts without a password)" : "not active (each start asks for your password)"}`)
+  say(`  sudo rule: ${ruleActive() ? "active (starts without a password)" : "not active (each start asks for your password)"}`)
   say(`  running:   ${running() ? "yes" : "no"}`)
   say(`  settings:  ${SETTINGS}`)
   say(`  remove:    npx @agent-socket/gpu-browser uninstall  (or: sudo sh ${DIR}/uninstall.sh)`)

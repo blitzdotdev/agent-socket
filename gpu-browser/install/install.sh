@@ -202,13 +202,7 @@ chown -R "root:$ROOTGROUP" "$DIR/.new"
 chmod -R go-w,a+rX "$DIR/.new"
 
 # ── 5. Self-test the new copy, started the way every run starts it ─────
-self_test() {
-  if [ "$OS" = Darwin ]; then
-    (cd / && /bin/launchctl asuser "$ACCT_UID" /usr/bin/sudo -u "$NAME" -H "$DIR/.new/node/bin/node" "$DIR/.new/app/server.mjs" --self-test 2>&1)
-  else
-    (cd / && sudo -u "$NAME" -H "$DIR/.new/node/bin/node" "$DIR/.new/app/server.mjs" --self-test 2>&1)
-  fi
-}
+self_test() { (cd / && sudo -u "$NAME" "$DIR/.new/node/bin/node" "$DIR/.new/app/server.mjs" --self-test 2>&1); }
 say "self-test: starting Chromium as $NAME"
 st=0
 out=$(self_test) || st=$?
@@ -295,11 +289,7 @@ if grep -Eq '^[#@]includedir[[:space:]]+(/private)?/etc/sudoers\.d' /etc/sudoers
     echo "# Lets $USER_NAME start the GPU browser server as $NAME without a password."
     echo "# Exactly this command, with exactly these arguments; nothing else."
     echo "# Named zz-... to come last: sudo applies the last rule that matches."
-    if [ "$OS" = Darwin ]; then
-      echo "$USER_NAME ALL=(root) NOPASSWD: /bin/launchctl asuser $ACCT_UID /usr/bin/sudo -u $NAME -H $NODE $SERVER"
-    else
-      echo "$USER_NAME ALL=($NAME) NOPASSWD: $NODE $SERVER"
-    fi
+    echo "$USER_NAME ALL=($NAME) NOPASSWD: $NODE $SERVER"
   } > "$tmp"
   if visudo -cf "$tmp" >/dev/null 2>&1; then
     chown "root:$ROOTGROUP" "$tmp"

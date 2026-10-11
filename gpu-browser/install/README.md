@@ -22,11 +22,9 @@ What `npx @agent-socket/gpu-browser` runs as root, once per install or update, a
    - `playwright-core`, with `npm install --ignore-scripts`;
    - Chromium.
 4. **A fresh root-owned copy** of all that: the account can run it but not change it.
-5. **A self-test of the new copy, started exactly the way every run starts it** (macOS: `launchctl asuser <uid> sudo -u …`). It launches Chromium with its sandbox, draws a WebGL canvas and reports the GPU. On Ubuntu 23.10+, where Chromium's sandbox needs an AppArmor profile, it adds one for this Chromium only. If the test fails, nothing is swapped in: an existing install keeps working, and a first install removes what it created (the account, its group, the AppArmor profile, `/opt/agent-socket-gpu-browser`); any other failure or Ctrl-C during a first install does the same.
+5. **A self-test of the new copy, started exactly the way every run starts it** (`sudo -u agent-socket-gpu-browser …`). It launches Chromium with its sandbox, draws a WebGL canvas and reports the GPU. On Ubuntu 23.10+, where Chromium's sandbox needs an AppArmor profile, it adds one for this Chromium only. If the test fails, nothing is swapped in: an existing install keeps working, and a first install removes what it created (the account, its group, the AppArmor profile, `/opt/agent-socket-gpu-browser`); any other failure or Ctrl-C during a first install does the same.
 6. **Swap** the new copy in, and write `install.env` (who installed it, version, the GPU).
-7. **The sudo rule** `/etc/sudoers.d/zz-agent-socket-gpu-browser`, validated with `visudo` first. It is named `zz-…` so it is read last: sudo applies the last rule that matches, and a broader rule of yours for the same command would otherwise ask for the password. It lets the installing user run exactly the start command (that one command, those arguments) without a password:
-   - **macOS:** `launchctl asuser <uid> /usr/bin/sudo -u agent-socket-gpu-browser -H …/node …/server.mjs`;
-   - **Linux:** `…/node …/server.mjs` as the account.
+7. **The sudo rule** `/etc/sudoers.d/zz-agent-socket-gpu-browser`, validated with `visudo` first. It is named `zz-…` so it is read last: sudo applies the last rule that matches, and a broader rule of yours for the same command would otherwise ask for the password. It lets the installing user run exactly the start command, `…/node …/server.mjs` as the account (that one command, those arguments), without a password.
 
    If `/etc/sudoers` doesn't read `/etc/sudoers.d`, there's no rule and each start asks for the password.
 8. **Checks whether the account can open your home folder.** If it can, the CLI offers to close it (`chmod 700`) and remembers the old mode for uninstall.

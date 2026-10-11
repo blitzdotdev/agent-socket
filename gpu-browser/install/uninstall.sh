@@ -44,8 +44,6 @@ fi
 
 if [ "$ours" = true ]; then
   if [ "$OS" = Darwin ]; then
-    uid=$(id -u "$NAME")
-    launchctl bootout "user/$uid" 2>/dev/null || true
     dscl . -delete "/Users/$NAME"
     case "$(dscl . -read "/Groups/$NAME" RealName 2>/dev/null)" in *"$MARK"*) dseditgroup -o delete "$NAME" 2>/dev/null || true ;; esac
   else
