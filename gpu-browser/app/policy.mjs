@@ -38,13 +38,14 @@ for (const [a, p] of [
 // site-local range (deprecated, still routable inside networks); 64:ff9b::/96
 // and 64:ff9b:1::/48 are NAT64, 2002::/16 6to4 and 2001::/32 Teredo: each
 // can carry an IPv4 address, so all are refused. Beyond these, only global
-// unicast (2000::/3) is allowed at all, minus its documentation (2001:db8::/32,
-// 3fff::/20), benchmarking (2001:2::/48), ORCHID (2001:10::/28, 2001:20::/28)
-// and SRv6 SID (5f00::/16) ranges.
+// unicast (2000::/3) is allowed at all, minus 2001::/23 (IETF protocol
+// assignments: Teredo, benchmarking, ORCHID, a few anycast services, none
+// of them websites), documentation (2001:db8::/32, 3fff::/20) and SRv6 SIDs
+// (5f00::/16).
 for (const [a, p] of [
   ["::", 96], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8], ["::ffff:0:0", 96], ["::ffff:0:0:0", 96],
-  ["64:ff9b::", 96], ["64:ff9b:1::", 48], ["2002::", 16], ["2001::", 32],
-  ["2001:db8::", 32], ["3fff::", 20], ["2001:2::", 48], ["2001:10::", 28], ["2001:20::", 28], ["5f00::", 16],
+  ["64:ff9b::", 96], ["64:ff9b:1::", 48], ["2002::", 16], ["2001::", 23],
+  ["2001:db8::", 32], ["3fff::", 20], ["5f00::", 16],
 ]) private6.addSubnet(a, p, "ipv6")
 const global6 = new net.BlockList()
 global6.addSubnet("2000::", 3, "ipv6")
