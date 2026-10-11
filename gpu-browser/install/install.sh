@@ -15,7 +15,7 @@ COMMENT="$MARK - created by npx @agent-socket/gpu-browser - remove with sudo sh 
 OS=$(uname -s)
 
 say() { printf '  %s\n' "$*"; }
-die() { printf 'install failed: %s\n' "$*" >&2; exit 1; }
+die() { printf 'install failed: %s\n' "$*" >&2; if [ "${locked:-}" = true ] && [ "${trapped:-}" != true ]; then rm -rf "$LOCK"; fi; exit 1; }
 event() { printf '@@install %s\n' "$*"; }
 
 USER_NAME="" USER_HOME="" PKG="" VERSION="" HASH=""
@@ -41,6 +41,20 @@ if [ ! -f "$PKG/app/server.mjs" ] || [ ! -f "$PKG/install/node.txt" ]; then die 
 printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' || die "bad --version"
 printf '%s' "$HASH" | grep -Eq '^[0-9a-f]{64}$' || die "bad --hash"
 
+# One install at a time: two would share .staging/.new/.old and could undo
+# each other. mkdir is atomic; the lock holds the installer's pid, so one
+# left by a killed run is taken over.
+LOCK=/var/run/agent-socket-gpu-browser-install.lock
+locked=false
+if ! mkdir "$LOCK" 2>/dev/null; then
+  other=$(cat "$LOCK/pid" 2>/dev/null || true)
+  if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then die "another install is running (pid $other); try again when it has finished"; fi
+  rm -rf "$LOCK"
+  mkdir "$LOCK" 2>/dev/null || die "another install is starting; try again in a moment"
+fi
+echo $$ > "$LOCK/pid"
+locked=true
+
 # One owner per machine: the sudo rule names the user who installed it.
 if [ -f "$DIR/install.env" ]; then
   owner=$(sed -n 's/^user=//p' "$DIR/install.env")
@@ -64,6 +78,11 @@ made_acct=false made_group=false made_dir=false made_aa=false done_ok=false
 cleanup() {
   [ "$done_ok" = true ] && return
   rm -rf "$DIR/.staging" "$DIR/.new" 2>/dev/null || true
+  # A profile this run added goes again, on an update too.
+  if [ "$made_aa" = true ]; then
+    apparmor_parser -R "/etc/apparmor.d/$NAME" 2>/dev/null || true
+    rm -f "/etc/apparmor.d/$NAME"
+  fi
   # An update stopped in the middle of the swap: put the old copy back.
   if [ -d "$DIR/.old" ]; then
     for d in node app browsers VERSION; do
@@ -72,10 +91,6 @@ cleanup() {
     rm -rf "$DIR/.old"
   fi
   [ "$FRESH" = true ] || return 0
-  if [ "$made_aa" = true ]; then
-    apparmor_parser -R "/etc/apparmor.d/$NAME" 2>/dev/null || true
-    rm -f "/etc/apparmor.d/$NAME"
-  fi
   if [ "$made_acct" = true ]; then
     pkill -9 -u "$NAME" 2>/dev/null || true
     if [ "$OS" = Darwin ]; then dscl . -delete "/Users/$NAME" 2>/dev/null || true; else userdel "$NAME" 2>/dev/null || true; fi
@@ -87,7 +102,9 @@ cleanup() {
   if [ "$made_dir" = true ]; then rm -rf "$DIR"; fi
   echo "  undone: this install's account and files are removed again" >&2
 }
-trap cleanup EXIT
+on_exit() { cleanup; rm -rf "$LOCK"; }
+trap on_exit EXIT
+trapped=true
 trap 'exit 130' INT TERM HUP
 
 ROOTGROUP=root
