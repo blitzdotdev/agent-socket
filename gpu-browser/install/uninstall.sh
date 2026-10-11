@@ -45,7 +45,7 @@ fi
 if [ "$ours" = true ]; then
   if [ "$OS" = Darwin ]; then
     dscl . -delete "/Users/$NAME"
-    case "$(dscl . -read "/Groups/$NAME" RealName 2>/dev/null)" in *"$MARK"*) dseditgroup -o delete "$NAME" 2>/dev/null || true ;; esac
+    case "$(dscl . -read "/Groups/$NAME" RealName 2>/dev/null)" in *"$MARK"*) dseditgroup -o delete "$NAME" >/dev/null 2>&1 || true ;; esac
   else
     gid=$(id -g "$NAME")
     userdel "$NAME"

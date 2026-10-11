@@ -12,8 +12,7 @@ on:
 
 concurrency:
   group: gpu-browser-${{ github.head_ref || github.run_id }}
-  # A run already going finishes (its diagnostics are the point); newer pushes queue.
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   scripts:
@@ -40,70 +39,3 @@ jobs:
         with:
           node-version: '22'
       - run: sh gpu-browser/test/install-smoke.sh
-      - name: Diagnostics (on failure, Linux)
-        if: failure() && runner.os == 'Linux'
-        run: |
-          echo "apparmor_restrict_unprivileged_userns=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)"
-          sudo dmesg | grep -iE 'apparmor="DENIED"' | tail -20 || true
-          # The same Chromium, sandbox on, each way the installer differs
-          # from a plain run: a profile glob over a dot directory, and a
-          # system account started through sudo.
-          export PLAYWRIGHT_BROWSERS_PATH=/tmp/diag-browsers
-          npx -y playwright-core@1.64.0 install --no-shell chromium >/dev/null 2>&1
-          try() { echo "== $1"; shift; timeout 30 "$@" --headless --dump-dom about:blank 2>&1 | grep -v 'dbus\|ssl_client\|WARNING' | tail -4; echo "exit=${PIPESTATUS[0]}"; }
-          profile() { printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile %s %s flags=(unconfined) {\n  userns,\n}\n' "$1" "$2" | sudo tee "/etc/apparmor.d/$1" >/dev/null; sudo apparmor_parser -r "/etc/apparmor.d/$1"; }
-          tmpchrome=$(ls -d /tmp/diag-browsers/chromium-*/chrome-linux64/chrome)
-          sudo useradd --system --home-dir /opt/diagx/home --no-create-home --shell /usr/sbin/nologin diaguser
-          sudo mkdir -p /opt/diagx/home && sudo chown diaguser /opt/diagx/home
-          ud() { echo "--user-data-dir=/opt/diagx/home/ud$1"; }
-          profile diag-tmp '/tmp/diag-browsers/**/chrome'
-          sudo useradd -m diagregular
-          (cd / && try "runner through sudo -u runner, profiled" sudo -u runner -H "$tmpchrome" --user-data-dir=/tmp/ud4)
-          (cd / && try "regular account through sudo, profiled" sudo -u diagregular -H "$tmpchrome" --user-data-dir=/home/diagregular/ud)
-          (cd / && try "system account through sudo, profiled" sudo -u diaguser -H "$tmpchrome" "$(ud 2)")
-          (cd / && try "system account through sudo, --no-sandbox" sudo -u diaguser -H "$tmpchrome" "$(ud 3)" --no-sandbox)
-          sudo apt-get install -y -qq strace >/dev/null 2>&1 || true
-          echo "== strace: system account, profiled: failed calls before the crash"
-          (cd / && sudo strace -f -qq -o /tmp/st.txt -u diaguser env HOME=/opt/diagx/home "$tmpchrome" "$(ud 5)" --headless --dump-dom about:blank >/dev/null 2>&1) || true
-          grep -E '= -1 E(PERM|ACCES|INVAL|NOSYS)|SIGTRAP|clone|unshare' /tmp/st.txt | grep -v 'ENOENT' | tail -40
-      - name: Diagnostics (on failure, macOS)
-        if: failure() && runner.os == 'macOS'
-        run: |
-          # A throwaway account like the installer's (no window-server
-          # session), started the same way; which variant survives closing
-          # a context?
-          mkdir -p /tmp/diag && cd /tmp/diag && npm i --no-save --silent playwright-core@1.64.0
-          PLAYWRIGHT_BROWSERS_PATH=/tmp/diag-browsers npx playwright-core install chromium >/dev/null 2>&1
-          chmod -R a+rX /tmp/diag /tmp/diag-browsers
-          cat > t.mjs <<'EOF'
-          process.env.DEBUG = "pw:browser"
-          const errs = []
-          process.stderr.write = (c) => { for (const l of String(c).split("\n")) if (/ERROR|FATAL|Check failed|signal|exception/i.test(l) && !/cv_display_link|dbus/.test(l) && errs.length < 8) errs.push(l.slice(0, 250)); return true }
-          const { chromium } = await import("/tmp/diag/node_modules/playwright-core/index.mjs")
-          const [channel, ...args] = process.argv.slice(2)
-          try {
-            const b = await chromium.launch({ channel, headless: true, chromiumSandbox: true, args: ["--enable-logging=stderr", ...args] })
-            let gone = false; b.on("disconnected", () => { gone = true })
-            await (await b.newContext()).newPage()
-            const c = await b.newContext(); const p = await c.newPage()
-            const r = await p.evaluate(() => { const g = document.createElement("canvas").getContext("webgl2"); const e = g && g.getExtension("WEBGL_debug_renderer_info"); return e ? g.getParameter(e.UNMASKED_RENDERER_WEBGL) : String(!!g) })
-            await c.close()
-            await new Promise((r) => setTimeout(r, 3000))
-            console.log(gone ? "FAIL (exited after a context closed)" : "ok", "| renderer:", r)
-            if (!gone) await b.close()
-          } catch (e) { console.log("FAIL", String(e.message).split("\n")[0]) }
-          for (const l of errs) console.log("   ", l)
-          EOF
-          uid=4501; while dscl /Search -search /Users UniqueID $uid 2>/dev/null | grep -q .; do uid=$((uid+1)); done
-          sudo dscl . -create /Users/diaguser
-          sudo dscl . -create /Users/diaguser UniqueID $uid
-          sudo dscl . -create /Users/diaguser PrimaryGroupID 20
-          sudo dscl . -create /Users/diaguser UserShell /usr/bin/false
-          sudo dscl . -create /Users/diaguser NFSHomeDirectory /tmp/diaghome
-          sudo mkdir -p /tmp/diaghome && sudo chown $uid:20 /tmp/diaghome
-          node=$(command -v node)
-          run() { echo "== $1"; shift; (cd / && "$@" env PLAYWRIGHT_BROWSERS_PATH=/tmp/diag-browsers TMPDIR=/tmp/diaghome "$node" /tmp/diag/t.mjs "${T[@]}"); }
-          T=(chromium); run "account, launchctl asuser (as installed)" sudo launchctl asuser $uid sudo -u diaguser -H
-          T=(chromium --disable-gpu); run "account, launchctl asuser, --disable-gpu" sudo launchctl asuser $uid sudo -u diaguser -H
-          T=(chromium-headless-shell); run "account, launchctl asuser, headless shell" sudo launchctl asuser $uid sudo -u diaguser -H
-          T=(chromium); run "account, plain sudo -u" sudo -u diaguser -H

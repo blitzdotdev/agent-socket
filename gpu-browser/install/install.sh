@@ -68,7 +68,7 @@ cleanup() {
     if [ "$OS" = Darwin ]; then dscl . -delete "/Users/$NAME" 2>/dev/null || true; else userdel "$NAME" 2>/dev/null || true; fi
   fi
   if [ "$made_group" = true ]; then
-    if [ "$OS" = Darwin ]; then dseditgroup -o delete "$NAME" 2>/dev/null || true
+    if [ "$OS" = Darwin ]; then dseditgroup -o delete "$NAME" >/dev/null 2>&1 || true
     elif getent group "$NAME" >/dev/null 2>&1; then groupdel "$NAME" 2>/dev/null || true; fi
   fi
   if [ "$made_dir" = true ]; then rm -rf "$DIR"; fi
