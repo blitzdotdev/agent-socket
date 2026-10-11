@@ -72,7 +72,7 @@ const { chromium } = await import("playwright-core")
 
 const LIMITS = {
   pages: 8, fileBytes: 64 << 20, files: 2000, resultChars: 256_000, opMs: 25_000, idleMs: 15 * 60_000,
-  tools: 30, askMs: 15 * 60_000, hostsPerAsk: 10, logLines: 100,
+  tools: 30, askMs: 15 * 60_000, hostsPerAsk: 10, asks: 10, logLines: 100,
   // One reply is one WebSocket frame, and the relay ends the whole session
   // on a frame over 4,194,304 characters. Replies are measured against this
   // budget first; images over a part's size come back in parts (/image).
@@ -128,17 +128,24 @@ function authorized(req) {
 }
 const NEED_AUTH = "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"gpu-browser\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 
-// Connect to the first address that answers (all were vetted as public).
+// Connect to the first address that answers (all were vetted as public),
+// giving each at most 5 s so one that drops packets can't use up the page's
+// time. Returns a cancel function for when the client goes away first.
 function connectAny(addrs, port, onConnect, onFail) {
+  let sock = null, timer = null, done = false
   const next = (i) => {
-    if (i >= addrs.length) return onFail()
-    const sock = net.connect(port, addrs[i])
-    const fallback = () => { sock.destroy(); next(i + 1) }
-    sock.once("error", fallback)
+    if (done) return
+    if (i >= addrs.length) { done = true; return onFail() }
+    const s = sock = net.connect(port, addrs[i])
+    let moved = false
+    const fallback = () => { if (moved) return; moved = true; clearTimeout(timer); s.destroy(); next(i + 1) }
+    timer = setTimeout(fallback, 5000)
+    s.once("error", fallback)
     // Once connected, errors belong to the tunnel, never to the next address.
-    sock.once("connect", () => { sock.off("error", fallback); onConnect(sock) })
+    s.once("connect", () => { moved = true; clearTimeout(timer); s.off("error", fallback); done = true; onConnect(s) })
   }
   next(0)
+  return () => { if (!done) { done = true; clearTimeout(timer); sock?.destroy() } }
 }
 
 function startProxy() {
@@ -167,7 +174,7 @@ function startProxy() {
     const port = Number(req.url.slice(i + 1))
     const v = await vet(req.url.slice(0, i), port)
     if (v.reason) { sock.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return }
-    connectAny(v.addrs, port, (up) => {
+    const cancel = connectAny(v.addrs, port, (up) => {
       if (sock.destroyed) return up.destroy()
       sock.write("HTTP/1.1 200 Connection Established\r\n\r\n")
       if (head?.length) up.write(head)
@@ -176,6 +183,7 @@ function startProxy() {
       up.on("error", () => sock.destroy())
       sock.on("close", () => up.destroy())
     }, () => sock.end("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+    sock.on("close", cancel)
   })
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)))
 }
@@ -540,7 +548,7 @@ function guard(name, fn) {
     } catch (e) {
       const msg = String(e.message || e).split("\n").slice(0, 3).join(" ")
       log(name + " failed: " + msg)
-      const status = { no_page: 404, too_many_pages: 429, host_not_allowed: 403, image_too_large: 413, no_image: 404, timeout: 504, unavailable: 503 }[e.code] || 400
+      const status = { no_page: 404, too_many_pages: 429, too_many_requests: 429, host_not_allowed: 403, image_too_large: 413, no_image: 404, timeout: 504, unavailable: 503 }[e.code] || 400
       return err(status, e.code || "failed", msg)
     }
   }
@@ -618,7 +626,7 @@ const builtins = [
       for (const id of ids) if (await closePage(id)) n++
       return { closed: n, pages: [...pages.keys()] }
     }) },
-  { path: "/request", description: "Ask the owner to let pages reach more hosts (a CDN, an API). Body: {\"hosts\": [\"cdn.jsdelivr.net\", \"*.example.com\"], \"reason\": \"one line the owner will see\"}. The owner is asked on their machine; this returns 202 with a taskId: poll <link base>/_as_tasks/<taskId> every few seconds until it answers {approved, allowed_hosts}. Uploading what you need with /files needs no approval.",
+  { path: "/request", description: "Ask the owner to let pages reach more hosts (a CDN, an API). Body: {\"hosts\": [\"cdn.jsdelivr.net\", \"*.example.com\"], \"reason\": \"one line the owner will see\"}. The owner is asked on their machine; this returns 202 with a taskId: poll <link base>/_as_tasks/<taskId> every few seconds until it answers {approved, allowed_hosts}. At most 10 requests wait at a time (429 beyond that). Uploading what you need with /files needs no approval.",
     input_schema: { type: "object", required: ["hosts", "reason"], properties: { hosts: { type: "array", items: { type: "string" } }, reason: { type: "string" } } },
     handler: guard("request", async (a) => {
       const hosts = Array.isArray(a.hosts) ? [...new Set(a.hosts.map((h) => String(h).toLowerCase()))] : []
@@ -630,6 +638,8 @@ const builtins = [
       // missing unless that exact wildcard was granted.
       const missing = hosts.filter((h) => !allowed.has(h) && (h.startsWith("*.") || !hostAllowed(allowed, h)))
       if (!missing.length) return { approved: true, answer: "already", allowed_hosts: [...allowed] }
+      // Checked before the owner is prompted, so requests can't flood them.
+      if (asks.size >= LIMITS.asks) throw fail("too_many_requests", LIMITS.asks + " requests are already waiting for the owner; poll those first")
       const reason = clean(String(a.reason || "").replace(/\s+/g, " ").trim()).slice(0, 300) || "(no reason given)"
       const taskId = crypto.randomUUID()
       const id = ask("hosts", "An agent asks to let the GPU browser reach:\n\n  " + missing.join("\n  ") + "\n\nIts reason: " + reason, { hosts: missing, taskId })
