@@ -160,12 +160,18 @@ function startProxy() {
     const headers = { ...req.headers, host: u.host }
     delete headers["proxy-connection"]
     delete headers["proxy-authorization"]
-    const up = http.request({ host: v.address, port, method: req.method, path: u.pathname + u.search, headers }, (r) => {
-      res.writeHead(r.statusCode, r.headers)
-      r.pipe(res)
-    })
-    up.on("error", () => res.destroy())
-    req.pipe(up)
+    // The same bounded, cancellable fallback over the vetted addresses as CONNECT.
+    const cancel = connectAny(v.addrs, port, (conn) => {
+      if (res.destroyed) return conn.destroy()
+      const up = http.request({ createConnection: () => conn, method: req.method, path: u.pathname + u.search, headers }, (r) => {
+        res.writeHead(r.statusCode, r.headers)
+        r.pipe(res)
+      })
+      up.on("error", () => res.destroy())
+      res.on("close", () => up.destroy())
+      req.pipe(up)
+    }, () => { if (res.headersSent) res.destroy(); else res.writeHead(502).end() })
+    res.on("close", cancel)
   })
   server.on("connect", async (req, sock, head) => {
     sock.on("error", () => {})
