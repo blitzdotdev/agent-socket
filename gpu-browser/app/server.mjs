@@ -193,7 +193,7 @@ let stopping = false
 const pages = new Map() // id -> { ctx, page, logs, blocked, last }
 
 async function launch() {
-  browser = await chromium.launch({
+  const b = await chromium.launch({
     // channel "chromium": the full Chromium in new headless mode, which uses
     // the GPU (the default headless shell renders in software).
     channel: launchOpts.executablePath ? undefined : "chromium",
@@ -217,17 +217,31 @@ async function launch() {
   // Without a display session (this account never logs in), Chromium on
   // macOS crashes when its last window closes; one page stays open for good,
   // and the GPU probe runs in a second page of its context.
-  const keeperCtx = await browser.newContext()
-  await keeperCtx.newPage()
-  keeper = keeperCtx
-  browser.on("disconnected", () => {
+  try {
+    const keeperCtx = await b.newContext()
+    await keeperCtx.newPage()
+    keeper = keeperCtx
+  } catch (e) { await b.close().catch(() => {}); throw e }
+  browser = b
+  b.on("disconnected", () => {
     pages.clear()
     browser = null
     keeper = null
     if (stopping) return
     log("browser exited, relaunching (open pages are gone)")
-    setTimeout(() => launch().catch((e) => log("relaunch failed: " + e.message)), 1000)
+    relaunch(1)
   })
+}
+// Relaunches back off (1, 2, 4, 8, 16 s). If Chromium still won't start,
+// the session ends rather than answer "unavailable" until someone notices.
+let onBrowserGone = () => process.exit(1)
+function relaunch(n) {
+  setTimeout(() => launch().catch((e) => {
+    log("relaunch failed: " + String(e.message).split("\n")[0])
+    if (stopping) return
+    if (n < 5) relaunch(n + 1)
+    else { log("Chromium doesn't start any more; ending the session"); onBrowserGone() }
+  }), 1000 * 2 ** (n - 1))
 }
 async function ready() {
   for (let i = 0; !browser && i < 50; i++) await sleep(100)
@@ -716,6 +730,7 @@ async function main() {
     } catch (e) { log("control line failed: " + e.message) }
   })
   lines.on("close", () => stop("owner gone"))
+  onBrowserGone = () => stop("browser failed")
   // A timer holds at most 2^31-1 ms (~24.8 days); longer sessions re-arm.
   const arm = () => {
     const left = endsAt - Date.now()
