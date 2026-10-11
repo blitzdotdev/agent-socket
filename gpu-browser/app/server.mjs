@@ -133,7 +133,8 @@ async function vet(host, port) {
   try { addrs = await dns.lookup(h, { all: true, verbatim: true }) } catch { return deny("does not resolve") }
   if (!addrs.length) return deny("does not resolve")
   for (const a of addrs) if (privateAddr(a.address)) return deny("resolves to a private address")
-  return { address: addrs[0].address, addrs: addrs.map((a) => a.address) }
+  // At most 4 to try (5 s each), however many the name resolves to.
+  return { address: addrs[0].address, addrs: addrs.slice(0, 4).map((a) => a.address) }
 }
 
 // Per-run credentials: the proxy listens on loopback, which other local
@@ -179,7 +180,9 @@ function startProxy() {
     const headers = { ...req.headers, host: u.host }
     delete headers["proxy-connection"]
     delete headers["proxy-authorization"]
-    // The same bounded, cancellable fallback over the vetted addresses as CONNECT.
+    // The same bounded, cancellable fallback over the vetted addresses as
+    // CONNECT; nothing if the browser already gave up during the DNS lookup.
+    if (res.destroyed || req.destroyed) return
     const cancel = connectAny(v.addrs, port, (conn) => {
       if (res.destroyed) return conn.destroy()
       const up = http.request({ createConnection: () => conn, method: req.method, path: u.pathname + u.search, headers }, (r) => {
@@ -199,6 +202,7 @@ function startProxy() {
     const port = Number(req.url.slice(i + 1))
     const v = await vet(req.url.slice(0, i), port)
     if (v.reason) { sock.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return }
+    if (sock.destroyed) return // the browser gave up during the DNS lookup
     const cancel = connectAny(v.addrs, port, (up) => {
       if (sock.destroyed) return up.destroy()
       sock.write("HTTP/1.1 200 Connection Established\r\n\r\n")
