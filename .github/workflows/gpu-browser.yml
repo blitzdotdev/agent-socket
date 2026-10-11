@@ -70,18 +70,41 @@ jobs:
       - name: Diagnostics (on failure, macOS)
         if: failure() && runner.os == 'macOS'
         run: |
-          # Does closing a browser context end Chromium for the runner (who
-          # has a window-server session) too, or only for the account?
+          # A throwaway account like the installer's (no window-server
+          # session), started the same way; which variant survives closing
+          # a context?
           mkdir -p /tmp/diag && cd /tmp/diag && npm i --no-save --silent playwright-core@1.64.0
-          PLAYWRIGHT_BROWSERS_PATH=/tmp/diag-browsers npx playwright-core install --no-shell chromium >/dev/null 2>&1
+          PLAYWRIGHT_BROWSERS_PATH=/tmp/diag-browsers npx playwright-core install chromium >/dev/null 2>&1
+          chmod -R a+rX /tmp/diag /tmp/diag-browsers
           cat > t.mjs <<'EOF'
-          const { chromium } = await import("playwright-core")
-          const b = await chromium.launch({ channel: "chromium", headless: true, chromiumSandbox: true, args: ["--enable-logging=stderr", "--v=0"] })
-          let gone = false; b.on("disconnected", () => { gone = true })
-          await (await b.newContext()).newPage()
-          const c = await b.newContext(); await c.newPage(); await c.close()
-          await new Promise((r) => setTimeout(r, 3000))
-          console.log(gone ? "FAIL: Chromium exited after a context closed" : "ok: Chromium still running after a context closed")
-          if (!gone) await b.close()
+          process.env.DEBUG = "pw:browser"
+          const errs = []
+          process.stderr.write = (c) => { for (const l of String(c).split("\n")) if (/ERROR|FATAL|Check failed|signal|exception/i.test(l) && !/cv_display_link|dbus/.test(l) && errs.length < 8) errs.push(l.slice(0, 250)); return true }
+          const { chromium } = await import("/tmp/diag/node_modules/playwright-core/index.mjs")
+          const [channel, ...args] = process.argv.slice(2)
+          try {
+            const b = await chromium.launch({ channel, headless: true, chromiumSandbox: true, args: ["--enable-logging=stderr", ...args] })
+            let gone = false; b.on("disconnected", () => { gone = true })
+            await (await b.newContext()).newPage()
+            const c = await b.newContext(); const p = await c.newPage()
+            const r = await p.evaluate(() => { const g = document.createElement("canvas").getContext("webgl2"); const e = g && g.getExtension("WEBGL_debug_renderer_info"); return e ? g.getParameter(e.UNMASKED_RENDERER_WEBGL) : String(!!g) })
+            await c.close()
+            await new Promise((r) => setTimeout(r, 3000))
+            console.log(gone ? "FAIL (exited after a context closed)" : "ok", "| renderer:", r)
+            if (!gone) await b.close()
+          } catch (e) { console.log("FAIL", String(e.message).split("\n")[0]) }
+          for (const l of errs) console.log("   ", l)
           EOF
-          PLAYWRIGHT_BROWSERS_PATH=/tmp/diag-browsers DEBUG=pw:browser node t.mjs 2>&1 | grep -v 'dbus' | tail -25
+          uid=4501; while dscl /Search -search /Users UniqueID $uid 2>/dev/null | grep -q .; do uid=$((uid+1)); done
+          sudo dscl . -create /Users/diaguser
+          sudo dscl . -create /Users/diaguser UniqueID $uid
+          sudo dscl . -create /Users/diaguser PrimaryGroupID 20
+          sudo dscl . -create /Users/diaguser UserShell /usr/bin/false
+          sudo dscl . -create /Users/diaguser NFSHomeDirectory /tmp/diaghome
+          sudo mkdir -p /tmp/diaghome && sudo chown $uid:20 /tmp/diaghome
+          node=$(command -v node)
+          run() { echo "== $1"; shift; (cd / && "$@" env PLAYWRIGHT_BROWSERS_PATH=/tmp/diag-browsers TMPDIR=/tmp/diaghome "$node" /tmp/diag/t.mjs "${T[@]}"); }
+          T=(chromium); run "account, launchctl asuser (as installed)" sudo launchctl asuser $uid sudo -u diaguser -H
+          T=(chromium --disable-gpu); run "account, launchctl asuser, --disable-gpu" sudo launchctl asuser $uid sudo -u diaguser -H
+          T=(chromium-headless-shell); run "account, launchctl asuser, headless shell" sudo launchctl asuser $uid sudo -u diaguser -H
+          T=(chromium); run "account, plain sudo -u" sudo -u diaguser -H
