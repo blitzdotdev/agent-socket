@@ -244,8 +244,15 @@ function pageOf(id) {
   p.last = Date.now()
   return p
 }
+// Pages being opened count against the limit from the first moment: calls
+// run concurrently, and each awaits Chromium before its page is in `pages`.
+let opening = 0
 async function openPage(a) {
-  if (pages.size >= LIMITS.pages) throw fail("too_many_pages", "at most " + LIMITS.pages + " pages; close some with POST /close")
+  if (pages.size + opening >= LIMITS.pages) throw fail("too_many_pages", "at most " + LIMITS.pages + " pages; close some with POST /close")
+  opening++
+  try { return await openPageNow(a) } finally { opening-- }
+}
+async function openPageNow(a) {
   const target = new URL(typeof a.url === "string" && a.url ? a.url : "index.html", UPLOAD_ORIGIN + "/")
   if (!/^https?:$/.test(target.protocol)) throw fail("bad_url", "only http(s) URLs")
   if (target.origin !== UPLOAD_ORIGIN && !hostAllowed(allowed, target.hostname)) {
@@ -367,6 +374,21 @@ function ask(kind, text, extra) {
   event("ask " + id + " " + kind + " " + b64(text) + (a.hosts ? " " + a.hosts.join(" ") : ""))
   return id
 }
+// completeTask throws while the link to the relay is down; such answers are
+// kept and sent once the SDK has resumed the session (the task survives a
+// resume), so the agent's poll still gets them.
+const unsent = []
+function complete(taskId, reply) {
+  try { session?.completeTask(taskId, reply) }
+  catch { unsent.push([taskId, reply]); log("the relay link is down; the answer goes to the agent when it's back") }
+}
+function sendUnsent() {
+  while (unsent.length) {
+    const [taskId, reply] = unsent[0]
+    try { session.completeTask(taskId, reply) } catch { return }
+    unsent.shift()
+  }
+}
 function answer(id, choice) {
   const a = asks.get(id)
   if (!a) return log("no pending request " + id)
@@ -379,8 +401,7 @@ function answer(id, choice) {
     if (choice === "always") event("persist-hosts " + a.hosts.join(" "))
     log((yes ? "allowed " : "refused ") + a.hosts.join(", ") + (choice === "always" ? " (always)" : yes ? " (this session)" : choice === "timeout" ? " (no answer)" : ""))
     // Throws while the link is down; the agent's poll then never completes.
-    try { session?.completeTask(a.taskId, { body: { approved: yes, answer: choice, hosts: a.hosts, allowed_hosts: [...allowed].slice(0, 100) } }) }
-    catch (e) { log("could not tell the agent: " + e.message) }
+    complete(a.taskId, { body: { approved: yes, answer: choice, hosts: a.hosts, allowed_hosts: [...allowed].slice(0, 100) } })
   }
 }
 
@@ -622,7 +643,14 @@ async function main() {
     sandbox: INSTALLED || cfg.chromium?.sandbox !== false,
   }
   pwVersion = cfg.playwrightVersion || null
-  if (Number(cfg.minutes) > 0) endsAt = Date.now() + Number(cfg.minutes) * 60_000
+  // The link's lifetime is a safety limit: a value that isn't a number of
+  // minutes (0 = until stopped) refuses to start rather than meaning "forever".
+  const minutes = cfg.minutes ?? 0
+  if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes < 0) {
+    log("minutes must be a number of minutes, 0 for no limit (got " + JSON.stringify(cfg.minutes) + ")")
+    process.exit(2)
+  }
+  if (minutes > 0) endsAt = Date.now() + minutes * 60_000
   // Proves the CLI's stdin reaches us (it passes through sudo, and launchctl on macOS).
   event("ready")
 
@@ -662,6 +690,7 @@ async function main() {
     baseUrl: cfg.relay, appId: "agent-socket-gpu-browser", appDescription: "Chromium with its owner's GPU, for WebGL/WebGPU renders",
     agentsMd: agentsMd(), tools: toolList(),
     onSessionChanged: ({ tokensRemapped }) => { for (const url of Object.values(tokensRemapped || {})) event("link " + url) },
+    onReconnect: () => sendUnsent(),
   })
   const link = await session.mintAgentToken({ label: "gpu-browser" })
   event("link " + link.url)
