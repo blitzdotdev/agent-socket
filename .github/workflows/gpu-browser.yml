@@ -42,5 +42,16 @@ jobs:
       - name: Diagnostics (on failure)
         if: failure() && runner.os == 'Linux'
         run: |
-          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns || true
-          sudo dmesg | grep -iE 'apparmor|chrome|segfault' | tail -40 || true
+          echo "apparmor_restrict_unprivileged_userns=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)"
+          sudo dmesg | grep -iE 'apparmor="DENIED"|traps: chrome|segfault' | tail -20 || true
+          # The same Chromium as the runner user: sandbox on, off, and with
+          # the installer's AppArmor profile, each with Chromium's own log.
+          export PLAYWRIGHT_BROWSERS_PATH=/tmp/diag-browsers
+          npx -y playwright-core@1.64.0 install --no-shell chromium >/dev/null
+          chrome=$(ls -d /tmp/diag-browsers/chromium-*/chrome-linux64/chrome)
+          try() { echo "== $1"; shift; timeout 30 "$chrome" --headless --enable-logging=stderr --v=0 "$@" --dump-dom about:blank 2>&1 | grep -v 'dbus\|ssl_client' | tail -12; echo "exit=${PIPESTATUS[0]}"; }
+          try "sandbox on"
+          try "sandbox off" --no-sandbox
+          printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile diag-chrome /tmp/diag-browsers/**/chrome flags=(unconfined) {\n  userns,\n}\n' | sudo tee /etc/apparmor.d/diag-chrome >/dev/null
+          sudo apparmor_parser -r /etc/apparmor.d/diag-chrome
+          try "sandbox on, AppArmor profile"
