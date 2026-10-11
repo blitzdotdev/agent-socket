@@ -101,6 +101,9 @@ test("buildAgentsMd: notes, sources, workflow, and the 64 KB cap", () => {
     assert.ok(md.includes(s), s)
   }
   assert.ok(!md.includes("more"), "only the first description line")
+  // The relay skips its preamble for docs that name tools.json, so the briefing carries it.
+  assert.ok(md.startsWith("<!-- as:contract-v1 -->\n## Tool-calling reference"), "framework preamble first")
+  assert.ok(md.includes('"Accept edits"'), "harness-block advice")
   assert.match(buildAgentsMd({ host: "x.com", registry: { status: "unreachable" }, local: null, tools }), /registry was unreachable/)
   assert.match(buildAgentsMd({ host: "x.com", registry: { status: "generic", profile: { host: "*", version: 1, notes: "GEN" } }, local: null, tools }), /generic profile[\s\S]*## Site notes \(generic\)\n\nGEN/)
   const big = buildAgentsMd({
