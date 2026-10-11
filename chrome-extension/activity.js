@@ -31,7 +31,7 @@ const statusClass = (st) => (st < 300 ? "ok" : st < 500 ? "warn" : "err")
 const time = (at) => new Date(at).toLocaleTimeString()
 const dateTime = (at) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
 const duration = (ms) => (ms == null ? "" : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`)
-const ENDINGS = { stopped: "stopped", expired: "timer ran out", tab_closed: "tab closed" }
+const ENDINGS = { stopped: "stopped", expired: "timer ran out", tab_closed: "tab closed", access_removed: "site access turned off" }
 
 async function load() {
   entries = await store.list()
