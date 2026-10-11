@@ -15,7 +15,7 @@ COMMENT="$MARK - created by npx @agent-socket/gpu-browser - remove with sudo sh 
 OS=$(uname -s)
 
 say() { printf '  %s\n' "$*"; }
-die() { printf 'install failed: %s\n' "$*" >&2; rm -rf "$DIR/.staging" "$DIR/.new" 2>/dev/null || true; exit 1; }
+die() { printf 'install failed: %s\n' "$*" >&2; exit 1; }
 event() { printf '@@install %s\n' "$*"; }
 
 USER_NAME="" USER_HOME="" PKG="" VERSION="" HASH=""
@@ -49,6 +49,34 @@ if [ -f "$DIR/install.env" ]; then
   fi
 fi
 
+# A failed first install leaves nothing behind: whatever this run created
+# (account, group, AppArmor profile, $DIR) is removed again on any exit
+# that isn't success. A failed update keeps the working install it had.
+FRESH=true
+[ -f "$DIR/install.env" ] && FRESH=false
+made_acct=false made_group=false made_dir=false made_aa=false done_ok=false
+cleanup() {
+  [ "$done_ok" = true ] && return
+  rm -rf "$DIR/.staging" "$DIR/.new" 2>/dev/null || true
+  [ "$FRESH" = true ] || return 0
+  if [ "$made_aa" = true ]; then
+    apparmor_parser -R "/etc/apparmor.d/$NAME" 2>/dev/null || true
+    rm -f "/etc/apparmor.d/$NAME"
+  fi
+  if [ "$made_acct" = true ]; then
+    pkill -9 -u "$NAME" 2>/dev/null || true
+    if [ "$OS" = Darwin ]; then dscl . -delete "/Users/$NAME" 2>/dev/null || true; else userdel "$NAME" 2>/dev/null || true; fi
+  fi
+  if [ "$made_group" = true ]; then
+    if [ "$OS" = Darwin ]; then dseditgroup -o delete "$NAME" 2>/dev/null || true
+    elif getent group "$NAME" >/dev/null 2>&1; then groupdel "$NAME" 2>/dev/null || true; fi
+  fi
+  if [ "$made_dir" = true ]; then rm -rf "$DIR"; fi
+  echo "  undone: this install's account and files are removed again" >&2
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+
 ROOTGROUP=root
 [ "$OS" = Darwin ] && ROOTGROUP=wheel
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
@@ -64,12 +92,19 @@ if [ "$OS" = Darwin ]; then
     esac
   else
     say "account $NAME: creating (no password, can't log in; the way MacPorts makes its macports user)"
-    if ! dscl . -read "/Groups/$NAME" >/dev/null 2>&1; then
+    if dscl . -read "/Groups/$NAME" >/dev/null 2>&1; then
+      case "$(dscl . -read "/Groups/$NAME" RealName 2>/dev/null)" in
+        *"$MARK"*) ;;
+        *) die "a group named $NAME exists that this installer didn't create; not touching it" ;;
+      esac
+    else
       dseditgroup -o create -r "$MARK" "$NAME" || die "could not create the group $NAME"
+      made_group=true
     fi
     gid=$(dscl . -read "/Groups/$NAME" PrimaryGroupID | awk '{print $2}')
     uid=501
     while dscl /Search -search /Users UniqueID "$uid" 2>/dev/null | grep -q .; do uid=$((uid + 1)); done
+    made_acct=true
     if ! err=$(dscl . -create "/Users/$NAME" 2>&1); then
       case "$err" in
         *14120*) die "macOS refused to create the account (eDSPermissionError -14120). If a prompt asked to let your terminal administer this computer, allow it (System Settings > Privacy & Security > App Management), then run the command again." ;;
@@ -96,10 +131,17 @@ else
       *) die "an account named $NAME exists that this installer didn't create; not touching it" ;;
     esac
   else
+    # A group with this name and no account is someone else's (a group has
+    # no comment to carry the marker); the account must not join it.
+    if getent group "$NAME" >/dev/null 2>&1; then
+      die "a group named $NAME exists that this installer didn't create; not touching it (if it is left from an interrupted install: sudo groupdel $NAME)"
+    fi
     say "account $NAME: creating (system account, no login)"
     nologin=/usr/sbin/nologin
     [ -x "$nologin" ] || nologin=/sbin/nologin
-    getent group "$NAME" >/dev/null 2>&1 || groupadd --system "$NAME"
+    groupadd --system "$NAME"
+    made_group=true
+    made_acct=true
     useradd --system --gid "$NAME" --home-dir "$DIR/home" --no-create-home --shell "$nologin" --comment "$COMMENT" "$NAME"
   fi
   # The GPU device nodes (/dev/dri/*) belong to these groups.
@@ -110,6 +152,7 @@ fi
 ACCT_UID=$(id -u "$NAME")
 
 # ── 2. Directories ───────────────────────────────────────────────────
+[ -d "$DIR" ] || made_dir=true
 mkdir -p "$DIR"
 chown "root:$ROOTGROUP" "$DIR"
 chmod 755 "$DIR"
@@ -174,18 +217,20 @@ if [ "$st" != 0 ] && [ "$OS" = Linux ]; then
   # Chromium's sandbox needs; give this Chromium such a profile.
   if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 1 ] && command -v apparmor_parser >/dev/null 2>&1; then
     say "AppArmor: allowing this Chromium its sandbox (user namespaces)"
+    [ -e "/etc/apparmor.d/$NAME" ] || made_aa=true
     cat > "/etc/apparmor.d/$NAME" <<EOF
 # $COMMENT
 # Lets this install's Chromium create the user namespaces its sandbox needs
 # (Ubuntu 23.10+ restricts them), as Ubuntu's own profile does for Chrome.
 abi <abi/4.0>,
 include <tunables/global>
-profile $NAME $DIR/{.new,}/browsers/**/chrome flags=(unconfined) {
+profile $NAME $DIR/**/chrome flags=(unconfined) {
   userns,
   include if exists <local/$NAME>
 }
 EOF
     apparmor_parser -r "/etc/apparmor.d/$NAME" || die "apparmor_parser could not load /etc/apparmor.d/$NAME"
+    first=$out
     st=0
     out=$(self_test) || st=$?
   fi
@@ -202,6 +247,7 @@ EOF
   esac
 fi
 if [ "$st" != 0 ]; then
+  if [ -n "${first:-}" ]; then printf 'before the AppArmor profile:\n%s\nwith it:\n' "$(printf '%s\n' "$first" | tail -15)" >&2; fi
   printf '%s\n' "$out" | tail -15 >&2
   die "the self-test failed (above); nothing was changed"
 fi
@@ -273,4 +319,5 @@ fi
 
 # ── 8. Can the account see into your home? ───────────────────────────
 if sudo -u "$NAME" test -x "$USER_HOME" 2>/dev/null; then event "home-open"; fi
+done_ok=true
 event "done"

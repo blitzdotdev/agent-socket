@@ -39,3 +39,8 @@ jobs:
         with:
           node-version: '22'
       - run: sh gpu-browser/test/install-smoke.sh
+      - name: Diagnostics (on failure)
+        if: failure() && runner.os == 'Linux'
+        run: |
+          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns || true
+          sudo dmesg | grep -iE 'apparmor|chrome|segfault' | tail -40 || true

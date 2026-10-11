@@ -49,8 +49,10 @@ if [ "$ours" = true ]; then
     dscl . -delete "/Users/$NAME"
     case "$(dscl . -read "/Groups/$NAME" RealName 2>/dev/null)" in *"$MARK"*) dseditgroup -o delete "$NAME" 2>/dev/null || true ;; esac
   else
+    gid=$(id -g "$NAME")
     userdel "$NAME"
-    if getent group "$NAME" >/dev/null 2>&1; then groupdel "$NAME" 2>/dev/null || true; fi
+    # Only the account's own group (userdel may already have removed it).
+    if [ "$(getent group "$NAME" | cut -d: -f3)" = "$gid" ]; then groupdel "$NAME" 2>/dev/null || true; fi
   fi
   say "removed the account $NAME"
 else

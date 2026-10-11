@@ -15,14 +15,14 @@ What `npx @agent-socket/gpu-browser` runs as root, once per install or update, a
 
 1. **The account `agent-socket-gpu-browser`**, unless it exists already, in which case it must carry this installer's marker or nothing is touched.
    - **macOS:** its own group, then the user with `dscl`, the way MacPorts creates its `macports` user: no password (`*`), shell `/usr/bin/false`, and the attributes macOS adds on its own (`AuthenticationAuthority` and friends) deleted. It can't log in and doesn't appear in Users & Groups or the login window. First free uid from 501.
-   - **Linux:** `groupadd --system`, `useradd --system`, shell `nologin`. It is also added to the `render`/`video` groups if they exist, so Chromium can open the GPU.
+   - **Linux:** `groupadd --system`, `useradd --system`, shell `nologin`. A group of that name that already exists is someone else's, so the install stops rather than put the account in it. It is also added to the `render`/`video` groups if they exist, so Chromium can open the GPU.
 2. **`/opt/agent-socket-gpu-browser/`**, owned by root, and its `home/` (the account's, mode 700).
 3. **Downloads, run as the account** (no third-party code runs as root):
    - Node.js, checked against `node.txt`;
    - `playwright-core`, with `npm install --ignore-scripts`;
    - Chromium.
 4. **A fresh root-owned copy** of all that: the account can run it but not change it.
-5. **A self-test of the new copy, started exactly the way every run starts it** (macOS: `launchctl asuser <uid> sudo -u …`). It launches Chromium with its sandbox, draws a WebGL canvas and reports the GPU. On Ubuntu 23.10+, where Chromium's sandbox needs an AppArmor profile, it adds one for this Chromium only. If the test fails, nothing is swapped in: an existing install keeps working.
+5. **A self-test of the new copy, started exactly the way every run starts it** (macOS: `launchctl asuser <uid> sudo -u …`). It launches Chromium with its sandbox, draws a WebGL canvas and reports the GPU. On Ubuntu 23.10+, where Chromium's sandbox needs an AppArmor profile, it adds one for this Chromium only. If the test fails, nothing is swapped in: an existing install keeps working, and a first install removes what it created (the account, its group, the AppArmor profile, `/opt/agent-socket-gpu-browser`); any other failure or Ctrl-C during a first install does the same.
 6. **Swap** the new copy in, and write `install.env` (who installed it, version, the GPU).
 7. **The sudo rule** `/etc/sudoers.d/zz-agent-socket-gpu-browser`, validated with `visudo` first. It is named `zz-…` so it is read last: sudo applies the last rule that matches, and a broader rule of yours for the same command would otherwise ask for the password. It lets the installing user run exactly the start command (that one command, those arguments) without a password:
    - **macOS:** `launchctl asuser <uid> /usr/bin/sudo -u agent-socket-gpu-browser -H …/node …/server.mjs`;

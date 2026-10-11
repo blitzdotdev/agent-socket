@@ -10,7 +10,12 @@ HERE=$(cd "$(dirname "$0")/.." && pwd)
 CLI="node $HERE/bin/agent-socket-gpu-browser.mjs"
 NAME=agent-socket-gpu-browser
 LOG=$(mktemp)
-fail() { echo "FAIL: $*" >&2; echo "--- CLI output:" >&2; cat "$LOG" >&2 || true; exit 1; }
+fail() {
+  echo "FAIL: $*" >&2
+  echo "--- CLI output:" >&2; cat "$LOG" >&2 || true
+  [ -z "${cli:-}" ] || kill -INT "$cli" 2>/dev/null || true
+  exit 1
+}
 
 echo "== install"
 $CLI install --yes
@@ -32,7 +37,7 @@ until grep -q "/v1/t/as_" "$LOG"; do
 done
 link=$(grep -o 'https://[^ ]*/v1/t/as_[^ ]*/agents.md' "$LOG" | head -1)
 echo "link: $link"
-node - "$link" <<'EOF'
+node - "$link" <<'EOF' || fail "an agent call failed (above)"
 const base = process.argv[2].replace(/\/agents\.md$/, "")
 const call = async (m, p, b) => {
   const r = await fetch(base + p, { method: m, headers: { "content-type": "application/json" }, body: b ? JSON.stringify(b) : undefined })

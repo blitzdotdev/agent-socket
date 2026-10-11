@@ -152,6 +152,7 @@ async function start(opts) {
   const relay = String(opts.relay || config.relay || DEFAULT_RELAY).replace(/\/+$/, "")
   if (!/^https:\/\/[A-Za-z0-9.-]+(:\d+)?$/.test(relay) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(relay)) die("the relay must be an https URL (got " + relay + ")")
   const minutes = opts.for !== undefined ? parseFor(opts.for) : config.minutes ?? 60
+  if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes < 0) die("\"minutes\" in " + path.join(SETTINGS, "config.json") + " must be a number of minutes (0: no time limit)")
   const inst = installed()
   if (running()) die("the GPU browser is already running (another terminal?). Stop it there, or: npx @agent-socket/gpu-browser stop")
   const key = crypto.randomBytes(16).toString("hex")
@@ -335,11 +336,17 @@ async function uninstall(yes) {
   const before = path.join(SETTINGS, "home-mode-before.txt")
   if (fs.existsSync(before)) {
     const mode = fs.readFileSync(before, "utf8").trim()
-    if (/^[0-7]{3}$/.test(mode) && !yes && /^(y|yes)$/i.test(await ask(`Install closed your home folder (it was ${mode}). Open it again? [y/N] `, "n"))) {
-      fs.chmodSync(os.homedir(), parseInt(mode, 8))
-      say(green("✓ home folder back to " + mode))
+    if (!/^[0-7]{3}$/.test(mode)) fs.rmSync(before, { force: true })
+    else if (yes || !TTY) {
+      // Nobody to ask: keep the note, so a later run (or you) can still put it back.
+      say(dim(`Install closed your home folder (it was ${mode}); to open it again: chmod ${mode} ~ (noted in ${before})`))
+    } else {
+      if (/^(y|yes)$/i.test(await ask(`Install closed your home folder (it was ${mode}). Open it again? [y/N] `, "n"))) {
+        fs.chmodSync(os.homedir(), parseInt(mode, 8))
+        say(green("✓ home folder back to " + mode))
+      }
+      fs.rmSync(before, { force: true })
     }
-    fs.rmSync(before, { force: true })
   }
   say(green("✓ removed") + dim(" (your settings stay in " + SETTINGS + ")"))
 }
