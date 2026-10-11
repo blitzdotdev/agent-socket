@@ -30,6 +30,7 @@ import os from "node:os"
 import path from "node:path"
 import readline from "node:readline"
 import crypto from "node:crypto"
+import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { UPLOAD_ORIGIN, clean, gpuFlags, hostAllowed, privateAddr, refuseTarget, validFilePath, validHost, validToolPath } from "./policy.mjs"
 
@@ -53,14 +54,19 @@ if (INSTALLED) {
   const selfTest = process.argv.includes("--self-test")
   if (!selfTest) {
     const pidFile = path.join(os.homedir(), "server.pid")
-    const alive = (pid) => { try { process.kill(pid, 0); return true } catch (k) { return k.code === "EPERM" } }
+    // A pid counts only while it is still that program (pids get reused).
+    const runs = (pid, what) => {
+      try { process.kill(pid, 0) } catch (k) { if (k.code !== "EPERM") return false }
+      const r = spawnSync("ps", ["-p", String(pid), "-o", "args="], { encoding: "utf8" })
+      return r.status === 0 && what.test(r.stdout)
+    }
     const running = (pid) => { process.stdout.write("the GPU browser is already running (pid " + pid + ")\n"); process.exit(3) }
     let tookOver = false
     for (;;) {
       try { fs.writeFileSync(pidFile, String(process.pid), { flag: "wx", mode: 0o600 }); break } catch (e) {
         if (e.code !== "EEXIST") throw e
         const other = Number(fs.readFileSync(pidFile, "utf8")) || 0
-        if (other && alive(other)) running(other)
+        if (other && runs(other, /server\.mjs/)) running(other)
         fs.rmSync(pidFile, { force: true })
         tookOver = true
       }
@@ -81,7 +87,7 @@ if (INSTALLED) {
     // holding that lock, so of a racing start and update one backs off.
     let installer = 0
     try { installer = Number(fs.readlinkSync("/var/run/agent-socket-gpu-browser-install.lock")) || 0 } catch {}
-    if (installer && alive(installer)) { process.stdout.write("the GPU browser is being updated (pid " + installer + "); start it again when that has finished\n"); process.exit(3) }
+    if (installer && runs(installer, /install\.sh/)) { process.stdout.write("the GPU browser is being updated (pid " + installer + "); start it again when that has finished\n"); process.exit(3) }
   }
   process.env.TMPDIR = path.join(os.homedir(), selfTest ? "tmp-self-test" : "tmp")
   fs.rmSync(process.env.TMPDIR, { recursive: true, force: true })
