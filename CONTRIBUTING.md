@@ -13,7 +13,7 @@ npm install
 npm test
 ```
 
-`npm test` type-checks every package and runs the SDK tests, the registry tests, the integration harness and the extension unit tests. The harness builds the SDK and starts its own `wrangler dev`, so nothing needs to be running first. To run part of it:
+`npm test` type-checks every package and runs the SDK tests, the registry tests, the integration harness, the extension unit tests and the GPU browser unit tests (`npm run gpu:test:unit`). The harness builds the SDK and starts its own `wrangler dev`, so nothing needs to be running first. To run part of it:
 
 ```bash
 npm run build -w sdk
@@ -32,7 +32,7 @@ To run the relay on its own: `npm run dev` (port 8787). Layout and deploy notes 
 
 ## Changing the SDK
 
-The extension ships a copy of the compiled SDK in `chrome-extension/lib/sdk/`. After changing `sdk/src`, run `npm run build` and commit the updated copy; CI fails if it is stale.
+The extension and the GPU browser ship a copy of the compiled SDK, in `chrome-extension/lib/sdk/` and `gpu-browser/app/lib/sdk/`. After changing `sdk/src`, run `npm run build` and commit the updated copies; CI fails if either is stale.
 
 ## Pull requests
 

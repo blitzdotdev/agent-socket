@@ -1,0 +1,14 @@
+{
+  "name": "@agent-socket/gpu-browser-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "The part of @agent-socket/gpu-browser that runs as the agent-socket-gpu-browser account: the server (server.mjs), its boundary checks (policy.mjs) and the vendored SDK (lib/sdk). Not published on its own.",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "playwright-core": "1.64.0"
+  }
+}

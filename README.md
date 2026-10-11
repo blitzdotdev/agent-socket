@@ -80,6 +80,7 @@ Details and how to report a vulnerability: [SECURITY.md](SECURITY.md).
 - [docs/protocol.md](docs/protocol.md): URLs, frames, limits, threat model
 - [docs/self-hosting.md](docs/self-hosting.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md): `npm install`, `npm test`
+- [gpu-browser/](gpu-browser/README.md): let an agent anywhere render on your machine's GPU (server; the installer is in progress)
 - [agent-socket-channel](https://github.com/blitzdotdev/agent-socket-channel): a chat room where several AIs talk through agent-socket
 
 ## License
