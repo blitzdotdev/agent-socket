@@ -122,6 +122,22 @@ sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d
 # Everything downloaded is fetched and unpacked by the account, never by root.
 as_acct() { (cd / && sudo -u "$NAME" -H /bin/sh -c "$1"); }
 
+# ── 0. The directory first: its marker journals what a first install
+# creates, before creating it, so a first install killed hard (SIGKILL,
+# power loss) is finished or undone by the next run ─────────────────────
+[ -d "$DIR" ] || made_dir=true
+mkdir -p "$DIR"
+[ -f "$DIRMARK" ] || : > "$DIRMARK"
+chown "root:$ROOTGROUP" "$DIR" "$DIRMARK"
+chmod 755 "$DIR"
+journal() { grep -qx "$1" "$DIRMARK" 2>/dev/null || echo "$1" >> "$DIRMARK"; }
+if [ "$FRESH" = true ]; then
+  made_dir=true
+  if grep -qx group "$DIRMARK"; then made_group=true; fi
+  if grep -qx account "$DIRMARK"; then made_acct=true; fi
+  if grep -qx apparmor "$DIRMARK"; then made_aa=true; fi
+fi
+
 # ── 1. The account ───────────────────────────────────────────────────
 if [ "$OS" = Darwin ]; then
   if dscl . -read "/Users/$NAME" >/dev/null 2>&1; then
@@ -137,12 +153,14 @@ if [ "$OS" = Darwin ]; then
         *) die "a group named $NAME exists that this installer didn't create; not touching it" ;;
       esac
     else
-      dseditgroup -o create -r "$MARK" "$NAME" || die "could not create the group $NAME"
+      journal group
       made_group=true
+      dseditgroup -o create -r "$MARK" "$NAME" || die "could not create the group $NAME"
     fi
     gid=$(dscl . -read "/Groups/$NAME" PrimaryGroupID | awk '{print $2}')
     uid=501
     while dscl /Search -search /Users UniqueID "$uid" 2>/dev/null | grep -q .; do uid=$((uid + 1)); done
+    journal account
     made_acct=true
     if ! err=$(dscl . -create "/Users/$NAME" 2>&1); then
       case "$err" in
@@ -171,15 +189,19 @@ else
     esac
   else
     # A group with this name and no account is someone else's (a group has
-    # no comment to carry the marker); the account must not join it.
+    # no comment to carry the marker), unless the journal says an earlier,
+    # interrupted run of this installer made it.
     if getent group "$NAME" >/dev/null 2>&1; then
-      die "a group named $NAME exists that this installer didn't create; not touching it (if it is left from an interrupted install: sudo groupdel $NAME)"
+      grep -qx group "$DIRMARK" || die "a group named $NAME exists that this installer didn't create; not touching it"
+    else
+      journal group
+      made_group=true
+      groupadd --system "$NAME"
     fi
     say "account $NAME: creating (system account, no login)"
     nologin=/usr/sbin/nologin
     [ -x "$nologin" ] || nologin=/sbin/nologin
-    groupadd --system "$NAME"
-    made_group=true
+    journal account
     made_acct=true
     useradd --system --gid "$NAME" --home-dir "$DIR/home" --no-create-home --shell "$nologin" --comment "$COMMENT" "$NAME"
   fi
@@ -191,11 +213,6 @@ fi
 ACCT_UID=$(id -u "$NAME")
 
 # ── 2. Directories ───────────────────────────────────────────────────
-[ -d "$DIR" ] || made_dir=true
-mkdir -p "$DIR"
-: > "$DIRMARK"
-chown "root:$ROOTGROUP" "$DIR"
-chmod 755 "$DIR"
 mkdir -p "$DIR/home"
 chown "$NAME:$NAME" "$DIR/home"
 chmod 700 "$DIR/home"
@@ -252,7 +269,7 @@ if [ "$st" != 0 ] && [ "$OS" = Linux ]; then
   # Chromium's sandbox needs; give this Chromium such a profile.
   if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 1 ] && command -v apparmor_parser >/dev/null 2>&1; then
     say "AppArmor: allowing this Chromium its sandbox (user namespaces)"
-    [ -e "/etc/apparmor.d/$NAME" ] || made_aa=true
+    if [ ! -e "/etc/apparmor.d/$NAME" ]; then journal apparmor; made_aa=true; fi
     cat > "/etc/apparmor.d/$NAME" <<EOF
 # $COMMENT
 # Lets this install's Chromium create the user namespaces its sandbox needs
@@ -294,6 +311,12 @@ event "gpu ${renderer:-unknown}"
 case "$result" in *'"software":true'*) event "software-rendering" ;; esac
 
 # ── 6. Swap it in ────────────────────────────────────────────────────
+# Not under a running server (another terminal, an older CLI): it would
+# have its files swapped underneath it. A server writes its pid file and
+# then checks for this install's lock; this checks for the pid file while
+# holding the lock, so of two racing, at least one backs off.
+spid=$(cat "$DIR/home/server.pid" 2>/dev/null || true)
+if [ -n "$spid" ] && kill -0 "$spid" 2>/dev/null; then die "the GPU browser is running (pid $spid); stop it, then run the install again"; fi
 mkdir "$DIR/.old"
 for d in node app browsers VERSION; do
   if [ -e "$DIR/$d" ]; then mv "$DIR/$d" "$DIR/.old/"; fi
@@ -350,5 +373,6 @@ fi
 
 # ── 8. Can the account see into your home? ───────────────────────────
 if sudo -u "$NAME" test -x "$USER_HOME" 2>/dev/null; then event "home-open"; fi
+: > "$DIRMARK"   # nothing left to undo: the journal is for unfinished first installs
 done_ok=true
 event "done"
