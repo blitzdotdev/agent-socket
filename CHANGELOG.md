@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **GPU browser** (`gpu-browser/`, new): the server for letting an agent anywhere render on your machine's GPU through an agent-socket link: uploads served at `https://uploads.gpu-browser.internal/`, pages, JavaScript, screenshots (in parts when bigger than one reply), agent-defined tools for the session, and `/request` to ask the owner for more hosts. Every Chromium request goes through a per-run, password-protected filtering proxy (allowlisted public hosts only; loopback, private, link-local and IPv4-embedding IPv6 addresses refused on the address it connects to), with Chromium's sandbox on. Harness scenario 63 and unit tests. The installer and CLI that run it under its own OS account come next; until then it runs only as a development run.
+
 ## 0.3.0
 
 Chrome extension 0.5.0.

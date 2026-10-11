@@ -60,8 +60,19 @@ jobs:
       - run: npm ci
       - run: npm run ext:test:unit
 
+  gpu-browser-unit:
+    name: GPU browser — unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm run gpu:test:unit
+
   vendor-freshness:
-    name: chrome-extension/lib/sdk vendor-freshness
+    name: vendored SDK freshness (chrome-extension, gpu-browser)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,11 +86,12 @@ jobs:
       # check below fails the build and the PR is blocked.
       - run: npm run build -w sdk
       - run: bash chrome-extension/scripts/vendor-sdk.sh
+      - run: bash gpu-browser/scripts/vendor-sdk.sh
       - name: Assert no drift in vendored SDK
         run: |
-          git diff --exit-code -- chrome-extension/lib/sdk \
-            || (echo "::error::Vendored SDK in chrome-extension/lib/sdk/ is stale."; \
-                echo "Run: npm run build -w sdk && bash chrome-extension/scripts/vendor-sdk.sh"; \
+          git diff --exit-code -- chrome-extension/lib/sdk gpu-browser/app/lib/sdk \
+            || (echo "::error::A vendored SDK copy (chrome-extension/lib/sdk/ or gpu-browser/app/lib/sdk/) is stale."; \
+                echo "Run: npm run build"; \
                 exit 1)
 
   chrome-ext-e2e:

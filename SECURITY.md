@@ -12,6 +12,7 @@ Include the affected component (relay, SDK, Chrome extension, registry), steps o
 - `@agent-socket/sdk` (`sdk/`).
 - The Chrome extension (`chrome-extension/`).
 - The registry at registry.agentsocket.dev and any deployment of `registry/`.
+- The GPU browser (`gpu-browser/`).
 
 ## How it is meant to work
 
@@ -25,6 +26,8 @@ The protocol and threat model are in [docs/protocol.md](docs/protocol.md). In sh
 - **The relay sees tool calls and replies in plaintext** after TLS, while it forwards them.
 - **Tool output is untrusted input for the AI**, and agent input is untrusted input for the app.
 - **The extension gives the link holder the tab.** `/eval` runs any JavaScript in the bound tab, with the user's logged-in session on that site. The `/navigate` check for local and private-network hosts is a guardrail, not a boundary, because `/eval` can navigate too. The site lock is the boundary for where the tab goes: every tool call checks the tab's origin against the sites the user allowed (at first the one at Connect) and runs page code only in the document it checked, so a navigation by `/eval`, a link or a redirect pauses the tools instead of extending them. Within an allowed site, `/eval` can do whatever that site's pages can (including the site's own cross-origin requests). Only the bound tab is reachable, and Stop, disconnecting, closing the tab or the session timer (60 minutes by default) ends access.
+
+- **The GPU browser gives the link holder a browser, not your machine.** The agent's JavaScript runs in pages of a separate headless Chromium (its sandbox on), not in your browser. Every request goes through the server's filtering proxy: hosts the owner allowed, ports 80/443, names only, and never an address that is loopback, private, link-local, CGNAT, multicast or an IPv6 form that embeds IPv4 (checked on the address it connects to). The proxy listens on loopback with a password that changes every run. Uploads are served from memory at an `.internal` origin. Widening the allowlist needs the owner's answer. The agent can use the machine's GPU, CPU and memory until the session ends.
 
 Reports that only restate these properties are not treated as vulnerabilities.
 
@@ -68,3 +71,4 @@ There is no global cap on sessions beyond the per-IP rate limit.
 - Memory exhaustion or session disruption beyond the limits above.
 - The extension acting on a tab other than the bound one, or after the session ended.
 - Bypassing registry review or admin authentication.
+- A GPU browser page reaching a host that isn't allowed, a loopback or private address, or a local file, or another program using the GPU browser's proxy; an agent widening the allowlist without the owner's answer.

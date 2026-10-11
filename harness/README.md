@@ -34,6 +34,7 @@ Without `RELAY_URL`, `run.mjs` boots its own `wrangler dev` (`DEBUG=1`, `MAX_SYN
   - **52–55** Session resume: raw protocol (same URL, gap behaviour, tools replaced), refused secrets, expiry after the grace window (SKIP unless `RESUME_GRACE_MS` is short), concurrent attempts vs. the live socket
   - **56–57** `update_tools` (raw + SDK)
   - **58–62** Durable sessions: a 62 s gap with an eviction in it, a reset while the app is connected, every way a session ends wiping storage (clean close, alarm expiry, `end`, SDK close while away), hibernation + heartbeat auto-response + liveness alarm, and the limits nothing else covers
+  - **63** GPU browser server end to end: uploads, pages, multi-part screenshots, the private-network refusal and proxy password, an approval round trip, forged events, `stop` (SKIP without chromium)
   - **90** `/v1/_ws` rate limit (last, so its burst can't starve the others)
 
 ## Adding a scenario
