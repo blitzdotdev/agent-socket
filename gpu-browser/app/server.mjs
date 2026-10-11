@@ -46,7 +46,26 @@ if (INSTALLED) {
   for (const k of Object.keys(process.env)) if (k.startsWith("XDG_")) delete process.env[k]
   process.env.XDG_CONFIG_HOME = path.join(os.homedir(), ".config")
   process.env.XDG_CACHE_HOME = path.join(os.homedir(), ".cache")
-  process.env.TMPDIR = path.join(os.homedir(), "tmp")
+  // One server per install: two would share (and wipe) the temp dir below.
+  // The pid file is created atomically; one left by a dead server is taken
+  // over. The self-test (run by an update while a server may be running)
+  // takes no lock and uses a temp dir of its own.
+  const selfTest = process.argv.includes("--self-test")
+  if (!selfTest) {
+    const pidFile = path.join(os.homedir(), "server.pid")
+    for (;;) {
+      try { fs.writeFileSync(pidFile, String(process.pid), { flag: "wx", mode: 0o600 }); break } catch (e) {
+        if (e.code !== "EEXIST") throw e
+        const other = Number(fs.readFileSync(pidFile, "utf8")) || 0
+        let alive = false
+        try { if (other) { process.kill(other, 0); alive = true } } catch (k) { alive = k.code === "EPERM" }
+        if (alive) { process.stdout.write("the GPU browser is already running (pid " + other + ")\n"); process.exit(3) }
+        fs.rmSync(pidFile, { force: true })
+      }
+    }
+    process.on("exit", () => { try { if (fs.readFileSync(pidFile, "utf8") === String(process.pid)) fs.rmSync(pidFile) } catch {} })
+  }
+  process.env.TMPDIR = path.join(os.homedir(), selfTest ? "tmp-self-test" : "tmp")
   fs.rmSync(process.env.TMPDIR, { recursive: true, force: true })
   fs.mkdirSync(process.env.TMPDIR, { mode: 0o700, recursive: true })
 }
