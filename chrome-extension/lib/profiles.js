@@ -10,6 +10,8 @@
 // toolPathProblem, parseSubmission, LIMITS), so /registry_submit can explain
 // a problem before the registry rejects it. Keep them in sync.
 
+import { FRAMEWORK_PREAMBLE } from "./sdk/preamble.js"
+
 export const TOOL_PATH_RE = /^\/[a-zA-Z0-9_\-/.]+$/
 export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 export const GENERIC_HOST = "*"
@@ -229,8 +231,10 @@ export function buildAgentsMd({ host, registry, local, tools }) {
   if (profile?.notes?.trim()) notes.push(`## Site notes (${profile.host === GENERIC_HOST ? "generic" : `${profile.host}, registry v${profile.version}`})\n\n${profile.notes.trim()}\n`)
   if (local?.notes?.trim()) notes.push(`## Local notes (${local.host})\n\n${local.notes.trim()}\n`)
 
+  // The briefing names `tools.json`, which the relay takes as "contract
+  // already present" and so skips its own preamble; include it here.
   const md = [
-    `# Agent Socket — driving \`${host || "a browser tab"}\``,
+    FRAMEWORK_PREAMBLE + `# Agent Socket — driving \`${host || "a browser tab"}\``,
     "",
     "You are connected to a Chrome extension that exposes one browser tab the",
     "user chose as a set of HTTPS tool endpoints. Each call runs in the page's",
