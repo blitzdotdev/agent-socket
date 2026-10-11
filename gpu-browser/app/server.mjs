@@ -54,13 +54,26 @@ if (INSTALLED) {
   if (!selfTest) {
     const pidFile = path.join(os.homedir(), "server.pid")
     const alive = (pid) => { try { process.kill(pid, 0); return true } catch (k) { return k.code === "EPERM" } }
+    const running = (pid) => { process.stdout.write("the GPU browser is already running (pid " + pid + ")\n"); process.exit(3) }
+    let tookOver = false
     for (;;) {
       try { fs.writeFileSync(pidFile, String(process.pid), { flag: "wx", mode: 0o600 }); break } catch (e) {
         if (e.code !== "EEXIST") throw e
         const other = Number(fs.readFileSync(pidFile, "utf8")) || 0
-        if (other && alive(other)) { process.stdout.write("the GPU browser is already running (pid " + other + ")\n"); process.exit(3) }
+        if (other && alive(other)) running(other)
         fs.rmSync(pidFile, { force: true })
+        tookOver = true
       }
+    }
+    // Two starts that both found the same stale file can each remove it, the
+    // later removal taking the earlier one's fresh file: after a takeover,
+    // wait a moment and make sure the file is still ours (before the temp
+    // dir below is touched).
+    if (tookOver) {
+      await new Promise((r) => setTimeout(r, 300))
+      let now = ""
+      try { now = fs.readFileSync(pidFile, "utf8") } catch {}
+      if (now !== String(process.pid)) running(Number(now) || "unknown")
     }
     process.on("exit", () => { try { if (fs.readFileSync(pidFile, "utf8") === String(process.pid)) fs.rmSync(pidFile) } catch {} })
     // An update in progress (its lock: a symlink to the installer's pid) may
