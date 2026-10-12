@@ -105,3 +105,28 @@ jobs:
       - env:
           CHROMIUM_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: npm run ext:test:reconnect
+
+  chrome-ext-popup:
+    name: Chrome extension — real toolbar popup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Full history: the update case loads the extension at an older commit.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - id: setup-chrome
+        uses: browser-actions/setup-chrome@latest
+        with:
+          chrome-version: stable
+      - run: npm ci
+      - name: Set up .dev.vars
+        run: cp relay/.dev.vars.example relay/.dev.vars
+      # The toolbar popup only opens in a headed browser, so this runs under xvfb.
+      - env:
+          CHROMIUM_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: npm run ext:test:popup
