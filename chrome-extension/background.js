@@ -565,7 +565,6 @@ chrome.permissions.onRemoved.addListener(() => {
 // `as_session:<tabId>` → { tabId, base, registryBase, sessionId, secret, url, token, registry, linkChanged, endsAt, allowedOrigins, anyOrigin, toolsHost }
 const SAVED_PREFIX = "as_session:"
 const savedKey = (tabId) => `${SAVED_PREFIX}${tabId}`
-const LEGACY_SAVED_KEY = "as_session"  // before 0.6.0: the one session
 
 async function saveSession(ts) {
   if (!live(ts)) return
@@ -600,15 +599,6 @@ async function saveSession(ts) {
 const restored = (async () => {
   const all = await chrome.storage.session.get(null).catch(() => ({}))
   const saved = Object.entries(all).filter(([k]) => k.startsWith(SAVED_PREFIX)).map(([, v]) => v)
-  const legacy = all[LEGACY_SAVED_KEY]
-  if (legacy) {
-    await chrome.storage.session.remove(LEGACY_SAVED_KEY).catch(() => {})
-    void chrome.alarms.clear(TIMER_ALARM)
-    if (Number.isInteger(legacy.tabId) && !saved.some((v) => v.tabId === legacy.tabId)) {
-      await chrome.storage.session.set({ [savedKey(legacy.tabId)]: legacy }).catch(() => {})
-      saved.push(legacy)
-    }
-  }
   await Promise.all(saved.map((v) => restoreSession(v).catch(() => endHeld(v))))
 })().catch(() => {})
 

@@ -548,7 +548,17 @@ changedCopy.addEventListener("click", async () => {
   await render()
 })
 
-reloadExt.addEventListener("click", () => chrome.runtime.reload())
+// A reload clears chrome.storage.session, so the new worker can't end the
+// sessions the old one has open, and their links would keep answering for
+// 24 h. Ask the old worker to end them first: "disconnect_all", or for a
+// 0.5.0 worker (one session), "disconnect". Either may be unknown to it.
+reloadExt.addEventListener("click", async () => {
+  reloadExt.disabled = true
+  for (const type of ["disconnect_all", "disconnect"]) {
+    await Promise.race([send({ type }).catch(() => {}), new Promise((r) => setTimeout(r, 5000))])
+  }
+  chrome.runtime.reload()
+})
 
 saveRelay.addEventListener("click", async () => {
   const v = relayInput.value.trim() || ""

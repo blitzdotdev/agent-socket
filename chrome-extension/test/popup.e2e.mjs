@@ -15,7 +15,9 @@
 //      keeps running the old background worker until the extension is
 //      reloaded, while the popup always loads from disk. The popup must still
 //      show the link or say to reload, never a half-drawn page; its Reload
-//      button finishes the update, after which Connect works.
+//      button finishes the update, after which Connect works. Reloading
+//      clears chrome.storage.session, so the new worker can't end the old
+//      one's session: Reload must end it first, or its link keeps answering.
 //
 // SHOT_DIR=<dir> saves a screenshot of every popup state.
 // Run: npm run ext:test:popup   (needs git history for OLD_REF)
@@ -307,13 +309,17 @@ try {
     if (!(v.link === oldLink && v.stop) && !v.reload) throw new Error(`neither the link nor a reload prompt: ${JSON.stringify(v)}`)
   })
 
+  let savedBefore = []
   await step("update: Reload finishes it; the popup works and Connect gives a link", async () => {
     const p = await openPopup(old)
     if (!(await view(p)).reload) throw new Error("no reload button")
+    savedBefore = Object.keys(await old.worker.evaluate(() => chrome.storage.session.get(null)))
     const oldTarget = old.browser.targets().find((t) => t.type() === "service_worker" && t.url().endsWith("/background.js"))
     await p.page.click("#reload-ext").catch(() => {})  // the popup closes as the extension reloads
     await sleep(1500)
     await newWorker(old, oldTarget)
+    const savedAfter = Object.keys(await old.worker.evaluate(() => chrome.storage.session.get(null)))
+    if (!savedBefore.length || savedAfter.length) throw new Error(`chrome.storage.session before the reload: ${savedBefore}; after: ${savedAfter}`)
     const q = await openPopup(old, "9-after-reload")
     const v = await view(q)
     if (v.status !== "Not connected" || !v.connect || v.reload || v.font !== "Inter") throw new Error(JSON.stringify(v))
@@ -322,6 +328,11 @@ try {
     await q.close()
     noErrors(q)
     await linkWorks(c.link)
+  })
+
+  await step("update: Reload ended the old build's session, its link is dead", async () => {
+    const st = await waitFor(async () => { const r = await fetch(oldLink); return r.status !== 200 && r.status }, 5000, "the old link to stop answering")
+    console.log(`       old link → ${st}`)
   })
 } catch (e) {
   failed++
