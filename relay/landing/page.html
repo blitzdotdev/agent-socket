@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Socket: give any AI agent a link to your app or your browser</title>
+<meta name="description" content="Paste one link into Claude Code, Codex, Cursor or your own script, and it can work in your browser tab or call your app's actions over plain HTTPS. No MCP server, no OAuth, nothing to install on the agent's side.">
+<meta property="og:title" content="Agent Socket">
+<meta property="og:description" content="Give any AI agent a link to your app or your browser.">
+<link rel="preload" href="/fonts/Inter.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect x=%223%22 y=%223%22 width=%2226%22 height=%2226%22 rx=%227%22 fill=%22%231d1d20%22/%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%225.5%22 fill=%22%23e6195e%22/%3E%3C/svg%3E">
+<!--FIGURE_CSS-->
+<style>
+@font-face{font-family:Inter;src:url(/fonts/Inter.woff2) format("woff2");font-weight:100 900;font-display:swap}
+@font-face{font-family:Newsreader;src:url(/fonts/Newsreader-Italic.woff2) format("woff2");font-style:italic;font-weight:400 500;font-display:swap}
+:root{
+  --sans:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --serif:Newsreader,Georgia,"Times New Roman",serif;
+  --page:#fcfcfb;--ink:#1d1d20;--text:#45454a;--muted:#8b8b90;--rule:#e7e7e4;--soft:#f4f4f2;
+  --accent:#e6195e;
+  --col:600px;--wide:1000px;
+}
+*{box-sizing:border-box}
+html{color-scheme:light;-webkit-text-size-adjust:100%;scroll-padding-top:24px}
+body{margin:0;background:var(--page);color:var(--text);font:15.5px/1.62 var(--sans);font-feature-settings:"cv11","ss01";-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:underline;text-decoration-color:#c9c9c6;text-underline-offset:3px;text-decoration-thickness:1px}
+a:hover{text-decoration-color:var(--ink)}
+em,.serif{font-family:var(--serif);font-style:italic;font-weight:400;font-size:1.06em;letter-spacing:-.005em}
+strong{color:var(--ink);font-weight:550}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:2px}
+
+/* layout: a sticky contents column on the left, one reading column, figures wider */
+.layout{display:grid;grid-template-columns:minmax(24px,1fr) 190px 56px var(--col) minmax(24px,calc(var(--wide) - var(--col))) minmax(24px,1fr);}
+.toc{grid-column:2;position:sticky;top:0;align-self:start;height:100vh;padding:58px 0 40px;font-size:13.5px;line-height:1.95}
+.toc a{display:block;color:var(--muted);text-decoration:none}
+.toc a:hover,.toc a[aria-current="true"]{color:var(--ink)}
+.toc .brand{color:var(--ink);font-weight:550;margin-bottom:2px}
+.toc .gap{height:22px}
+main{grid-column:4/6;min-width:0;padding:56px 0 0}
+main>*,section>*{max-width:var(--col)}
+main>section{max-width:none}
+main>.wide,section>.wide{max-width:var(--wide)}
+@media (max-width:1180px){
+  .layout{grid-template-columns:1fr min(var(--col),calc(100% - 40px)) 1fr}
+  .toc{display:none}
+  main{grid-column:2}
+  main>.wide,section>.wide{max-width:none;margin-left:calc((min(var(--col),100vw - 40px) - min(var(--wide),100vw - 24px))/2);width:min(var(--wide),calc(100vw - 24px))}
+}
+
+/* header */
+.top{display:flex;align-items:baseline;justify-content:space-between;gap:16px;font-size:14px}
+.top .name{color:var(--ink);font-weight:550}
+.top .name span{color:var(--muted);font-weight:400}
+.top nav{display:flex;gap:18px;color:var(--muted)}
+.top nav a{text-decoration:none}
+.top nav a:hover{color:var(--ink)}
+h1{margin:30px 0 0;color:var(--ink);font-size:clamp(30px,4.4vw,40px);line-height:1.12;font-weight:600;letter-spacing:-.028em;text-wrap:balance}
+h1 em{font-size:1.12em;letter-spacing:-.01em}
+.lede{margin:16px 0 0;font-size:17px;line-height:1.55;color:var(--text);text-wrap:pretty}
+.paths{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:26px 0 0}
+.path{display:block;padding:14px 16px 15px;border:1px solid var(--rule);border-radius:10px;background:#fff;text-decoration:none;transition:border-color .2s,box-shadow .2s}
+.path:hover{border-color:#cfcfcb;box-shadow:0 1px 0 #0000000a,0 6px 16px -10px #0000002a}
+.path b{display:flex;justify-content:space-between;color:var(--ink);font-weight:550;font-size:15px}
+.path b::after{content:"→";color:var(--muted);font-weight:400;transition:transform .2s}
+.path:hover b::after{transform:translateX(2px);color:var(--ink)}
+.path span{display:block;margin-top:3px;font-size:13.5px;line-height:1.45;color:var(--muted)}
+.path.primary{border-color:#d8d8d5}
+.meta{margin:18px 0 0;font-size:13px;color:var(--muted);display:flex;flex-wrap:wrap;column-gap:8px}
+.meta span{white-space:nowrap}
+.meta span+span::before{content:"·";margin-right:8px;color:#c4c4c0}
+@media (max-width:560px){.paths{grid-template-columns:1fr}}
+
+/* sections */
+section{margin-top:84px}
+.h{display:flex;align-items:baseline;justify-content:space-between;gap:16px;border-top:1px solid var(--rule);padding-top:14px}
+h2{margin:0;color:var(--ink);font-size:21px;line-height:1.3;font-weight:600;letter-spacing:-.016em}
+.h .n{color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
+section p{margin:14px 0 0;text-wrap:pretty}
+.points{margin:22px 0 0;padding:0;list-style:none;display:grid;gap:18px}
+.points li{padding-left:22px;position:relative}
+.points li::before{content:"";position:absolute;left:2px;top:.72em;width:7px;height:1px;background:var(--muted)}
+.points b{color:var(--ink);font-weight:550}
+.steps{margin:20px 0 0;padding:0;list-style:none;counter-reset:s;display:grid;gap:12px}
+.steps li{counter-increment:s;display:grid;grid-template-columns:28px 1fr;align-items:baseline}
+.steps li::before{content:counter(s);color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
+.note{margin-top:16px;padding:12px 14px;border-radius:8px;background:var(--soft);font-size:14px;line-height:1.55}
+kbd,.chip{font:inherit;font-size:.9em;padding:1px 6px;border:1px solid var(--rule);border-bottom-width:2px;border-radius:5px;background:#fff;color:var(--ink);white-space:nowrap}
+.sidenote{font-size:13px;color:var(--muted)}
+
+/* figures: the anatomy plate, made quieter for this page */
+.iso{--anatomy-page:var(--page);--anatomy-card:#fcfcfb}
+figure{margin:28px 0 0}
+.iso-figure{margin:34px 0 0}
+.iso-plate{border-radius:12px;box-shadow:0 0 0 1px var(--rule);background:var(--anatomy-card);padding:46px 22px 50px}
+.iso-plate-corner{font-family:var(--sans)!important;font-size:12px!important;letter-spacing:0!important;text-transform:none!important}
+.iso-legend{font-size:13px;color:var(--muted);margin-top:12px;padding:0 4px}
+.iso-legend .iso-caption{color:var(--text);font-size:13.5px}
+.iso-legend .iso-caption b{color:var(--ink);font-weight:550}
+.figwrap{position:relative}
+@media (max-width:640px){
+  .iso-plate{padding:42px 10px 66px}
+  .iso-plate-corner[data-corner="hint"]{bottom:22px}
+  .iso-plate:has([data-hero]){overflow:hidden}
+  [data-hero] svg{width:113%;max-width:none;margin:-4% 0 -3% -7%}
+}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* code card: the one place with a monospace face */
+.code{margin:22px 0 0;border:1px solid var(--rule);border-radius:10px;background:#fff;overflow:hidden}
+.code .bar{display:flex;justify-content:space-between;padding:8px 14px;border-bottom:1px solid var(--rule);font-size:12.5px;color:var(--muted)}
+.code pre{margin:0;padding:14px 16px 16px;overflow-x:auto;font:12.6px/1.62 ui-monospace,"SF Mono",Menlo,Consolas,monospace;color:#2b2b30;tab-size:2}
+.code .k{color:#8a3ffc}.code .s{color:#0f7b55}.code .c{color:#9a9aa0}.code .f{color:#1a5fd6}
+
+/* tables */
+table{width:100%;border-collapse:collapse;margin:18px 0 0;font-size:14px}
+th,td{text-align:left;padding:8px 10px 8px 0;border-bottom:1px solid var(--rule);vertical-align:top}
+th{color:var(--muted);font-weight:500;font-size:12.5px}
+td:first-child{color:var(--ink);white-space:nowrap}
+
+/* transcript */
+.talk{margin:24px 0 0;display:grid;gap:10px}
+.turn{display:grid;grid-template-columns:76px 1fr;gap:14px;align-items:start}
+.turn .who{font-size:12.5px;color:var(--muted);padding-top:9px;text-align:right}
+.turn .say{padding:9px 13px 10px;border-radius:10px;background:#fff;border:1px solid var(--rule);font-size:14px;line-height:1.5;min-width:0}
+.turn.agent .say{background:var(--soft);border-color:transparent}
+.turn.event .say{background:none;border:1px dashed #d9d9d6;color:var(--muted)}
+.turn .req{color:var(--ink);font-weight:550;word-break:break-all}
+.turn .req i{font-style:normal;color:var(--muted);font-weight:400}
+.turn .st{display:inline-block;margin-right:8px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:600;background:#e9f6ef;color:#16754a}
+.turn .st.warn{background:#fdecef;color:#b3134a}
+.turn .body{margin-top:4px;color:var(--text);overflow-wrap:anywhere}
+.turn .body q{quotes:none;font-family:var(--serif);font-style:italic}
+
+/* live demo */
+.demo{margin:24px 0 0;border:1px solid var(--rule);border-radius:12px;background:#fff;padding:18px}
+.demo .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.btn{appearance:none;font:inherit;font-size:14px;font-weight:550;color:#fff;background:var(--ink);border:0;border-radius:8px;padding:9px 14px;cursor:pointer}
+.btn.quiet{background:#fff;color:var(--ink);box-shadow:inset 0 0 0 1px #d9d9d6}
+.btn:disabled{opacity:.5;cursor:default}
+.demo .link{flex:1;min-width:220px;font-size:13.5px;padding:9px 12px;border-radius:8px;background:var(--soft);color:var(--ink);overflow-wrap:anywhere}
+.demo .prompt{margin-top:14px;font-size:14px}
+.demo .prompt q{display:block;margin-top:6px;padding:10px 12px;border-left:2px solid var(--accent);background:#fff8fa;quotes:none;color:var(--ink)}
+.demo ol{margin:14px 0 0;padding:0;list-style:none;font-size:13.5px;max-height:220px;overflow:auto}
+.demo ol li{display:grid;grid-template-columns:74px 1fr auto;gap:10px;padding:6px 0;border-top:1px solid var(--rule)}
+.demo ol li time{color:var(--muted);font-variant-numeric:tabular-nums}
+.demo ol li .r{color:var(--muted)}
+.demo .state{margin-top:10px;font-size:13px;color:var(--muted)}
+
+/* use cases */
+.cases{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:22px 0 0}
+.case{padding:14px 16px 15px;border:1px solid var(--rule);border-radius:10px;background:#fff}
+.case b{display:block;color:var(--ink);font-weight:550;font-size:14.5px}
+.case p{margin:4px 0 0;font-size:14px;line-height:1.5}
+.case .who{margin-top:8px;font-size:12.5px;color:var(--muted)}
+@media (max-width:560px){.cases{grid-template-columns:1fr}}
+
+/* questions */
+details{border-top:1px solid var(--rule);padding:12px 0}
+details:last-of-type{border-bottom:1px solid var(--rule)}
+summary{cursor:pointer;color:var(--ink);font-weight:550;list-style:none;display:flex;justify-content:space-between;gap:12px}
+summary::after{content:"+";color:var(--muted);font-weight:400}
+details[open] summary::after{content:"–"}
+summary::-webkit-details-marker{display:none}
+details p{margin:8px 0 0;font-size:14.5px}
+
+/* install box */
+.install{margin:24px 0 0;padding:18px 20px;border-radius:12px;background:#fff;border:1px solid var(--rule)}
+.install .steps{margin-top:10px}
+
+footer{margin:96px 0 0;padding:18px 0 56px;border-top:1px solid var(--rule);font-size:13px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 18px;justify-content:space-between}
+footer a{text-decoration:none}
+footer a:hover{color:var(--ink)}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+</style>
+</head>
+<body class="iso" data-theme="light">
+<div class="layout">
+<nav class="toc" aria-label="Contents">
+  <a class="brand" href="#top">Agent Socket</a>
+  <a href="/download">Get the extension</a>
+  <a href="https://github.com/blitzdotdev/agent-socket">GitHub</a>
+  <div class="gap"></div>
+  <a href="#different">What's different</a>
+  <a href="#how">How it works</a>
+  <a href="#browser">Use your browser tab</a>
+  <a href="#app">Add it to your app</a>
+  <a href="#try">Try it on this page</a>
+  <a href="#session">A real session</a>
+  <a href="#uses">What it's for</a>
+  <a href="#watch">Watch it</a>
+  <a href="#questions">Questions</a>
+  <a href="#install">Install</a>
+</nav>
+<main id="top">
+  <div class="top">
+    <div class="name">Agent Socket <span>· a link any AI agent can use</span></div>
+    <nav aria-label="Site"><a href="#install">Install</a><a href="https://github.com/blitzdotdev/agent-socket">GitHub</a></nav>
+  </div>
+  <h1>Give any AI agent <em>a link</em> to your app or your browser.</h1>
+  <p class="lede">Paste one link into Claude Code, Codex, Cursor or your own script. The agent reads what it can do and does it over plain HTTPS: no MCP server, no OAuth, nothing to install on its side.</p>
+  <div class="paths">
+    <a class="path primary" href="#browser"><b>Use my browser tab</b><span>The Chrome extension. Connect a tab, copy its link, paste it into your agent.</span></a>
+    <a class="path" href="#app"><b>Add it to my app</b><span>About ten lines of the SDK turn your app's actions into a link.</span></a>
+  </div>
+  <p class="meta"><span>Open source, Apache 2.0</span><span>Hosted at agentsocket.dev, or run your own</span><span>Links survive 24 h offline</span></p>
+
+  <div class="wide figwrap">
+<!--HERO-->
+  </div>
+
+  <p>Most ways of letting an AI use your software tie you to one vendor or one machine. Agent Socket is a relay with one idea: your tab or app keeps an open line to it, and you give the agent a URL. Everything the agent does is an ordinary web request to that URL, answered by your tab or app as it happens.</p>
+
+  <section id="different" aria-labelledby="h-different">
+    <div class="h"><h2 id="h-different">What's different</h2><span class="n">01</span></div>
+    <ul class="points">
+      <li><b>It's a link, not a plugin.</b> Anything that can send an HTTPS request can use it: Claude Code on your laptop or in a cloud session, Codex, Cursor, a twenty-line script. An agent running in the cloud can work in the browser on your laptop, signed in as you. Browser helpers built into one AI product work with that product, on that computer.</li>
+      <li><b>Any web app can offer it.</b> About ten lines of the SDK turn your app's actions into URLs an agent can call. There's no MCP server to host, no OAuth to set up and no backend of your own: the page itself answers. The Chrome extension is one app built this way.</li>
+      <li><b>A link that holds.</b> If your laptop sleeps, the Wi-Fi drops or Chrome restarts the extension, the relay keeps the session for up to 24 hours and the agent is told to retry. When your side comes back, the same link works again; you don't paste a new one.</li>
+      <li><b>Skills agents share.</b> A public registry of site profiles: notes and ready-made tools for a site, like reading Google Sheets' canvas grid. When you connect a tab, its site's profile loads, so the next agent doesn't spend ten minutes working the site out again. New profiles are reviewed before they're published.</li>
+    </ul>
+  </section>
+
+  <section id="how" aria-labelledby="h-how">
+    <div class="h"><h2 id="h-how">How it works</h2><span class="n">02</span></div>
+    <p>Your side opens the line; the agent only ever makes web requests. Here is one call, from the moment your tab or app connects.</p>
+    <div class="wide">
+<!--HOW-->
+    </div>
+    <ol class="steps">
+      <li><span><b>Your side connects.</b> The extension, or your app through the SDK, opens one WebSocket to the relay and lists the actions it offers. It gets back a link for this session.</span></li>
+      <li><span><b>You give the agent the link.</b> Paste it into the chat. The agent fetches <span class="chip">agents.md</span> for instructions and <span class="chip">tools.json</span> for the list of actions; the relay answers both itself.</span></li>
+      <li><span><b>Every action is a web request.</b> The agent calls an action like any URL. The relay passes it down the open line, your tab or app does it, and the answer comes straight back. A call can take up to 30 seconds; longer work replies with a task to poll.</span></li>
+      <li><span><b>You end it.</b> Stop, closing the tab, or <span class="chip">session.close()</span> in your app ends the session and every link it made stops working.</span></li>
+    </ol>
+  </section>
+
+  <section id="browser" aria-labelledby="h-browser">
+    <div class="h"><h2 id="h-browser">Use your browser tab</h2><span class="n">03</span></div>
+    <p>The Chrome extension makes any tab you choose into an app on the relay. The agent can read the page, click, type, scroll, go to other pages and take screenshots, in that tab only, signed in as you.</p>
+    <ol class="steps">
+      <li><span><a href="/download">Download the extension</a> and unzip it.</span></li>
+      <li><span>Open <span class="chip">chrome://extensions</span>, turn on <b>Developer mode</b>, click <b>Load unpacked</b> and pick the folder.</span></li>
+      <li><span>On the extension's <b>Details</b> page, turn on <b>Allow User Scripts</b>. Without it, the agent can't run its own code on sites with a strict security policy.</span></li>
+      <li><span>Open the tab you want help with, click the Agent Socket icon, then <b>Connect this tab</b>.</span></li>
+      <li><span>Copy the link, paste it into your agent and say what you want done.</span></li>
+    </ol>
+    <p>You stay in charge of what it can reach and for how long:</p>
+    <div class="wide">
+<!--POPUP-->
+    </div>
+  </section>
+
+  <section id="app" aria-labelledby="h-app">
+    <div class="h"><h2 id="h-app">Add it to your app</h2><span class="n">04</span></div>
+    <p>Give your app a “Connect with AI” button. Each tool is a path, a description and a handler; the handler runs in your page (or your Node process) when the agent calls it.</p>
+    <div class="code" role="group" aria-label="Example: a counter an agent can change">
+      <div class="bar"><span>index.html</span><span>npm i @agent-socket/sdk</span></div>
+<pre><span class="k">import</span> { connect } <span class="k">from</span> <span class="s">"https://esm.sh/@agent-socket/sdk@0.1"</span>
+
+<span class="k">let</span> count = <span class="f">0</span>
+<span class="k">const</span> session = <span class="k">await</span> <span class="f">connect</span>({
+  baseUrl: <span class="s">"https://agentsocket.dev"</span>,
+  appId: <span class="s">"counter"</span>,
+  agentsMd: <span class="s">"# Counter\nCall /increment to add to it."</span>,
+  tools: [{
+    path: <span class="s">"/increment"</span>,
+    description: <span class="s">"Add `by` (default 1). Returns the new count."</span>,
+    handler: ({ body }) =&gt; {
+      count += JSON.<span class="f">parse</span>(body || <span class="s">"{}"</span>).by ?? <span class="f">1</span>
+      <span class="k">return</span> { count }
+    },
+  }],
+})
+<span class="k">const</span> link = <span class="k">await</span> session.<span class="f">mintAgentToken</span>({ label: <span class="s">"chat"</span> })
+<span class="c">// show link.url to the user: that is what they paste into the agent</span></pre>
+    </div>
+    <p>The agent reads the link's <span class="chip">agents.md</span>, fetches <span class="chip">tools.json</span>, then sends <span class="chip">POST …/increment</span> with <span class="chip">{"by": 2}</span> and gets <span class="chip">{"count": 2}</span> back. The same app runs in Node. The limits are generous for this kind of work:</p>
+    <table>
+      <thead><tr><th>Limit</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>One call</td><td>30 s; longer work replies with a task the agent polls</td></tr>
+        <tr><td>Request from the agent</td><td>1 MiB</td></tr>
+        <tr><td>Reply from your app</td><td>About 4 MiB (keep screenshots under about 3 MiB)</td></tr>
+        <tr><td>Calls at once</td><td>100 per session</td></tr>
+        <tr><td>Links</td><td>50 per session, each revocable on its own</td></tr>
+        <tr><td>Offline hold</td><td>24 h, then the session ends</td></tr>
+      </tbody>
+    </table>
+    <p class="sidenote">The full protocol, every limit and the threat model are in <a href="https://github.com/blitzdotdev/agent-socket/blob/master/docs/protocol.md">docs/protocol.md</a>; the API in <a href="https://github.com/blitzdotdev/agent-socket/blob/master/sdk/README.md">sdk/README.md</a>.</p>
+  </section>
+
+  <section id="try" aria-labelledby="h-try">
+    <div class="h"><h2 id="h-try">Try it on this page</h2><span class="n">05</span></div>
+    <p>This page is an app too. Connect it, paste the link into your agent, and ask it to work the switchboard in Fig 1: pull a plug, close the laptop, send calls. Nothing connects until you press the button, and the link stops working when you press Stop or leave the page.</p>
+<!--DEMO-->
+  </section>
+
+  <section id="session" aria-labelledby="h-session">
+    <div class="h"><h2 id="h-session">A real session</h2><span class="n">06</span></div>
+<!--TRANSCRIPT-->
+  </section>
+
+  <section id="uses" aria-labelledby="h-uses">
+    <div class="h"><h2 id="h-uses">What it's for</h2><span class="n">07</span></div>
+    <div class="cases">
+      <div class="case"><b>Work in a signed-in dashboard</b><p>An agent in a cloud session pulls numbers from a billing page that only your browser is logged in to, and never sees your password.</p><div class="who">Extension</div></div>
+      <div class="case"><b>Fill in a long form</b><p>Hand it the tab with the form open and the facts in the chat. It fills field by field; you check before you submit.</p><div class="who">Extension</div></div>
+      <div class="case"><b>Test your own site</b><p>Point an agent at your staging site in a real browser: it clicks through a flow, reads errors and tells you what broke.</p><div class="who">Extension</div></div>
+      <div class="case"><b>Add “Connect with AI” to an app</b><p>Expose the actions your users already have (create, search, export) and let their agent of choice call them.</p><div class="who">SDK</div></div>
+      <div class="case"><b>Several agents, one app</b><p>Give each agent its own link to the same app. <a href="https://github.com/blitzdotdev/agent-socket-channel">agent-socket-channel</a> is a chat room where several AIs talk through one.</p><div class="who">SDK</div></div>
+      <div class="case"><b>An agent that outlives your laptop lid</b><p>Start a long job from a cloud agent, close the lid, open it later: the link is the same and the agent carries on.</p><div class="who">Both</div></div>
+    </div>
+  </section>
+
+  <section id="watch" aria-labelledby="h-watch">
+    <div class="h"><h2 id="h-watch">Watch it</h2><span class="n">08</span></div>
+<!--WATCH-->
+  </section>
+
+  <section id="questions" aria-labelledby="h-questions">
+    <div class="h"><h2 id="h-questions">Questions</h2><span class="n">09</span></div>
+    <div style="margin-top:14px">
+      <details><summary>How is this different from MCP?</summary><p>MCP is a protocol an AI client has to support, and the server usually has to be hosted and set up with OAuth. Agent Socket needs nothing from the client but web requests: the link is the whole setup. The tools are the same idea (a name, a description, an input schema), so moving between the two is easy.</p></details>
+      <details><summary>How is this different from Claude in Chrome?</summary><p>Claude in Chrome lets Claude act in your browser. Agent Socket gives you a link that any agent can call, including ones that run somewhere else, like a cloud coding session; and the same relay works for your own apps, not only the browser.</p></details>
+      <details><summary>Does it work with ChatGPT or Gemini?</summary><p>It works with any agent that can send HTTP requests to a URL, including POST with a JSON body. Chat apps that can only open web pages can read the instructions but can't call the tools.</p></details>
+      <details><summary>Is it safe?</summary><p>The link is the key: anyone holding it can call the tools until the session ends, so share it only with the agent you mean to. The extension limits an agent to the one tab you connected and, by default, the site it was on; sessions stop after 60 minutes unless you change that; every action is logged on your computer for 7 days; and Stop ends everything at once. The relay doesn't keep what passes through it.</p></details>
+      <details><summary>What does the relay keep?</summary><p>While a session lasts, its setup: the tool list, the instructions, a hash of each link and results of long-running calls until they're fetched. Ending a session deletes it at once; a session left offline is deleted after 24 hours. Calls and replies are not stored. Details in the <a href="/privacy">privacy policy</a>.</p></details>
+      <details><summary>Can I run my own relay?</summary><p>Yes. It's one Cloudflare Worker: <span class="chip">npx wrangler deploy</span> from the repo puts it on your account, and the SDK's <span class="chip">baseUrl</span> or the extension's Settings point at it. See <a href="https://github.com/blitzdotdev/agent-socket/blob/master/docs/self-hosting.md">docs/self-hosting.md</a>.</p></details>
+      <details><summary>What does it cost?</summary><p>Nothing. The code is open source under Apache 2.0, and the hosted relay at agentsocket.dev is free to use.</p></details>
+    </div>
+  </section>
+
+  <section id="install" aria-labelledby="h-install">
+    <div class="h"><h2 id="h-install">Install</h2><span class="n">10</span></div>
+    <div class="install">
+      <b style="color:var(--ink)">The Chrome extension</b>
+      <ol class="steps">
+        <li><span><a href="/download">Download the latest release</a> and unzip it.</span></li>
+        <li><span><span class="chip">chrome://extensions</span> → <b>Developer mode</b> → <b>Load unpacked</b> → pick the folder.</span></li>
+        <li><span><b>Details</b> → <b>Allow User Scripts</b>.</span></li>
+        <li><span>On any tab: the Agent Socket icon → <b>Connect this tab</b> → copy the link.</span></li>
+      </ol>
+    </div>
+    <div class="install">
+      <b style="color:var(--ink)">The SDK</b>
+      <p style="margin-top:6px"><span class="chip">npm i @agent-socket/sdk</span>, or import it from <span class="chip">esm.sh/@agent-socket/sdk</span>. Start from <a href="https://github.com/blitzdotdev/agent-socket/tree/master/examples/minimal">examples/minimal</a>.</p>
+    </div>
+  </section>
+
+  <footer>
+    <span>Agent Socket · open source under Apache 2.0 · <a href="https://github.com/blitzdotdev/agent-socket">GitHub</a> · <a href="/privacy">Privacy</a> · <a href="mailto:contact@agentsocket.dev">contact@agentsocket.dev</a></span>
+    <span>Figures drawn with <a href="https://github.com/wheresryan22/anatomy">anatomy</a> (MIT) · Inter and Newsreader (OFL)</span>
+  </footer>
+</main>
+</div>
+<!--SCRIPTS-->
+<script type="module">
+// Contents: mark the section being read.
+const links = new Map([...document.querySelectorAll('.toc a[href^="#"]')].map((a) => [a.getAttribute("href").slice(1), a]))
+const seen = new Map()
+const io = new IntersectionObserver((entries) => {
+  for (const e of entries) seen.set(e.target.id, e.isIntersecting)
+  const current = [...links.keys()].find((id) => seen.get(id))
+  links.forEach((a, id) => a.setAttribute("aria-current", String(id === current)))
+}, { rootMargin: "-15% 0px -70% 0px" })
+for (const id of links.keys()) { const el = document.getElementById(id); if (el) io.observe(el) }
+</script>
+</body>
+</html>
