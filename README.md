@@ -8,7 +8,7 @@ Give an AI chat a link, and it can use your web page or app through plain HTTPS 
 2. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and pick the unzipped folder.
 3. On the extension's **Details** page, turn on **Allow User Scripts** (Chrome 138+; on Chrome 135-137 Developer mode is enough).
 4. Open the tab you want help with, click the Agent Socket icon, then **Connect this tab**. The first time, Chrome asks for permission to access sites.
-5. Copy the link and paste it into Claude (ChatGPT and Gemini work too), then say what you want done.
+5. Copy the link and paste it into your agent (Claude Code, Codex, Cursor, or anything that can send HTTP requests), then say what you want done.
 
 The AI can read the page, click, type, scroll, navigate and take screenshots, in that tab only. While it has access, the page shows an "AI has access to this tab" bar with a **Stop** button and the toolbar icon shows an "AI" badge. **Stop**, **Stop & disconnect** in the popup, or closing the tab ends the session, and the link stops working.
 
@@ -23,7 +23,7 @@ npm i @agent-socket/sdk
 From [examples/minimal/index.html](examples/minimal/index.html):
 
 ```js
-import { connect } from "https://esm.sh/@agent-socket/sdk@0.1"
+import { connect } from "https://esm.sh/@agent-socket/sdk@0.2"
 
 let count = 0
 document.querySelector("#connect").onclick = async () => {

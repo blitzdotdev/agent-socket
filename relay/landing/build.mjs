@@ -44,7 +44,7 @@ const howPlate = k.plateHtml({
   title: "One call",
   readout: "",
   caption: "Your side opens the line; the agent only makes web requests. The relay answers the agent's reading itself and passes every action down the open connection.",
-  body: howSvg(),
+  body: `<div class="fhow-scroll">${howSvg()}</div>`,
 })
 
 // ── live demo ──────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ const demoHtml = `<div class="demo" data-demo>
 // ── a real session ────────────────────────────────────────────────────
 function transcriptHtml() {
   const t = JSON.parse(read("transcript.json"))
-  const keep = (s) => !(s.kind === "call" && (s.path === "/plug_in" || (s.path === "/status" && s.status === 200)))
+  const keep = (s) => !(s.kind === "call" && (s.path === "/status" && s.status === 200))
   const describe = (s) => {
     if (s.path === "/agents.md") {
       const first = (s.text ?? "").split("\n").find((l) => l.startsWith("# ")) ?? ""
@@ -82,7 +82,7 @@ function transcriptHtml() {
     return req + res
   })
   const when = new Date(t.recorded).toISOString().slice(0, 10)
-  return `<p>Recorded on ${when} against the live relay: the demo app from section 05 running in Node, and a script in the agent's seat using nothing but web requests. Halfway through, the app's connection is cut without a goodbye, the way a sleeping laptop looks to the relay. Nothing below is edited except the link's secret part.</p>
+  return `<p>Recorded on ${when} against the live relay: the demo app from section 05 running in Node, and a script in the agent's seat using nothing but web requests. Halfway through, the app's connection is cut without a goodbye, the way a sleeping laptop looks to the relay. Only the routine status checks are left out, and the link's secret part is hidden; nothing else is edited. The 200 replies are the demo app's own: it simulates Fig 1, so its words describe the switchboard.</p>
     <div class="talk">${rows.join("\n")}</div>
     <p class="sidenote">The script that made this is <a href="https://github.com/blitzdotdev/agent-socket/blob/master/relay/landing/capture.mjs">relay/landing/capture.mjs</a>.</p>`
 }

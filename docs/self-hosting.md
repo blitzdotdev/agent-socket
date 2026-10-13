@@ -12,7 +12,7 @@ npm install
 
 ## Relay
 
-The relay is a Worker with one Durable Object class and a rate-limit binding. It keeps sessions in memory and stores nothing.
+The relay is a Worker with one Durable Object class and a rate-limit binding. It keeps each session in Durable Object storage while it lasts, and for up to 24 hours after its app drops; see [protocol.md](protocol.md#storage).
 
 ### Run locally
 

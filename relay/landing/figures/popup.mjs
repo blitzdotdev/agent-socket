@@ -1,7 +1,6 @@
 // Fig 3: the extension's popup on a connected tab, drawn from its real
 // layout and labels (chrome-extension/popup.html), with the five controls
-// numbered and explained beside it. The real popup is set in a monospace face;
-// here it is in the page's sans.
+// numbered and explained beside it. Both use Inter.
 
 export function popupHtml() {
   const n = (i) => `<span class="pp-n" aria-hidden="true">${i}</span>`
@@ -44,7 +43,7 @@ export const POPUP_CSS = `
 .pp-pop{position:relative;background:#0f0f12;color:#e8e8ec;border-radius:12px;padding:12px;font-size:12px;line-height:1.4;box-shadow:0 1px 0 #ffffff14 inset,0 18px 40px -18px #00000066,0 0 0 1px #00000014}
 .pp-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px;font-size:13px}
 .pp-ok{width:9px;height:9px;border-radius:50%;background:#5ad06a;box-shadow:0 0 6px #5ad06a99}
-.pp-card{position:relative;min-width:0;background:#1a1a1f;border:1px solid #2a2a30;border-radius:8px;padding:9px 10px;margin-bottom:8px;display:grid;gap:6px}
+.pp-card{position:relative;min-width:0;grid-template-columns:minmax(0,1fr);background:#1a1a1f;border:1px solid #2a2a30;border-radius:8px;padding:9px 10px;margin-bottom:8px;display:grid;gap:6px}
 .pp-mut{color:#8c8c93;font-size:11.5px}
 .pp-strong{font-weight:600;font-size:13px}
 .pp-tab{display:flex;gap:8px;align-items:center}.pp-tab>span:last-child{display:grid}

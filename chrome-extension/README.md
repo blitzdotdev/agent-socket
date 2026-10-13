@@ -1,7 +1,7 @@
 # Agent Socket — Chrome Extension
 
-Connect any AI chat (Claude, ChatGPT, Gemini, …) to **a browser tab you
-choose**. The extension acts as an agent-socket *app*: it opens a WebSocket
+Connect any AI agent that can send HTTP requests (Claude Code, Codex,
+Cursor, …) to **browser tabs you choose**, each with its own link. The extension acts as an agent-socket *app*: it opens a WebSocket
 to the relay, registers a toolset bound to that tab, and gives you a
 paste-able URL. Paste the URL into your AI chat and the AI can click, fill,
 read, evaluate, and screenshot the page on your behalf.

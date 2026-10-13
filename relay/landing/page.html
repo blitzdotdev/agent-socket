@@ -255,7 +255,7 @@ footer a:hover{color:var(--ink)}
     <p>Give your app a “Connect with AI” button. Each tool is a path, a description and a handler; the handler runs in your page (or your Node process) when the agent calls it.</p>
     <div class="code" role="group" aria-label="Example: a counter an agent can change">
       <div class="bar"><span>index.html</span><span>npm i @agent-socket/sdk</span></div>
-<pre><span class="k">import</span> { connect } <span class="k">from</span> <span class="s">"https://esm.sh/@agent-socket/sdk@0.1"</span>
+<pre><span class="k">import</span> { connect } <span class="k">from</span> <span class="s">"https://esm.sh/@agent-socket/sdk@0.2"</span>
 
 <span class="k">let</span> count = <span class="f">0</span>
 <span class="k">const</span> session = <span class="k">await</span> <span class="f">connect</span>({
@@ -323,8 +323,8 @@ footer a:hover{color:var(--ink)}
       <details><summary>How is this different from MCP?</summary><p>MCP is a protocol an AI client has to support, and the server usually has to be hosted and set up with OAuth. Agent Socket needs nothing from the client but web requests: the link is the whole setup. The tools are the same idea (a name, a description, an input schema), so moving between the two is easy.</p></details>
       <details><summary>How is this different from Claude in Chrome?</summary><p>Claude in Chrome lets Claude act in your browser. Agent Socket gives you a link that any agent can call, including ones that run somewhere else, like a cloud coding session; and the same relay works for your own apps, not only the browser.</p></details>
       <details><summary>Does it work with ChatGPT or Gemini?</summary><p>It works with any agent that can send HTTP requests to a URL, including POST with a JSON body. Chat apps that can only open web pages can read the instructions but can't call the tools.</p></details>
-      <details><summary>Is it safe?</summary><p>The link is the key: anyone holding it can call the tools until the session ends, so share it only with the agent you mean to. The extension limits an agent to the one tab you connected and, by default, the site it was on; sessions stop after 60 minutes unless you change that; every action is logged on your computer for 7 days; and Stop ends everything at once. The relay doesn't keep what passes through it.</p></details>
-      <details><summary>What does the relay keep?</summary><p>While a session lasts, its setup: the tool list, the instructions, a hash of each link and results of long-running calls until they're fetched. Ending a session deletes it at once; a session left offline is deleted after 24 hours. Calls and replies are not stored. Details in the <a href="/privacy">privacy policy</a>.</p></details>
+      <details><summary>Is it safe?</summary><p>The link is the key: anyone holding it can call the tools until the session ends, so share it only with the agent you mean to. The extension limits an agent to the one tab you connected and, by default, the site it was on; sessions stop after 60 minutes unless you change that; every action is logged on your computer for 7 days; and Stop ends everything at once. The relay doesn't store calls or replies, apart from results of long-running calls until they're fetched.</p></details>
+      <details><summary>What does the relay keep?</summary><p>While a session lasts, its setup: the tool list, the instructions, a hash and an encrypted copy of each link, and results of long-running calls until they're fetched. Ending a session deletes it at once; a session left offline is deleted after 24 hours. Calls and replies are not stored. Details in the <a href="/privacy">privacy policy</a>.</p></details>
       <details><summary>Can I run my own relay?</summary><p>Yes. It's one Cloudflare Worker: <span class="chip">npx wrangler deploy</span> from the repo puts it on your account, and the SDK's <span class="chip">baseUrl</span> or the extension's Settings point at it. See <a href="https://github.com/blitzdotdev/agent-socket/blob/master/docs/self-hosting.md">docs/self-hosting.md</a>.</p></details>
       <details><summary>What does it cost?</summary><p>Nothing. The code is open source under Apache 2.0, and the hosted relay at agentsocket.dev is free to use.</p></details>
     </div>
@@ -356,14 +356,21 @@ footer a:hover{color:var(--ink)}
 <!--SCRIPTS-->
 <script type="module">
 // Contents: mark the section being read.
-const links = new Map([...document.querySelectorAll('.toc a[href^="#"]')].map((a) => [a.getAttribute("href").slice(1), a]))
+const links = new Map([...document.querySelectorAll('.toc a[href^="#"]:not(.brand)')].map((a) => [a.getAttribute("href").slice(1), a]))
 const seen = new Map()
+// At the very bottom the last sections can't reach the reading band, so the last one counts.
+const mark = () => {
+  const ids = [...links.keys()]
+  const atEnd = innerHeight + scrollY >= document.documentElement.scrollHeight - 2
+  const current = atEnd ? ids.at(-1) : ids.find((id) => seen.get(id))
+  links.forEach((a, id) => a.setAttribute("aria-current", String(id === current)))
+}
 const io = new IntersectionObserver((entries) => {
   for (const e of entries) seen.set(e.target.id, e.isIntersecting)
-  const current = [...links.keys()].find((id) => seen.get(id))
-  links.forEach((a, id) => a.setAttribute("aria-current", String(id === current)))
+  mark()
 }, { rootMargin: "-15% 0px -70% 0px" })
 for (const id of links.keys()) { const el = document.getElementById(id); if (el) io.observe(el) }
+addEventListener("scroll", mark, { passive: true })
 </script>
 </body>
 </html>

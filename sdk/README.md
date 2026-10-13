@@ -8,7 +8,7 @@ Runs in browsers, Cloudflare Workers and Node 22+ on the built-in `WebSocket`. N
 npm i @agent-socket/sdk
 ```
 
-In a page without a bundler: `import { connect } from "https://esm.sh/@agent-socket/sdk@0.1"`.
+In a page without a bundler: `import { connect } from "https://esm.sh/@agent-socket/sdk@0.2"`.
 
 ## Example
 

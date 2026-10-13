@@ -45,6 +45,8 @@ export function howSvg() {
 }
 
 export const HOW_CSS = `
+.fhow-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+@media (max-width:700px){.fhow-scroll .fhow{min-width:640px}}
 .fhow .fl{font:500 11.5px var(--sans);fill:var(--text,#45454a)}
 .fhow .fl-strong{font-weight:600;font-size:12.5px;fill:var(--ink,#1d1d20)}
 .fhow .fl-muted{font-weight:400;fill:var(--muted,#8b8b90)}
