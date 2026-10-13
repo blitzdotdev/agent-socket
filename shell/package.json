@@ -1,0 +1,30 @@
+{
+  "name": "@agent-socket/shell",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Let an AI agent anywhere run shell commands on your machine through an agent-socket link, each one shown in your terminal and run only when you say so.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blitzdotdev/agent-socket.git",
+    "directory": "shell"
+  },
+  "homepage": "https://github.com/blitzdotdev/agent-socket/tree/master/shell",
+  "bugs": "https://github.com/blitzdotdev/agent-socket/issues",
+  "bin": {
+    "agent-socket-shell": "bin/agent-socket-shell.mjs"
+  },
+  "files": [
+    "README.md",
+    "agents.md",
+    "bin/agent-socket-shell.mjs",
+    "lib/"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=22"
+  }
+}

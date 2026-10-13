@@ -14,6 +14,14 @@ The AI can read the page, click, type, scroll, navigate and take screenshots, in
 
 More in [chrome-extension/README.md](chrome-extension/README.md).
 
+## Let an agent run commands on your machine
+
+```bash
+npx @agent-socket/shell
+```
+
+Paste the link it prints into the agent's chat. Every command the agent sends shows up in your terminal and runs only when you press Enter; you can refuse it with a note to the agent, edit it, or switch to auto and watch. `q` ends the session and the link. More in [shell/README.md](shell/README.md).
+
 ## Add "Connect with AI" to your app
 
 ```bash
