@@ -4,7 +4,7 @@
 // link, timer and sites), else Connect, plus the other connected tabs.
 
 import { DEFAULT_SESSION_MINUTES, TIMER_CHOICES, clock, lengthLabel, originLabel, sessionMinutes, timeLeft } from "./lib/limits.js"
-import { LEVELS, createActivityStore, levelOf } from "./lib/activity.js"
+import { LEVELS, createActivityStore, isEntryKey, levelOf } from "./lib/activity.js"
 import { SNAPSHOT_VERSION } from "./lib/messages.js"
 
 const $ = (s) => document.querySelector(s)
@@ -257,12 +257,22 @@ stopAll.addEventListener("click", async () => {
 
 const statusClass = (st) => (st < 300 ? "ok" : st < 500 ? "warn" : "err")
 let lastActivityJson = null
+// The log is searched again only when an entry was added or deleted, or the
+// tab's sessions changed: not on every poll.
+let activityQuery = null
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && Object.keys(changes).some(isEntryKey)) activityQuery = null
+})
 // A connected tab shows its own session's calls (all its session ids, so a
-// changed link or a resume in progress keeps them). Any other tab shows the
-// latest calls anywhere, labelled with their site.
+// changed link or a resume in progress keeps them), however far back in the
+// log. Any other tab shows the latest calls anywhere, labelled with their site.
 async function renderActivity(bound, sessionIds) {
+  const query = JSON.stringify([bound, sessionIds])
+  if (query === activityQuery) return
+  activityQuery = query
   const mine = (e) => sessionIds.includes(e.session)
-  const calls = (await activity.list(200)).filter((e) => e.kind === "call" && (!bound || mine(e))).slice(0, 3)
+  const calls = await activity.find((e) => e.kind === "call" && (!bound || mine(e)), 3)
+    .catch((e) => { activityQuery = null; throw e })
   const json = JSON.stringify([bound, calls.map((e) => e.id)])
   if (json === lastActivityJson) return
   lastActivityJson = json
