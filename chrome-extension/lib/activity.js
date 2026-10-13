@@ -99,12 +99,12 @@ function maskSecrets(v, password) {
 }
 
 // A short one-line description of the call, for the list.
-function summaryLine(path, args, reply, level, password) {
+function summaryLine(path, args, reply, level, password, hide) {
   const tool = path.replace(/^\//, "")
   if (level === "minimal") return tool
   const b = reply.body && typeof reply.body === "object" ? reply.body : {}
   const sel = typeof args.selector === "string" ? trunc(oneLine(args.selector), 60) : ""
-  const typed = (v) => level === "full" && !password ? `"${trunc(oneLine(v), 60)}"` : `(${v.length} chars${password ? ", password" : ""})`
+  const typed = (v) => level === "full" && !hide ? `"${trunc(oneLine(v), 60)}"` : `(${v.length} chars${password ? ", password" : ""})`
   switch (path) {
     case "/click":
       if (b.clicked && b.text) return `click "${trunc(oneLine(b.text), 60)}"`
@@ -141,27 +141,38 @@ function fitDetail(detail, max) {
   return new TextEncoder().encode(JSON.stringify(detail)).length <= max ? detail : { truncated: true }
 }
 
+// What /fill typed into, from its reply: the input's type, null for a
+// textarea or contenteditable, undefined when the reply doesn't say (the fill
+// failed or was refused).
+function filledType(body) {
+  return body && typeof body === "object" && body.filled === true && Object.hasOwn(body, "input_type") ? body.input_type : undefined
+}
+
 // → { tool, summary, status, error, detail } for one tool call.
 // `password`: the call typed into a password field (from /fill's reply).
+// `hide`: what /fill typed stays hidden even at the full level: a password,
+// or a field the reply doesn't name.
 export function describeCall({ method = "POST", path, args = {}, result, status, error, level = DEFAULT_LEVEL }) {
   level = levelOf(level)
   const reply = error !== undefined
     ? { status: 500, body: { error: { code: "handler_error", message: String(error?.message ?? error) } } }
     : replyOf(result)
   if (status != null) reply.status = status
-  const password = path === "/fill" && reply.body?.input_type === "password"
+  const type = path === "/fill" ? filledType(reply.body) : null
+  const password = type === "password"
+  const hide = path === "/fill" && (type === undefined || password)
   const out = {
     tool: path.replace(/^\//, ""),
     method: String(method).toUpperCase(),
-    summary: summaryLine(path, args, reply, level, password),
+    summary: summaryLine(path, args, reply, level, password, hide),
     status: reply.status,
     error: errorCodeOf(reply.body),
   }
   if (level === "summary") {
     out.detail = fitDetail({ args: maskSummaryArgs(args, path) }, ENTRY_MAX_BYTES - 600)
   } else if (level === "full") {
-    const masked = maskSecrets(args, password)
-    let body = maskSecrets(shrinkValue(reply.body, REPLY_MAX), password)
+    const masked = maskSecrets(args, hide)
+    let body = maskSecrets(shrinkValue(reply.body, REPLY_MAX), hide)
     const text = body === undefined ? "" : JSON.stringify(body)
     if (text.length > REPLY_MAX) body = trunc(text, REPLY_MAX)
     out.detail = fitDetail({ args: shrinkValue(masked, 2000), reply: body }, ENTRY_MAX_BYTES - 600)
@@ -214,6 +225,10 @@ export function groupBySession(entries) {
   })
 }
 
+// Ids of every entry of `session` (null: the entries without one), whatever
+// the filter shows.
+export const sessionEntryIds = (entries, session) => entries.filter((e) => (e.session ?? null) === session).map((e) => e.id)
+
 export function matchesFilter(e, q) {
   q = q.trim().toLowerCase()
   if (!q) return true
@@ -264,6 +279,22 @@ export function createActivityStore(area, { now = Date.now, rand = () => Math.ra
       if (!pick.length) return []
       const got = await area.get(pick)
       return pick.map((k) => got[k]).filter(Boolean).reverse()
+    },
+    // The newest `limit` entries `pred` accepts, newest first: read `chunk`
+    // at a time from the newest, so the whole log only when it has to be.
+    async find(pred, limit, chunk = 200) {
+      const ks = await keys()
+      const out = []
+      for (let end = ks.length; end > 0 && out.length < limit; end -= chunk) {
+        const pick = ks.slice(Math.max(0, end - chunk), end).reverse()
+        const got = await area.get(pick)
+        for (const k of pick) {
+          if (!got[k] || !pred(got[k])) continue
+          out.push(got[k])
+          if (out.length >= limit) break
+        }
+      }
+      return out
     },
     remove: (ids) => serial(async () => {
       ids = [ids].flat().filter(isEntryKey)
