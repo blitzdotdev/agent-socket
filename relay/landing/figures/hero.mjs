@@ -108,6 +108,8 @@ export function buildHero() {
 
   const items = []
   const put = (centre, svg, bias = 0) => items.push({ key: depth(centre) + bias, svg })
+  // a part made of one of the figure's materials (figures/style.mjs)
+  const mat = (name, svg) => `<g class="as-m-${name}">${svg}</g>`
 
   // ── plate ────────────────────────────────────────────────────────────
   const plate = (() => {
@@ -190,8 +192,7 @@ export function buildHero() {
     // lamps: a hood (a short tube along +x) with a lens
     LAMPS.forEach((lamp, i) => {
       const F = G.frameAlong([RISER_FACE, lamp.y, lamp.z], [1, 0, 0])
-      out.push(S(G.disc(0, 1.2, 6.2, F, P), { tone: "mid" }))
-      out.push(S(G.disc(1.2, 4.2, 4.8, F, P), { tone: "mid" }))
+      out.push(mat("brass", S(G.disc(0, 1.2, 6.2, F, P), { tone: "mid" }) + S(G.disc(1.2, 4.2, 4.8, F, P), { tone: "mid" })))
       out.push(`<path class="as-lamp" data-part="lamp-${i}" d="${G.circleOf(F, 4.2, 3.4, P)}"/>`)
       out.push(L(G.circleOf(F, 4.2, 3.4, P), { tone: "lo" }))
     })
@@ -205,7 +206,7 @@ export function buildHero() {
     out.push(S(k.slabOf(JACKS, DECK, JACK_H, P, 3, 0.6), { tone: "mid" }))
     out.push(L(k.planOutline(k.insetPlan(JACKS, 2), JACK_TOP, P, 3), { tone: "faint" }))
     for (const y of SOCKETS) {
-      out.push(L(k.ring(SOCKET_X, y, 4.8, JACK_TOP, P, 28), { tone: "lo" }))
+      out.push(mat("brass", L(k.ring(SOCKET_X, y, 4.8, JACK_TOP, P, 28), { tone: "mid" })))
       out.push(`<path class="as-hole" d="${k.pathOf(k.circleRing(SOCKET_X, y, 2.7, 24).map(([x, yy]) => at([x, yy, JACK_TOP])), true)}"/>`)
     }
     // designation strip: a raised card holder in front of the sockets
@@ -221,8 +222,8 @@ export function buildHero() {
     for (const y of byDepth(SOCKETS.map((y) => [KEYS_X, y])).map((p) => p[1])) {
       const out = []
       out.push(box({ x: KEYS_X - 3, y: y - 3.5, w: 6, d: 7, r: 1 }, DECK, 2.2, { tone: "mid" }, 3, 0.3))
-      out.push(S(k.cylinder(KEYS_X, y, 0.9, DECK + 2.2, 5.4, P, 12), { tone: "mid", crease: "none" }))
-      out.push(S(k.cylinder(KEYS_X, y, 1.7, DECK + 7.6, 2.2, P, 16), { tone: "hi" }))
+      out.push(mat("steel", S(k.cylinder(KEYS_X, y, 0.9, DECK + 2.2, 5.4, P, 12), { tone: "mid", crease: "none" })))
+      out.push(mat("rubber", S(k.cylinder(KEYS_X, y, 1.7, DECK + 7.6, 2.2, P, 16), { tone: "hi" })))
       put([KEYS_X, y, 0], out.join(""), -20)
     }
   }
@@ -233,47 +234,47 @@ export function buildHero() {
     const z0 = JACK_TOP
     // the tip slides out of the socket: one rod, clipped at the socket face
     const tip = G.rodOut(G.frameAlong([p.x, p.y, z0], [0, 0, 1]), 0, 1.2, 1.5, P, { stroke: PULL })
-    out.push(`<clipPath id="as-tip-${i}"><path data-hold d="${tip.clip}"/></clipPath><g clip-path="url(#as-tip-${i})">${S(tip.paths, { tone: "hi", lit })}</g>`)
-    out.push(S(k.cylinder(p.x, p.y, 2.3, z0 + 1, 2.2, P, 20), { tone: "hi", lit }))                            // sleeve
-    out.push(S(k.cylinder(p.x, p.y, 3.8, z0 + 3.2, 1.8, P, 24), { tone: "mid" }))                              // collar
-    out.push(S(k.cylinder(p.x, p.y, 3.3, z0 + 5, 10, P, 24), { tone: "hi", lit, crease: "lo" }))               // body
-    out.push(L(k.knurl(p.x, p.y, 3.3, z0 + 7, z0 + 13, 22, P, 0.3), { tone: "lo" }))
-    out.push(S(k.cylinder(p.x, p.y, 2.4, z0 + 15, 4.6, P, 20), { tone: "mid" }))                               // boot
-    out.push(L(k.sideArc(p.x, p.y, 2.4, z0 + 17.4, P, 12), { tone: "faint" }))
+    out.push(`<clipPath id="as-tip-${i}"><path data-hold d="${tip.clip}"/></clipPath><g clip-path="url(#as-tip-${i})">${mat("brass", S(tip.paths, { tone: "hi" }))}</g>`)
+    out.push(mat("brass", S(k.cylinder(p.x, p.y, 2.3, z0 + 1, 2.2, P, 20), { tone: "hi" })))                  // sleeve
+    out.push(mat("brass", S(k.cylinder(p.x, p.y, 3.8, z0 + 3.2, 1.8, P, 24), { tone: "mid" })))                // collar
+    out.push(mat("rubber", S(k.cylinder(p.x, p.y, 3.3, z0 + 5, 10, P, 24), { tone: "hi", crease: "lo" })        // body
+      + L(k.knurl(p.x, p.y, 3.3, z0 + 7, z0 + 13, 22, P, 0.3), { tone: "mid" })
+      + S(k.cylinder(p.x, p.y, 2.4, z0 + 15, 4.6, P, 20), { tone: "mid" })                                     // boot
+      + L(k.sideArc(p.x, p.y, 2.4, z0 + 17.4, P, 12), { tone: "faint" })))
     return out.join("")
   }
 
   // ── cords ────────────────────────────────────────────────────────────
   const cordR = 1.45
   const routes = {}
-  const cord = (name, control, bend, { tone = "mid" } = {}) => {
+  const cord = (name, control, bend, { tone = "mid", material } = {}) => {
     const route = G.fillet(control, bend, 9, { P, tube: cordR })
     routes[name] = route
     const pieces = tubePieces(route, cordR, P, { maxLength: 14 })
-    for (const piece of pieces) items.push({ key: G.dot3(piece.mid, V), svg: tubeSvg(piece, { tone }) })
+    for (const piece of pieces) items.push({ key: G.dot3(piece.mid, V), svg: mat(material, tubeSvg(piece, { tone })) })
   }
   const PORT_LAP = [LAP.x + 30, LAP.y + LAP.d, 2.25]
   const PORT_APP = [APP.x + 16, APP.y + APP.d, 7]
-  cord("link0", [[PLUGS[0].x, PLUGS[0].y, PLUG_TOP - 1], [PLUGS[0].x, PLUGS[0].y, 100], [PLUGS[0].x + 12, -78, 100], [PORT_LAP[0], -86, 34], [PORT_LAP[0], -90, 1.5], [PORT_LAP[0], PORT_LAP[1] + 12, 1.5], [PORT_LAP[0], PORT_LAP[1] + 2.2, PORT_LAP[2]]], 14)
-  cord("link1", [[PLUGS[1].x, PLUGS[1].y, PLUG_TOP - 1], [PLUGS[1].x, PLUGS[1].y, 116], [-50, PLUGS[1].y, 122], [-56, -120, 122], [PORT_APP[0], -176, 54], [PORT_APP[0], PORT_APP[1] + 16, PORT_APP[2]], [PORT_APP[0], PORT_APP[1] + 2.2, PORT_APP[2]]], 18)
+  cord("link0", [[PLUGS[0].x, PLUGS[0].y, PLUG_TOP - 1], [PLUGS[0].x, PLUGS[0].y, 100], [PLUGS[0].x + 12, -78, 100], [PORT_LAP[0], -86, 34], [PORT_LAP[0], -90, 1.5], [PORT_LAP[0], PORT_LAP[1] + 12, 1.5], [PORT_LAP[0], PORT_LAP[1] + 2.2, PORT_LAP[2]]], 14, { material: "cord" })
+  cord("link1", [[PLUGS[1].x, PLUGS[1].y, PLUG_TOP - 1], [PLUGS[1].x, PLUGS[1].y, 116], [-50, PLUGS[1].y, 122], [-56, -120, 122], [PORT_APP[0], -176, 54], [PORT_APP[0], PORT_APP[1] + 16, PORT_APP[2]], [PORT_APP[0], PORT_APP[1] + 2.2, PORT_APP[2]]], 18, { material: "cord" })
   const SIDE_JACKS = LANES.map((x) => [x, SB.y + SB.d, 16])
   const callerPort = (c) => [c.x + 21.6, c.y - 9, 3.2]
   CALLERS.forEach((c, i) => {
     const [jx, jy, jz] = SIDE_JACKS[i]
     const [px, py, pz] = callerPort(c)
-    cord(`caller${i}`, [[px, py, pz], [jx - 4, py, 1.5], [jx, py - 4, 1.5], [jx, jy + 14, 1.5], [jx, jy + 9, jz], [jx, jy + 2.2, jz]], 5, { tone: "mid" })
+    cord(`caller${i}`, [[px, py, pz], [jx - 4, py, 1.5], [jx, py - 4, 1.5], [jx, jy + 14, 1.5], [jx, jy + 9, jz], [jx, jy + 2.2, jz]], 5, { tone: "mid", material: "rubber" })
   })
   // connector shells where cords land on a face
   {
     const shells = []
-    const shellAlong = (p, axis, body = 2.9, flange = 4.2) => {
+    const shellAlong = (material, p, axis, body = 2.9, flange = 4.2) => {
       const F = G.frameAlong(p, axis)
-      shells.push({ key: depth(p) + 0.5, svg: S(G.disc(0, 2.4, body, F, P), { tone: "mid" }) + S(G.disc(-0.6, 0, flange, F, P), { tone: "mid" }) })
+      shells.push({ key: depth(p) + 0.5, svg: mat(material, S(G.disc(0, 2.4, body, F, P), { tone: "mid" }) + S(G.disc(-0.6, 0, flange, F, P), { tone: "mid" })) })
     }
-    SIDE_JACKS.forEach((p) => shellAlong(p, [0, 1, 0]))
-    shellAlong(PORT_LAP, [0, 1, 0], 1.9, 2.2)
-    shellAlong(PORT_APP, [0, 1, 0])
-    CALLERS.forEach((c) => shellAlong(callerPort(c), [1, 0, 0], 2.2, 3))
+    SIDE_JACKS.forEach((p) => shellAlong("brass", p, [0, 1, 0]))
+    shellAlong("steel", PORT_LAP, [0, 1, 0], 1.9, 2.2)
+    shellAlong("steel", PORT_APP, [0, 1, 0])
+    CALLERS.forEach((c) => shellAlong("steel", callerPort(c), [1, 0, 0], 2.2, 3))
     items.push(...shells)
   }
 
@@ -285,6 +286,7 @@ export function buildHero() {
     if (c.kind === "rack") {
       // a server: stacked units with vents and status lamps
       const H = 50
+      out.push(`<g class="as-m-gunmetal">`)
       out.push(S(k.slabOf(plan, 6, H, P, 4, 0.8), { tone: "mid", inner: [14, 26, 38].map((z) => L(k.sideSeam(plan, z, P, 4), { tone: "faint" })).join("") }))
       out.push(L(k.planOutline(k.insetPlan(plan, 3), 6 + H, P), { tone: "faint" }))
       const fx = plan.x + plan.w
@@ -295,18 +297,21 @@ export function buildHero() {
         return line("lo", slots.join("")) + `<circle class="as-led" data-caller="${ci}" cx="${-(c.y - 10)}" cy="${-(z0 + z1) / 2}" r="1.1"/>` + line("lo", `M${-(c.y - 6)} ${-(z0 + z1) / 2 - 2}V${-(z0 + z1) / 2 + 2}`, ` data-free="both"`)
       }).join("")))
       out.push(screws(units.flatMap(([z0, z1]) => [[fx, plan.y + 2.4, (z0 + z1) / 2], [fx, plan.y + plan.d - 2.4, (z0 + z1) / 2]]), 0.4))
+      out.push(`</g>`)
     } else if (c.kind === "terminal") {
       // a small terminal: a screen in a case, a keyboard in front
       const body = { x: plan.x, y: plan.y, w: 26, d: plan.d, r: 3 }
+      out.push(`<g class="as-m-beige">`)
       out.push(S(k.slabOf(body, 6, 34, P, 4, 0.8), { tone: "mid", inner: L(k.sideSeam(body, 10, P, 4), { tone: "faint" }) }))
       out.push(L(k.planOutline(k.insetPlan(body, 3), 40, P), { tone: "faint" }))
       const fx = body.x + body.w
-      out.push(onFront(fx, `<path class="as-window" d="${rr(-(c.y + 12), -36, -(c.y - 12), -18, 3)}"/>` + line("mid", rr(-(c.y + 12), -36, -(c.y - 12), -18, 3))
-        + line("lo", [0, 1, 2].map((i) => `M${-(c.y + 8)} ${-(32 - i * 4)}H${-(c.y + 8) + [14, 10, 16][i]}`).join(""), ` data-free="both"`)
-        + `<rect class="as-led" data-caller="${ci}" x="${-(c.y + 8) + 1}" y="-23.4" width="2.4" height="3.2"/>`))
+      out.push(onFront(fx, `<path class="as-crt" d="${rr(-(c.y + 12), -36, -(c.y - 12), -18, 3)}"/>` + line("mid", rr(-(c.y + 12), -36, -(c.y - 12), -18, 3))
+        + `<path class="as-phosphor" d="${[0, 1, 2].map((i) => `M${-(c.y + 8)} ${-(32 - i * 4)}H${-(c.y + 8) + [14, 10, 16][i]}`).join("")}"/>`
+        + `<rect class="as-led as-cursor" data-caller="${ci}" x="${-(c.y + 8) + 1}" y="-23.4" width="2.4" height="3.2"/>`))
       const kb = { x: fx + 2, y: plan.y + 3, w: 10, d: plan.d - 6, r: 1.5 }
       out.push(box(kb, 6, 2.4, { tone: "mid" }, 3, 0.3))
       out.push(D(k.dotGrid(kb.x + 2, kb.y + 2.5, 3, 9, 3.2, 5, P).map((p) => p), { size: 0.5, tone: "mid" }))
+      out.push(`</g>`)
     } else {
       // a tape reader: two reels and a read head on a deck
       const deck = { x: plan.x, y: plan.y, w: plan.w, d: plan.d, r: 3 }
@@ -314,11 +319,9 @@ export function buildHero() {
       out.push(L(k.planOutline(k.insetPlan(deck, 3), 22, P), { tone: "faint" }))
       const reels = [[c.x - 5, c.y + 8], [c.x - 5, c.y - 8]]
       for (const [x, y] of byDepth(reels)) {
-        out.push(S(k.cylinder(x, y, 7.4, 22, 1.2, P, 40), { tone: "mid" }))
-        out.push(S(k.cylinder(x, y, 5.2, 23.2, 3.4, P, 36), { tone: "hi" }))
-        out.push(L(k.ring(x, y, 3.2, 26.6, P, 24), { tone: "lo" }))
-        out.push(S(k.cylinder(x, y, 7.4, 26.6, 1.2, P, 40), { tone: "mid" }))
-        out.push(L(k.ring(x, y, 1.4, 27.8, P, 12), { tone: "mid" }))
+        out.push(mat("steel", S(k.cylinder(x, y, 7.4, 22, 1.2, P, 40), { tone: "mid" })))
+        out.push(mat("copper", S(k.cylinder(x, y, 5.2, 23.2, 3.4, P, 36), { tone: "hi" }) + L(k.ring(x, y, 3.2, 26.6, P, 24), { tone: "lo" })))
+        out.push(mat("steel", S(k.cylinder(x, y, 7.4, 26.6, 1.2, P, 40), { tone: "mid" }) + L(k.ring(x, y, 1.4, 27.8, P, 12), { tone: "mid" })))
       }
       out.push(box({ x: c.x + 6, y: c.y - 3.5, w: 6, d: 7, r: 1 }, 22, 6, { tone: "mid" }, 3, 0.4))
       out.push(L(k.lineOnTop([c.x + 2, c.y + 8], [c.x + 6, c.y + 3.5], 24.4, P) + k.lineOnTop([c.x + 6, c.y - 3.5], [c.x + 2, c.y - 8], 24.4, P), { tone: "lo" }))
@@ -355,7 +358,7 @@ export function buildHero() {
     for (const y of [LAP.y + 12, LAP.y + LAP.d - 12]) out.push(S(G.disc(-7, 7, 2.2, G.frameAlong([HINGE_X, y, LAP_H + 0.4], [0, 1, 0]), P), { tone: "mid" }))
     const open = lids[LID_STEPS]
     out.push(`<g data-part="lid">${open.svg}</g><g data-part="screen" transform="${open.screen}">${laptopScreen()}</g>`)
-    put([LAP.x + LAP.w / 2, LAP.y + LAP.d / 2, 0], out.join(""), -20)
+    put([LAP.x + LAP.w / 2, LAP.y + LAP.d / 2, 0], mat("steel", out.join("")), -20)
   }
 
   // ── app on a stand ───────────────────────────────────────────────────
@@ -371,7 +374,7 @@ export function buildHero() {
     out.push(box(PANEL, PANEL_Z, PANEL_H, { tone: "mid" }, 3, 0.6))
     const fx = PANEL.x + PANEL.w
     out.push(onFront(fx, appScreen(PANEL.y + 3, PANEL.y + PANEL.d - 3, PANEL_Z + 3, PANEL_Z + PANEL_H - 3)))
-    put([APP.x + 10, APP.y + APP.d / 2, 0], out.join(""))
+    put([APP.x + 10, APP.y + APP.d / 2, 0], mat("steel", out.join("")))
   }
 
   // plugs go after their cords' first chunks

@@ -4,7 +4,7 @@
 
 export function howSvg() {
   const W = 760, H = 414
-  const lanes = [{ x: 130, name: "The agent", sub: "Claude Code, Codex, a script…" }, { x: 380, name: "The relay", sub: "agentsocket.dev, or your own" }, { x: 630, name: "Your tab or app", sub: "the extension, or the SDK" }]
+  const lanes = [{ x: 130, name: "The agent", sub: "Claude Code, OpenCode…" }, { x: 380, name: "The relay", sub: "agentsocket.dev, or your own" }, { x: 630, name: "Your tab or app", sub: "the extension, or the SDK" }]
   const X = lanes.map((l) => l.x)
   const top = 74, bottom = 404
   const rows = [104, 198, 270, 340]
@@ -13,13 +13,13 @@ export function howSvg() {
   const arrow = (x1, x2, y, { cls = "fa", dash = "" } = {}) => {
     const dir = Math.sign(x2 - x1)
     const tip = x2 - dir * 1.5
-    return `<path class="${cls}" ${dash ? `stroke-dasharray="${dash}"` : ""} d="M${x1 + dir * 6} ${y}H${tip}"/><path class="${cls}-head" d="M${tip} ${y}l${-dir * 6} -3.2v6.4z"/>`
+    return `<path class="${cls}" ${dash ? `stroke-dasharray="${dash}"` : ""} d="M${x1 + dir * 6} ${y}H${tip - dir * 6}"/><path class="${cls.split(" ").map((c) => `${c}-head`).join(" ")}" d="M${tip} ${y}l${-dir * 9} -4.2v8.4z"/>`
   }
   // the held line: shaded between the relay and the tab while the session lasts
   out.push(`<rect class="fh" x="${X[1]}" y="${rows[0] + 22}" width="${X[2] - X[1]}" height="${bottom - rows[0] - 44}" rx="3"/>`)
   out.push(t((X[1] + X[2]) / 2, bottom - 6, "one connection, held open while the session lasts", "fl fl-accent"))
   lanes.forEach((l) => {
-    out.push(`<rect class="fbox" x="${l.x - 92}" y="18" width="184" height="40" rx="8"/>`)
+    out.push(`<rect class="fbox" x="${l.x - 92}" y="18" width="184" height="40" rx="5"/>`)
     out.push(t(l.x, 35, l.name, "fl fl-strong"), t(l.x, 50, l.sub, "fl fl-muted"))
     out.push(`<path class="flane" d="M${l.x} ${top}V${bottom - 18}"/>`)
   })
@@ -29,7 +29,7 @@ export function howSvg() {
   out.push(arrow(X[1], X[2], rows[0] + 22, { cls: "fa fa-accent", dash: "4 3" }), t((X[1] + X[2]) / 2, rows[0] + 36, "a link for this session", "fl fl-accent"))
   // 2. the person pastes it
   out.push(`<circle class="fnum" cx="34" cy="${rows[1] + 2}" r="9"/>`, t(34, rows[1] + 6, "2", "fl fl-num"))
-  out.push(`<path class="fa" stroke-dasharray="1.5 3.5" d="M${X[2] - 6} ${rows[1]}C${X[2] - 120} ${rows[1] - 22} ${X[0] + 120} ${rows[1] - 22} ${X[0] + 6} ${rows[1]}"/><path class="fa-head" d="M${X[0] + 4.5} ${rows[1]}l6.4 -1.2l-2.8 5.6z"/>`)
+  out.push(`<path class="fa" stroke-dasharray="2 3" d="M${X[2] - 6} ${rows[1]}C${X[2] - 120} ${rows[1] - 22} ${X[0] + 120} ${rows[1] - 22} ${X[0] + 14} ${rows[1] - 1.6}"/><path class="fa-head" d="M${X[0] + 5} ${rows[1]}l9.4 -5.6l-0.4 8.4z"/>`)
   out.push(t((X[0] + X[2]) / 2, rows[1] - 24, "you paste the link into the agent's chat"))
   // 3. reads agents.md and tools.json, answered by the relay
   out.push(`<circle class="fnum" cx="34" cy="${rows[2] + 6}" r="9"/>`, t(34, rows[2] + 10, "3", "fl fl-num"))
@@ -56,7 +56,7 @@ export const HOW_CSS = `
 .fhow .flane{stroke:#dcdcd9;stroke-width:1;stroke-dasharray:2 4;fill:none}
 .fhow .fh{fill:var(--as-accent);opacity:.05}
 .fhow .fnum{fill:none;stroke:#d0d0cd;stroke-width:1}
-.fhow .fa{stroke:var(--anatomy-hi);stroke-width:1.1;fill:none}
+.fhow .fa{stroke:var(--anatomy-hi);stroke-width:1.25;fill:none}
 .fhow .fa-head{fill:var(--anatomy-hi)}
 .fhow .fa-accent{stroke:var(--as-accent)}
 .fhow .fa-accent-head{fill:var(--as-accent)}

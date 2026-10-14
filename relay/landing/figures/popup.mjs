@@ -30,7 +30,7 @@ export function popupHtml() {
       </ol>
     </div>
   </div>
-  <figcaption id="pp-cap" class="iso-legend"><span class="iso-caption"><b>Fig 3.</b> The popup on a connected tab. The site, the actions and the times are an example.</span></figcaption>
+  <figcaption id="pp-cap" class="iso-legend"><span class="iso-caption">The popup on a connected tab. The site, the actions and the times are an example.</span></figcaption>
 </figure>`
 }
 
