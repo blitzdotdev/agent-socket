@@ -243,7 +243,17 @@ const LINK_OF = { laptop: 0, app: 1 }
 const quick = (verdict) => Promise.resolve(verdict)
 window.heroFigure = {
   // Stop the tour and the automatic calls; from now on only the agent acts.
-  takeOver() { touring = false; auto = false; idle = -Infinity; run() },
+  // The tour's calls still in flight are dropped and the figure goes back to
+  // rest (both plugs in, lid open, count at zero), so it shows only what the
+  // agent does.
+  takeOver() {
+    touring = false; auto = false; idle = -Infinity
+    for (const c of calls.splice(0)) c.el.remove()
+    const now = performance.now()
+    setPlug(0, false); setPlug(1, false); setLid(true, now)
+    MODEL.answered = 0; counter.textContent = "0000"
+    run()
+  },
   release() { auto = true; idle = 0; run() },
   state: () => ({
     laptop_link: MODEL.links[0].plugged ? "plugged in" : "pulled",

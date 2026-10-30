@@ -6,7 +6,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import {
   ENTRY_MAX_BYTES, MAX_ENTRIES, RETENTION_MS, createActivityStore, describeCall, entryKey, groupBySession,
-  keyTime, keysToPrune, levelOf, matchesFilter, parseArgs, replyOf,
+  keyTime, keysToPrune, levelOf, matchesFilter, parseArgs, replyOf, sessionEntryIds,
 } from "../lib/activity.js"
 
 const bytes = (v) => new TextEncoder().encode(JSON.stringify(v)).length
@@ -80,6 +80,27 @@ test("full: args and reply kept, password fields always masked", () => {
   assert.equal(tok.detail.args.note, "hi")
 })
 
+test("full: /fill shows the value only once its reply names a non-password field", () => {
+  const area = describeCall({ level: "full", path: "/fill", args: { selector: "#bio", value: "my bio" }, result: { filled: true, tag: "textarea", input_type: null, value_now: "my bio" } })
+  assert.equal(area.summary, 'fill #bio "my bio"')
+  assert.equal(area.detail.args.value, "my bio")
+  const unknown = [
+    { result: { filled: false, reason: "no match" } },
+    { result: { filled: false, reason: "element is not editable: DIV" } },
+    { result: { status: 403, body: { error: { code: "origin_not_allowed", message: "paused" } } } },
+    { result: { status: 400, body: { error: { code: "bad_input", message: "m" } } } },
+    { result: { error: { code: "runtime_error", message: "Cannot access a chrome:// URL" } } },
+    { result: undefined },
+    { error: new Error("boom") },
+  ]
+  for (const c of unknown) {
+    const d = describeCall({ level: "full", path: "/fill", args: { selector: "#pw", value: "hunter22" }, ...c })
+    assert.equal(d.summary, "fill #pw (8 chars)", JSON.stringify(c))
+    assert.equal(d.detail.args.value, "<hidden: 8 chars>")
+    assert.ok(!JSON.stringify(d).includes("hunter22"), JSON.stringify(d))
+  }
+})
+
 test("full: screenshots become [image N KB], long replies truncated, entry capped", () => {
   const png = "data:image/png;base64," + "A".repeat(400_000)
   const shot = describeCall({ level: "full", path: "/screenshot", args: {}, result: { data_url: png, width: 10 } })
@@ -140,6 +161,22 @@ test("groupBySession: newest first, host and ending from session events", () => 
   assert.ok(!matchesFilter(es[1], "eval"))
 })
 
+test("sessionEntryIds: every entry of the session, whatever the filter shows", () => {
+  const es = [
+    { id: "a1", at: 1, kind: "session", event: "connected", session: "S1", host: "a.test" },
+    { id: "a2", at: 2, kind: "call", session: "S1", host: "a.test", tool: "click", summary: "click #go" },
+    { id: "a3", at: 3, kind: "call", session: "S1", host: "a.test", tool: "eval", summary: "eval: 1" },
+    { id: "b1", at: 4, kind: "call", session: "S2", host: "b.test", tool: "click", summary: "click #x" },
+    { id: "n1", at: 5, kind: "call", session: null, host: "c.test", tool: "click" },
+    { id: "n2", at: 6, kind: "call", host: "c.test", tool: "click" },
+  ]
+  const [g] = groupBySession(es.filter((e) => matchesFilter(e, "eval")))
+  assert.deepEqual(g.entries.map((e) => e.id), ["a3"])
+  assert.deepEqual(sessionEntryIds(es, g.session).sort(), ["a1", "a2", "a3"])
+  const none = groupBySession(es).find((x) => x.session === null)
+  assert.deepEqual(sessionEntryIds(es, none.session).sort(), ["n1", "n2"])
+})
+
 function fakeArea() {
   const data = new Map()
   return {
@@ -183,6 +220,31 @@ test("store: prune drops >7-day entries; the cap drops the oldest", async () => 
   const keys = await store.keys()
   assert.ok(keys.length <= MAX_ENTRIES, `${keys.length} entries`)
   assert.equal((await store.list(1))[0].tool, `n${MAX_ENTRIES + 4}`)
+})
+
+test("store: find searches back past the newest entries, newest first, reading only as far as it needs", async () => {
+  const area = fakeArea()
+  let t = 1000
+  const store = createActivityStore(area, { now: () => t++ })
+  for (let i = 0; i < 3; i++) await store.add({ kind: "call", session: "MINE", tool: `m${i}` })
+  for (let i = 0; i < 450; i++) await store.add({ kind: "call", session: "OTHER", tool: `o${i}` })
+  await store.add({ kind: "session", session: "MINE", event: "timer_set" })
+  const mine = (e) => e.kind === "call" && e.session === "MINE"
+  assert.deepEqual((await store.list(200)).filter(mine), [])  // what the popup used to search
+  let reads = 0
+  const get = area.get
+  area.get = (ks) => { reads++; return get(ks) }
+  assert.deepEqual((await store.find(mine, 3)).map((e) => e.tool), ["m2", "m1", "m0"])
+  assert.equal(reads, 3)
+  reads = 0
+  assert.deepEqual((await store.find(mine, 2)).map((e) => e.tool), ["m2", "m1"])
+  assert.equal(reads, 3)
+  reads = 0
+  assert.deepEqual((await store.find((e) => e.kind === "call", 3)).map((e) => e.tool), ["o449", "o448", "o447"])
+  assert.equal(reads, 1)
+  assert.deepEqual(await store.find(() => false, 3), [])
+  await store.clear()
+  assert.deepEqual(await store.find(mine, 3), [])
 })
 
 test("store: works without getKeys (older Chrome)", async () => {

@@ -1125,8 +1125,16 @@ async function main() {
       await waitFor(() => actPage.evaluate((id) => !document.querySelector(`.entry[data-id="${id}"]`), firstId))
       if ((await actEntries()).length !== before - 1) throw new Error("deleted more than one entry")
       const sessionId = await actPage.$$eval(".group", (gs) => gs.at(-1).dataset.session)
-      await actPage.$$eval(".group", (gs) => gs.at(-1).querySelector('[data-action="delete-session"]').click())
+      // With a filter on, Delete session still deletes all of its entries.
+      const tool = await actPage.$$eval(".group", (gs) => gs.at(-1).querySelector(".entry.call .tool").textContent)
+      await actPage.type("#filter", tool)
+      const group = `.group[data-session="${sessionId}"]`
+      await actPage.waitForSelector(group)
+      const shown = await actPage.$$eval(`${group} .entry`, (es) => es.length)
+      if (shown >= (await actEntries()).filter((e) => (e.session ?? "") === sessionId).length) throw new Error(`the filter "${tool}" hides none of the session's entries`)
+      await actPage.click(`${group} [data-action="delete-session"]`)
       await waitFor(async () => !(await actEntries()).some((e) => (e.session ?? "") === sessionId))
+      await actPage.$eval("#filter", (n) => { n.value = ""; n.dispatchEvent(new Event("input")) })
       if (!(await actEntries()).length) throw new Error("deleting a session deleted everything")
       actPage.once("dialog", (d) => d.accept())
       await actPage.click("#delete-all")
@@ -1605,6 +1613,20 @@ async function main() {
       const ids = await popupPage.evaluate(() => [...document.querySelectorAll("#activity-list li")].map((li) => li.dataset.id))
       const mine = new Set(callsOf(await actEntries()).filter((e) => e.session === sid(ra3.url)).map((e) => e.id))
       if (!ids.every((id) => mine.has(id))) throw new Error("another session's call on this tab's card")
+      // 250 newer calls from another session: this tab's calls still show.
+      const flood = await popupPage.evaluate(async () => {
+        const at = Date.now(), items = {}
+        for (let i = 0; i < 250; i++) {
+          const id = `act:${String(at + i).padStart(15, "0")}-flood${i}`
+          items[id] = { id, at: at + i, kind: "call", session: "FLOOD000", host: "x.test", tool: "click", summary: "click #x", status: 200 }
+        }
+        await chrome.storage.local.set(items)
+        return Object.keys(items)
+      })
+      await sleep(1500)  // a poll or two after the change
+      const after = await popupPage.evaluate(() => [...document.querySelectorAll("#activity-list li")].map((li) => [li.dataset.id, li.textContent]))
+      await popupPage.evaluate((ks) => chrome.storage.local.remove(ks), flood)
+      if (!after.length || !after.every(([id]) => mine.has(id))) throw new Error(`card after 250 newer calls elsewhere: ${JSON.stringify(after)}`)
       await sendToSW(popupPage, { type: "disconnect", tabId: tabA })
     })
 

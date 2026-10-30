@@ -3,7 +3,7 @@
   "name": "Agent Socket — Connect any site to AI",
   "short_name": "Agent Socket",
   "version": "0.6.0",
-  "description": "Let an AI chat (Claude, ChatGPT, Gemini) drive one browser tab you choose. Paste a session URL; the AI clicks, types, and reads.",
+  "description": "Let an AI agent (Claude Code, Codex, Cursor, OpenCode…) drive browser tabs you choose. Paste a tab's link; the agent clicks, types and reads.",
   "permissions": [
     "scripting",
     "storage",

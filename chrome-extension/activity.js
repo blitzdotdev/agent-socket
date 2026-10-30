@@ -3,7 +3,7 @@
 // entries, or all of them can be deleted here. Entries hold text the AI and
 // web pages wrote, so it only ever goes in via textContent.
 
-import { LEVELS, createActivityStore, groupBySession, isEntryKey, levelOf, matchesFilter } from "./lib/activity.js"
+import { LEVELS, createActivityStore, groupBySession, isEntryKey, levelOf, matchesFilter, sessionEntryIds } from "./lib/activity.js"
 
 const $ = (s) => document.querySelector(s)
 const groupsEl = $("#groups")
@@ -73,7 +73,8 @@ function detailNode(e) {
 
 function groupNode(g) {
   const del = el("button", { class: "ghost small", "data-action": "delete-session", text: "Delete session" })
-  del.addEventListener("click", () => store.remove(g.entries.map((e) => e.id)))
+  // All of the session's entries, not just the ones the filter shows.
+  del.addEventListener("click", () => store.remove(sessionEntryIds(entries, g.session)))
   const calls = g.entries.filter((e) => e.kind === "call").length
   const end = g.ending ? ` · ${ENDINGS[g.ending] ?? g.ending} ${time(g.end)}` : ""
   const head = el("div", { class: "group-head" },

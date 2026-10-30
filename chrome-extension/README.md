@@ -1,7 +1,7 @@
 # Agent Socket — Chrome Extension
 
-Connect any AI chat (Claude, ChatGPT, Gemini, …) to **a browser tab you
-choose**. The extension acts as an agent-socket *app*: it opens a WebSocket
+Connect any AI agent that can send HTTP requests (Claude Code, Codex,
+Cursor, …) to **browser tabs you choose**, each with its own link. The extension acts as an agent-socket *app*: it opens a WebSocket
 to the relay, registers a toolset bound to that tab, and gives you a
 paste-able URL. Paste the URL into your AI chat and the AI can click, fill,
 read, evaluate, and screenshot the page on your behalf.
@@ -53,8 +53,9 @@ How much is kept is the **Activity log detail** setting:
   (`fill #email (16 chars)`); `/eval` code is cut to 200 characters. No results.
 - **Full detail**: also what the AI typed and the first 1,000 characters of
   each result (screenshots become `[image 312 KB]`). Values typed into
-  password fields, or sent under names like `password` or `token`, are
-  always hidden.
+  password fields (or by a `/fill` that failed, so the field's type is
+  unknown), or sent under names like `password` or `token`, are always
+  hidden.
 - **Tool + result only**: the tool, status and timing.
 
 The session URL, token and resume secret are never logged; entries carry the

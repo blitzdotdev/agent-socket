@@ -29,6 +29,10 @@
 //      the drop + refusal; the old link's 503 tells the AI what to do. Copy in
 //      the popup clears it; so does a tool call on the new link, and Copy in
 //      the pill. SHOT_DIR=<dir> saves screenshots of the pill and popup.
+//   9. The link changes, then the relay goes away and the worker restarts:
+//      the held session keeps the link-changed state while it retries. Copy
+//      in the popup then sticks, on the next attempts and after the resume.
+//      Every tool call in the activity log carries its session id.
 //
 // Run: node chrome-extension/test/reconnect.e2e.mjs
 //
@@ -436,8 +440,10 @@ async function main() {
       const html = (await cdp.send("DOM.getOuterHTML", { nodeId: node.nodeId })).outerHTML
       let copyBox = null
       if (copy && attr(copy, "hidden") === null) {
-        const [x1, y1, , , x3, y3] = (await cdp.send("DOM.getBoxModel", { nodeId: copy.nodeId })).model.content
-        copyBox = { x: (x1 + x3) / 2, y: (y1 + y3) / 2 }
+        // No box while the pill redraws: not shown.
+        const box = await cdp.send("DOM.getBoxModel", { nodeId: copy.nodeId }).catch(() => null)
+        const [x1, y1, , , x3, y3] = box?.model.content ?? []
+        if (box) copyBox = { x: (x1 + x3) / 2, y: (y1 + y3) / 2 }
       }
       return { html, copyBox, changed: /class="pill changed"/.test(html) }
     } finally { await cdp.detach().catch(() => {}) }
@@ -546,6 +552,64 @@ async function main() {
   })
   await assertCleared("after pill Copy")
   await step("the pill's link works", () => waitWorks(fourthUrl))
+
+  // ── 5. Copy while a resume is still retrying ──
+  // The link changes, then the relay goes away and the worker restarts: the
+  // restarted worker holds the saved session (link change and all) and keeps
+  // retrying. A Copy then must stick, on the next attempts and once the
+  // resume goes through.
+  const fifthUrl = await step("end the session a fourth time: a new link, not copied yet", () => nextUrl(fourthUrl))
+  await step("the relay goes away and the worker restarts: held, link change still shown", async () => {
+    await relay.stop()
+    const sw = chrome.browser.targets().find((t) => t.type() === "service_worker" && t.url().startsWith(`chrome-extension://${extId}/`))
+    await (await sw.worker()).close()
+    const end = Date.now() + 10000
+    while (chrome.browser.targets().includes(sw)) {
+      if (Date.now() > end) throw new Error("service worker target still alive")
+      await sleep(100)
+    }
+    await page.bringToFront()  // the pill polls the SW, waking it
+    const snap = await until(async () => {
+      const s = await snapNow().catch(() => null)
+      return s?.events?.some((e) => e.type === "resume_retry") ? s : null
+    }, "a resume_retry event", 20000)
+    if (snap.url !== fifthUrl || snap.status?.status !== "reconnect-failed" || !snap.linkChanged) {
+      throw new Error(`bad snapshot: ${JSON.stringify({ url: snap.url, status: snap.status, linkChanged: snap.linkChanged })}`)
+    }
+  })
+  const lastAttempt = (s) => Math.max(0, ...s.events.filter((e) => e.type === "resume_retry").map((e) => e.attempt))
+  let copiedAt
+  await step("Copy in the popup banner while the resume retries clears the state", async () => {
+    await popup.bringToFront()
+    await until(async () => { const u = await popupUi(); return u.banner && u.link === fifthUrl }, "popup banner")
+    await popup.click("#changed-copy")
+    await assertClipboard(fifthUrl)
+    await until(async () => !(await snapNow()).linkChanged, "state cleared")
+    copiedAt = lastAttempt(await snapNow())
+  })
+  await step("the next resume attempt doesn't bring the link change back", async () => {
+    const snap = await until(async () => { const s = await snapNow(); return lastAttempt(s) > copiedAt ? s : null }, "another resume attempt", 45000)
+    if (snap.linkChanged) throw new Error(`link change back after attempt ${lastAttempt(snap)}: ${JSON.stringify(snap.linkChanged)}`)
+    const saved = Object.values(await popup.evaluate(() => chrome.storage.session.get(null)))
+    if (saved.some((v) => v?.linkChanged)) throw new Error("the saved session still has the link change")
+  })
+  await step("relay back: resumed on the copied link, still no link-changed notice", async () => {
+    relay = startRelay()
+    await waitForRelay()
+    await waitWorks(fifthUrl, 60000)
+    const snap = await until(async () => { const s = await snapNow().catch(() => null); return s?.status?.status === "connected" ? s : null }, "connected snapshot", 10000)
+    if (snap.url !== fifthUrl || snap.linkChanged) throw new Error(JSON.stringify({ url: snap.url, linkChanged: snap.linkChanged }))
+  })
+  await assertCleared("after the resume")
+
+  // Calls that land right after a resume (before the saved link is checked)
+  // still carry the session id.
+  await step("activity log: every tool call has its session id", async () => {
+    const all = await popup.evaluate(() => chrome.storage.local.get(null))
+    const calls = Object.entries(all).filter(([k, v]) => k.startsWith("act:") && v.kind === "call").map(([, v]) => v)
+    const none = calls.filter((e) => !e.session)
+    if (!calls.length || none.length) throw new Error(`${none.length} of ${calls.length} calls without a session: ${JSON.stringify(none.slice(0, 3))}`)
+  })
 
   console.log(`\n──  ${passed} passed, ${failed} failed`)
 }

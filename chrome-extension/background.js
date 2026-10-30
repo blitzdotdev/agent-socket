@@ -63,6 +63,9 @@ function newTabSession(tabId) {
 }
 // Still the tab's current session (not stopped, not replaced by a new Connect).
 const live = (ts) => sessions.get(ts.tabId) === ts
+// Its relay session id; while resuming, the held one's (the resumed session
+// can take calls before ts.session is set: see doConnect).
+const sessionIdOf = (ts) => ts.session?.sessionId ?? ts.held?.sessionId ?? null
 const noteSessionId = (ts, id) => { if (id && !ts.sessionIds.includes(id)) ts.sessionIds = [...ts.sessionIds, id] }
 
 // Default relay base. Overridable in the popup via chrome.storage.local.relay_base.
@@ -99,7 +102,7 @@ async function logCall(t, ctx, call, at, result, error) {
 }
 
 // `event`: a key of SESSION_EVENTS in lib/activity.js.
-function logSession(ts, event, { session: sid = ts.session?.sessionId ?? null, host = ts.toolsHost ?? "", ...extra } = {}) {
+function logSession(ts, event, { session: sid = sessionIdOf(ts), host = ts.toolsHost ?? "", ...extra } = {}) {
   return activity.add({ kind: "session", event, session: sid, host, ...extra, summary: eventSummary({ event, host, ...extra }) })
     .catch((e) => console.warn("[as-ext] activity log write failed:", e?.message ?? e))
 }
@@ -266,7 +269,7 @@ const savePendingProfile = (ts) => async (profile) => {
   const from = { host: tab ? hostOf(tab.url) : ts.toolsHost ?? "", title: tab?.title ?? "" }
   await withProfiles((d) => {
     const prev = d.pending[profile.host]
-    const by = ts.session?.sessionId ?? null
+    const by = sessionIdOf(ts)
     const replaced = prev && prev.savedBy !== by ? { tool_count: prev.tools?.length ?? 0, savedAt: prev.savedAt ?? null, from: prev.savedFrom ?? null } : prev?.replaced
     d.pending[profile.host] = { ...profile, savedAt: Date.now(), savedBy: by, savedFrom: from, ...(replaced ? { replaced } : {}) }
   })
@@ -292,7 +295,7 @@ const summarize = (p, withTools) => ({
 // sites, then run; either way written to the activity log.
 const track = (ts) => (t) => ({ ...t, handler: async (ctx) => {
   const at = Date.now()
-  const call = { session: ts.session?.sessionId ?? null, host: ts.toolsHost ?? "" }
+  const call = { session: sessionIdOf(ts), host: ts.toolsHost ?? "" }
   let result
   try {
     result = await guarded(ts, t, ctx, call)
@@ -565,15 +568,15 @@ chrome.permissions.onRemoved.addListener(() => {
 // `as_session:<tabId>` → { tabId, base, registryBase, sessionId, secret, url, token, registry, linkChanged, endsAt, allowedOrigins, anyOrigin, toolsHost }
 const SAVED_PREFIX = "as_session:"
 const savedKey = (tabId) => `${SAVED_PREFIX}${tabId}`
-const LEGACY_SAVED_KEY = "as_session"  // before 0.6.0: the one session
 
 async function saveSession(ts) {
   if (!live(ts)) return
   const limits = { endsAt: ts.endsAt, allowedOrigins: ts.allowedOrigins, anyOrigin: ts.anyOrigin, toolsHost: ts.toolsHost }
   if (!ts.session) {
-    // Still waiting to resume: keep the saved session, with the user's latest timer and sites.
+    // Still waiting to resume: keep the saved session, with the user's latest
+    // timer and sites, and whether they have copied a changed link since.
     if (ts.held) {
-      ts.held = { ...ts.held, ...limits, tabId: ts.tabId }
+      ts.held = { ...ts.held, ...limits, linkChanged: ts.linkChanged, tabId: ts.tabId }
       await chrome.storage.session.set({ [savedKey(ts.tabId)]: ts.held }).catch(() => {})
     }
     return
@@ -600,15 +603,6 @@ async function saveSession(ts) {
 const restored = (async () => {
   const all = await chrome.storage.session.get(null).catch(() => ({}))
   const saved = Object.entries(all).filter(([k]) => k.startsWith(SAVED_PREFIX)).map(([, v]) => v)
-  const legacy = all[LEGACY_SAVED_KEY]
-  if (legacy) {
-    await chrome.storage.session.remove(LEGACY_SAVED_KEY).catch(() => {})
-    void chrome.alarms.clear(TIMER_ALARM)
-    if (Number.isInteger(legacy.tabId) && !saved.some((v) => v.tabId === legacy.tabId)) {
-      await chrome.storage.session.set({ [savedKey(legacy.tabId)]: legacy }).catch(() => {})
-      saved.push(legacy)
-    }
-  }
   await Promise.all(saved.map((v) => restoreSession(v).catch(() => endHeld(v))))
 })().catch(() => {})
 
@@ -636,6 +630,9 @@ async function restoreSession(saved) {
   ts.allowedOrigins = saved.allowedOrigins ?? [originOf(tab.url)].filter(Boolean)
   ts.anyOrigin = !!saved.anyOrigin
   ts.toolsHost = saved.toolsHost ?? null
+  // While it resumes, its link (and any unacknowledged change) stays on show:
+  // the relay is holding it.
+  ts.linkChanged = saved.linkChanged ?? null
   sessions.set(tab.id, ts)
   setDeadline(ts, saved.endsAt ?? null)
   // The timer ran out while the worker was stopped: end the held session.
@@ -683,16 +680,17 @@ function isPermanent(e) {
   return /^(no tab to bind|connect cancelled|site access not granted|register failed)/.test(e?.message ?? "")
 }
 
-// Retry a saved session's resume, backing off to 30 s between attempts.
-function scheduleResumeRetry(ts, saved) {
+// Retry a saved session's resume, backing off to 30 s between attempts. Each
+// attempt resumes ts.held as it is by then (saveSession keeps it current).
+function scheduleResumeRetry(ts) {
   const attempt = (ts.resumeRetry?.attempt ?? 0) + 1
   const delay = Math.min(30_000, 1000 * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.5)
   if (ts.resumeRetry) clearTimeout(ts.resumeRetry.timer)
   ts.resumeRetry = {
     attempt,
     timer: setTimeout(() => {
-      if (!live(ts) || ts.session) return
-      startConnect(ts.tabId, saved).catch(() => {})
+      if (!live(ts) || ts.session || !ts.held) return
+      startConnect(ts.tabId, ts.held).catch(() => {})
     }, delay),
   }
 }
@@ -748,9 +746,9 @@ async function doConnect(ts, saved) {
     ts.allowedOrigins = [originOf(tab.url)].filter(Boolean)
     ts.anyOrigin = settings.default_any_site === true
   }
-  // While resuming a saved session, its link (and any unacknowledged change)
-  // stays on show: the relay is holding it.
-  ts.linkChanged = saved?.linkChanged ?? null
+  // While resuming a saved session, its link stays on show: the relay is
+  // holding it. (Its link-changed state is ts's own, set by restoreSession, so
+  // a retry can't bring back one the user cleared.)
   if (saved?.url) { ts.url = saved.url; ts.token = saved.token }
   // Tools for the tab's site; a resumed session that is paused keeps the ones it had.
   const host = !originAllowed(tab.url, lock(ts)) && ts.toolsHost ? ts.toolsHost : hostOf(tab.url)
@@ -837,9 +835,10 @@ async function doConnect(ts, saved) {
       void logSession(ts, "connected", { session: s.sessionId, host })
     }
     // After a worker restart: the user already had saved.url. Same link →
-    // carry over a change they haven't acknowledged; a new one → it changed.
+    // carry over a change they haven't acknowledged (ts.linkChanged: a Copy or
+    // a tool call during this attempt may have cleared it); a new one → it changed.
     if (saved?.url) {
-      ts.linkChanged = kept ? saved.linkChanged ?? null
+      ts.linkChanged = kept ? ts.linkChanged
         : s.sessionId === resume.sessionId ? { at: Date.now(), reason: "link_missing", afterRestart: true }
         : { at: Date.now(), reason: "resume_refused", closeCode: 4401, afterRestart: true }
     }
@@ -859,7 +858,7 @@ async function doConnect(ts, saved) {
     if (saved && live(ts) && !isPermanent(e)) {
       // Can't reach the relay yet. Keep the saved session (and the pill, now
       // "reconnecting…") and try again.
-      scheduleResumeRetry(ts, saved)
+      scheduleResumeRetry(ts)
       logEvent("resume_retry", { reason: e?.message ?? String(e), attempt: ts.resumeRetry.attempt, tab: ts.tabId })
       ts.status = { status: "reconnect-failed", reason: e?.message ?? String(e), attempt: ts.resumeRetry.attempt }
       void showIndicator(ts)

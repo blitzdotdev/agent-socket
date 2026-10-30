@@ -35,9 +35,9 @@ const FROM = ["cloud", "terminal", "script"]
 const parse = (body) => { try { return JSON.parse(body || "{}") } catch { return null } }
 const bad = (message) => ({ status: 400, body: { error: { code: "bad_input", message } } })
 const MEANING = {
-  ok: "answered: the relay passed the call down the link and the app replied",
-  retry: "told to retry: the laptop is asleep, so the relay holds its line and answers 503 app_offline with Retry-After: 2",
-  ended: "turned away: that link was pulled (Stop), so the relay answers 503 app_offline",
+  ok: "answered: in Fig 1 the call went down its link and the app replied",
+  retry: "told to retry: in Fig 1 the laptop is asleep; a real relay holds its line and answers 503 app_offline with Retry-After: 2",
+  ended: "turned away: in Fig 1 that link is pulled (Stop); a real relay answers 503 app_offline",
 }
 
 export function demoTools(figure, onCall = () => {}) {

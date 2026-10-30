@@ -25,7 +25,7 @@ const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 // ── Fig 1 ──────────────────────────────────────────────────────────────
 const hero = buildHero()
 const { svg: heroSvg, ...heroData } = hero
-const heroPlate = k.plateHtml({
+const heroPlateBare = k.plateHtml({
   fig: "Fig 1",
   title: "One link, any agent",
   hint: "Click a plug or the laptop",
@@ -44,26 +44,30 @@ const howPlate = k.plateHtml({
   title: "One call",
   readout: "",
   caption: "Your side opens the line; the agent only makes web requests. The relay answers the agent's reading itself and passes every action down the open connection.",
-  body: howSvg(),
+  body: `<div class="fhow-scroll">${howSvg()}</div>`,
 })
 
-// ── live demo ──────────────────────────────────────────────────────────
-const demoHtml = `<div class="demo" data-demo>
+// ── live demo: a control strip on Fig 1's bottom edge ───────────────────
+const demoHtml = `<div class="dock" data-demo role="region" aria-label="Try it on this page">
       <div class="row">
         <button class="btn" type="button" data-connect>Connect this page</button>
         <span class="link" data-link hidden></span>
         <button class="btn quiet" type="button" data-copy hidden>Copy</button>
         <button class="btn quiet" type="button" data-stop hidden>Stop</button>
+        <span class="state" data-state>This page is an app too. Connect it, give your agent the link, and it works the switchboard above. Nothing connects until you press the button; Stop or leaving the page kills the link.</span>
       </div>
-      <div class="prompt" data-prompt hidden>Paste the link into your agent with something like:<q data-prompt-text></q></div>
-      <div class="state" data-state>Not connected. Pressing the button opens a session on the relay at agentsocket.dev for this page only.</div>
       <ol data-log aria-label="Calls from your agent"></ol>
+      <details class="prompt" data-prompt hidden><summary>What Copy puts on your clipboard</summary><q data-prompt-text></q></details>
     </div>`
+
+// The demo's strip goes between the plate and its legend.
+if (heroPlateBare.split("</div><figcaption").length !== 2) throw new Error("Fig 1: can't find where the plate ends")
+const heroPlate = heroPlateBare.replace("</div><figcaption", `</div>${demoHtml}<figcaption`)
 
 // ── a real session ────────────────────────────────────────────────────
 function transcriptHtml() {
   const t = JSON.parse(read("transcript.json"))
-  const keep = (s) => !(s.kind === "call" && (s.path === "/plug_in" || (s.path === "/status" && s.status === 200)))
+  const keep = (s) => !(s.kind === "call" && (s.path === "/status" && s.status === 200))
   const describe = (s) => {
     if (s.path === "/agents.md") {
       const first = (s.text ?? "").split("\n").find((l) => l.startsWith("# ")) ?? ""
@@ -78,11 +82,12 @@ function transcriptHtml() {
     const body = s.body ? ` <i>${esc(JSON.stringify(s.body).replace(/,"/g, ', "').replace(/":/g, '": '))}</i>` : ""
     const req = `<div class="turn agent"><div class="who">Agent</div><div class="say"><span class="req">${s.method} <i>…</i>${esc(s.path)}${body}</span></div></div>`
     const st = `<span class="st${s.status >= 400 ? " warn" : ""}">${s.status}${s.retryAfter ? ` · Retry-After ${esc(s.retryAfter)}` : ""}</span>`
-    const res = `<div class="turn relay"><div class="who">${s.status >= 500 && s.json?.error ? "Relay" : s.path.endsWith(".md") || s.path.endsWith(".json") ? "Relay" : "Page"}</div><div class="say">${st}<span class="body">${describe(s)}</span></div></div>`
+    const who = (s.status >= 500 && s.json?.error) || s.path.endsWith(".md") || s.path.endsWith(".json") ? "Relay" : "Page"
+    const res = `<div class="turn ${who.toLowerCase()}"><div class="who">${who}</div><div class="say">${st}<span class="body">${describe(s)}</span></div></div>`
     return req + res
   })
   const when = new Date(t.recorded).toISOString().slice(0, 10)
-  return `<p>Recorded on ${when} against the live relay: the demo app from section 05 running in Node, and a script in the agent's seat using nothing but web requests. Halfway through, the app's connection is cut without a goodbye, the way a sleeping laptop looks to the relay. Nothing below is edited except the link's secret part.</p>
+  return `<p>Recorded on ${when} against the live relay: the demo app from “Try it on this page” running in Node, and a script in the agent's seat using nothing but web requests. Halfway through, the app's connection is cut without a goodbye, the way a sleeping laptop looks to the relay. Only the routine status checks are left out, and the link's secret part is hidden; nothing else is edited. The 200 replies are the demo app's own: it simulates Fig 1, so its words describe the switchboard.</p>
     <div class="talk">${rows.join("\n")}</div>
     <p class="sidenote">The script that made this is <a href="https://github.com/blitzdotdev/agent-socket/blob/master/relay/landing/capture.mjs">relay/landing/capture.mjs</a>.</p>`
 }
@@ -106,12 +111,11 @@ html = html
   .replace("<!--HERO-->", heroPlate)
   .replace("<!--HOW-->", howPlate)
   .replace("<!--POPUP-->", popupHtml())
-  .replace("<!--DEMO-->", demoHtml)
   .replace("<!--TRANSCRIPT-->", transcriptHtml())
   .replace("<!--WATCH-->", watch)
   .replace("<!--SCRIPTS-->", `<script type="module" src="/assets/hero.js"></script>\n<script type="module" src="/assets/demo.js"></script>`)
 if (!watch) html = html.replace(/<section id="watch"[\s\S]*?<\/section>\s*/, "").replace(/\s*<a href="#watch">Watch it<\/a>/, "")
-  .replace(/<span class="n">09<\/span>/, '<span class="n">08</span>').replace(/<span class="n">10<\/span>/, '<span class="n">09</span>')
+  .replace(/<span class="n">08<\/span>/, '<span class="n">07</span>').replace(/<span class="n">09<\/span>/, '<span class="n">08</span>')
 
 mkdirSync(join(PUBLIC, "assets"), { recursive: true })
 mkdirSync(join(PUBLIC, "sdk"), { recursive: true })
