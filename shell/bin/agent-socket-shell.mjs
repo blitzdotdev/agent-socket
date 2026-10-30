@@ -97,25 +97,28 @@ function parseRun(body, headers) {
   const timeout = req.timeout_s === undefined || req.timeout_s === "" ? 300 : Number(req.timeout_s)
   if (!Number.isFinite(timeout) || timeout < 1) return { error: "timeout must be a number of seconds, at least 1" }
   let cwd = START_DIR
+  if (typeof req.cwd === "string" && req.cwd.length > 4096) return { error: "cwd is over 4,096 characters" }
   if (typeof req.cwd === "string" && req.cwd) {
     cwd = req.cwd === "~" ? os.homedir() : req.cwd.startsWith("~/") ? path.join(os.homedir(), req.cwd.slice(2)) : path.resolve(START_DIR, req.cwd)
   }
   return { cmd, why: typeof req.why === "string" ? req.why.trim().slice(0, 500) : "", cwd, timeout: Math.min(timeout, 86_400) }
 }
 
+const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}[… ${s.length - n} more characters]` : s)
+
 function resultText(r) {
   const lines = [`status: ${r.status}`]
   if (r.exit !== undefined) lines.push(`exit: ${r.exit}`)
   if (r.seconds !== undefined) lines.push(`seconds: ${r.seconds}`)
-  if (r.ran) lines.push(`ran: ${r.ran.replace(/\n/g, "\n     ")}`)
-  if (r.note) lines.push(`note: ${r.note}`)
-  if (r.error) lines.push(`error: ${r.error}`)
+  if (r.ran) lines.push(`ran: ${clip(r.ran, 8000).replace(/\n/g, "\n     ")}`)
+  if (r.note) lines.push(`note: ${clip(r.note, 2000)}`)
+  if (r.error) lines.push(`error: ${clip(r.error, 2000)}`)
   let output = r.output ?? ""
   let truncated = r.truncated
   const build = () => [...lines, ...(truncated ? [`truncated: ${truncated}`] : []), "---", output].join("\n")
   // Cut the middle further until the whole result fits the relay's cap.
   let text = build()
-  while (Buffer.byteLength(JSON.stringify(text)) > MAX_JSON) {
+  while (Buffer.byteLength(JSON.stringify(text)) > MAX_JSON && output.length > 200) {
     const keep = Math.floor(output.length * 0.8 / 2)
     const cut = output.length - 2 * keep
     output = output.slice(0, keep) + `\n[… ${cut} more characters cut …]\n` + output.slice(-keep)
@@ -136,6 +139,8 @@ let waiter = null       // resolves the key the current prompt waits for
 let lineMode = false    // a readline prompt (note, edit) owns the keyboard
 const queue = []        // calls waiting their turn
 let busy = false
+let current = null      // the call on screen, from shown until answered
+let cancelPrompt = null // ends the prompt the current call is waiting on
 const endsAt = forMs ? Date.now() + forMs : null
 // Results sent as async task answers. completeTask throws while the relay link
 // is down and is fire-and-forget otherwise, so answers are kept and sent again
@@ -197,7 +202,9 @@ process.stdin.on("keypress", (s, key) => {
   else if (k === "s" && mode !== "step") { mode = "step"; out(green("step: every command waits for you.")) }
 })
 const waitKey = (valid) => new Promise((resolve) => {
-  waiter = (k) => { if (valid.includes(k)) { waiter = null; resolve(k) } }
+  waiter = (k) => { if (valid.includes(k)) { waiter = null; cancelPrompt = null; resolve(k) } }
+  cancelPrompt = () => waiter("dropped")
+  valid.push("dropped")
 })
 // A line of input (a note, an edited command), with `prefill` already typed.
 function askLine(prompt, prefill = "") {
@@ -207,8 +214,9 @@ function askLine(prompt, prefill = "") {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true, historySize: 0 })
     let cancelled = false
     rl.on("SIGINT", () => { cancelled = true; out(); rl.close() })
+    cancelPrompt = () => { cancelled = true; out(); rl.close() }
     rl.question(prompt, (answer) => { rl.close(); resolve(answer) })
-    rl.on("close", () => { lineMode = false; keyboard(true); if (cancelled) resolve(null) })
+    rl.on("close", () => { lineMode = false; cancelPrompt = null; keyboard(true); if (cancelled) resolve(null) })
     if (prefill) rl.write(prefill)
   })
 }
@@ -231,8 +239,9 @@ async function pump() {
   const call = queue.shift()
   if (!call) return idleLine()
   busy = true
+  current = call
   try { call.finish(await handle(call)) }
-  finally { busy = false; if (!ending) pump() }
+  finally { busy = false; current = null; if (!ending) pump() }
 }
 function idleLine() {
   out(dim(`Waiting for the agent… (${mode}${mode === "auto" ? ": s for step" : ": a for auto"} · q ends)`))
@@ -244,9 +253,9 @@ async function handle(call) {
   out()
   out(cyan(`── ${call.n} · ${time} `) + dim("─".repeat(30)))
   if (call.why) out(`why: ${escapeHidden(call.why)}`)
-  if (call.cwd !== START_DIR) out(dim(`in ${call.cwd}`))
+  if (call.cwd !== START_DIR) out(dim("in ") + escapeHidden(call.cwd))
   out(showCmd(call.cmd))
-  if (hasHidden(call.cmd)) { out(red("⚠ this command contains hidden characters, shown as \\u{…}. Look carefully.")) }
+  if (hasHidden(call.cmd) || hasHidden(call.cwd) || hasHidden(call.why)) { out(red("⚠ this command, its folder or its reason contains hidden characters, shown as \\u{…}. Look carefully.")) }
   let cmd = call.cmd
   let edited = false
   while (mode !== "auto") {
@@ -255,15 +264,18 @@ async function handle(call) {
     const k = await waitKey(["enter", "n", "e", "a", "q", "ctrl-c"])
     if (k === "enter") break
     if (k === "a") { mode = "auto"; out(yellow("auto: commands run as they arrive. s goes back to step (between commands).")); break }
+    if (k === "dropped" || call.dropped) return dropped()
     if (k === "q" || k === "ctrl-c") { end("ended"); return { status: "refused", note: "The user ended the session." } }
     if (k === "n") {
       const note = await askLine(dim("Tell the agent why (optional, Enter to skip): "))
+      if (call.dropped) return dropped()
       if (note === null) continue
       out(red("✗ refused"))
       return { status: "refused", note: note.trim().slice(0, 2000) || undefined }
     }
     if (k === "e") {
       const next = cmd.includes("\n") ? editInEditor(cmd) : await askLine(bold("$ "), cmd)
+      if (call.dropped) return dropped()
       if (next === null || !next.trim()) continue
       // What you typed and submitted runs; no second confirmation.
       cmd = next
@@ -272,11 +284,20 @@ async function handle(call) {
     }
   }
   if (ending) return { status: "refused", note: "The user ended the session." }
+  call.running = true
   const r = await exec(cmd, call.cwd, call.timeout)
   if (edited) r.ran = cmd
+  if (call.dropped) out(yellow("  (the relay link dropped while this ran: the agent didn't get this result and may send the command again)"))
   if (r.status === "done") out((r.exit === 0 ? green("✓") : yellow("!")) + dim(` exit ${r.exit} · ${r.seconds} s · sent`))
   else out(red(`✗ ${r.status}`) + dim(` · ${r.seconds ?? 0} s · sent`) + (r.error ? " " + r.error : ""))
   return r
+}
+
+// The relay link dropped while the call waited for you: the agent already got
+// a 503 and was told to send it again, so it doesn't run from this prompt.
+function dropped() {
+  out(dim("  (relay link dropped: this command was withdrawn; the agent was told to send it again)"))
+  return { status: "error", error: "connection dropped" }
 }
 
 // ── running a command ─────────────────────────────────────────────────
@@ -409,6 +430,11 @@ try {
       const lost = queue.filter((c) => !c.async)
       for (const c of lost) { queue.splice(queue.indexOf(c), 1); c.finish({ status: "error", error: "connection dropped" }) }
       if (lost.length) out(dim(`  (relay link dropped: ${lost.length} waiting command(s) dropped; the agent was told to retry)`))
+      // The one on screen too: withdrawn if you haven't run it yet.
+      if (current && !current.async) {
+        current.dropped = true
+        if (!current.running) cancelPrompt?.()
+      }
       return backoff(info)
     },
   })

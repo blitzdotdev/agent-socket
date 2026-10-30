@@ -44,7 +44,7 @@ export default async function () {
   const keys = st.storageKeys.join(" ")
   a.ok(st.storageKeys.includes("m") && st.storageKeys.some((k) => k.startsWith("r:")), "meta + registration stored", { keys })
   a.ok(st.storageKeys.filter((k) => k.startsWith("t:")).length === 1 && st.storageKeys.includes("k:t1"), "one token, one task stored", { keys })
-  a.ok(!keys.includes(keep.split("_")[2]) && !keys.includes(resumeSecret), "no verifier or secret in storage keys", { keys })
+  a.ok(!keys.includes(keep.slice("as_".length + 9)) && !keys.includes(resumeSecret), "no verifier or secret in storage keys", { keys })
   a.ok(st.alarm !== null, "liveness alarm armed while connected", { st })
 
   // Drop, then evict the object partway through the gap.

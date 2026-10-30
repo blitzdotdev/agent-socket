@@ -4,14 +4,16 @@
 // Covers: info, run with Enter (sync and as a 202 task), refuse with a note,
 // edit, auto and back to step, a queue of three, Ctrl-C stopping a command
 // and its background child, timeout, output cut to fit the relay's task
-// cap, hidden characters shown escaped, a bad request, and q ending the
-// session so the link answers 503.
+// cap, hidden characters (in the command or its folder) shown escaped, an
+// oversized folder refused, the relay link dropping while a command waits
+// (it is withdrawn, not run), a bad request, and q ending the session so the
+// link answers 503.
 
 import { spawn, spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
 import { Assert } from "../lib/assert.mjs"
-import { RELAY_HTTP } from "../lib/relay.mjs"
+import { RELAY_HTTP, killWs } from "../lib/relay.mjs"
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../shell/bin/agent-socket-shell.mjs")
 const HOLD_MS = 1500 // under the harness relay's MAX_SYNC_TOOL_MS (3000)
@@ -165,6 +167,44 @@ export default async function () {
     cli.keys("\r")
     r = await p
     a.equal(field(r.text, "status"), "refused", "escape-sequence command shown escaped, refused")
+
+    // The folder comes from the agent too: shown escaped, with the warning.
+    p = run(base, JSON.stringify({ cmd: "echo in-folder", cwd: `/tmp${ESC}[2K${ESC}[1G/home` }), { "content-type": "application/json" })
+    await cli.waitFor(/in \/tmp\\u\{1b\}\[2K\\u\{1b\}\[1G\/home\n\$ echo in-folder\n.*hidden characters/, "the folder shown escaped, with the warning")
+    cli.keys("n")
+    await cli.waitFor(/Tell the agent why/, "note prompt")
+    cli.keys("\r")
+    r = await p
+    a.equal(field(r.text, "status"), "refused", "escape-sequence folder shown escaped, refused")
+
+    // A folder too long to report back is refused up front (it used to make
+    // the result too big to ever fit, and the CLI spun forever).
+    const long = await fetch(`${base}/run`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cmd: "true", cwd: "/x" + "y".repeat(70_000) }) })
+    a.equal(long.status, 400, "a 70,000-character folder → 400")
+
+    // The relay link drops while a command waits on screen: the agent gets a
+    // 503 and is told to retry, so the command is withdrawn here and Enter
+    // doesn't run it.
+    const sessionId = /\/v1\/t\/as_([0-9A-Z]{8})_/.exec(base)[1]
+    p = fetch(`${base}/run`, { method: "POST", body: "echo ran-$((6*7))-marker", headers: { "x-why": "before the drop" } })
+    await cli.waitFor(/why: before the drop\n/, "the command shown before the drop")
+    a.equal((await killWs(sessionId)).status, 200, "kill-ws")
+    const lost = await p
+    a.equal(lost.status, 503, "the agent's call fails with 503 when the link drops")
+    await cli.waitFor(/this command was withdrawn/, "the command withdrawn on screen")
+    cli.keys("\r")
+    await new Promise((res) => setTimeout(res, 800))
+    a.ok(!/ran-42-marker/.test(cli.text()), "Enter after the drop runs nothing")
+    const deadline = Date.now() + 15_000
+    while ((await fetch(`${base}/info`)).status !== 200) {
+      if (Date.now() > deadline) throw new Error("the link didn't come back after the drop")
+      await new Promise((res) => setTimeout(res, 300))
+    }
+    p = run(base, "echo after-drop")
+    await cli.waitFor(/\$ echo after-drop/, "a command after the reconnect")
+    cli.keys("\r")
+    r = await p
+    a.equal(output(r.text).trim(), "after-drop", "the same link works after the reconnect")
 
     // Auto: `a` at a prompt runs it and the next one runs without a key.
     p = run(base, "echo auto-1")
